@@ -6,6 +6,7 @@ import platform
 import subprocess
 import argparse
 import os
+import sys
 
 source_path = os.path.dirname(os.path.abspath(__file__))
 build_dir = "build"
@@ -64,7 +65,9 @@ def build_firmware(environment, options, bin_type):
     make_result = os.system('make -j')
     if make_result != 0:
         return make_result
-    return os.system('python padding_bin_file.py mh1903.bin')
+    if "simulator" in options:
+        return 0
+    return subprocess.call([sys.executable, "padding_bin_file.py", "mh1903.bin"])
 
 
 def ota_maker():
@@ -143,9 +146,9 @@ if __name__ == '__main__':
     build_result = build_firmware(env, options, bin_type)
     if build_result != 0:
         exit(1)
-    if platform.system() == 'Darwin':
+    is_simulator = "simulator" in options
+    if platform.system() == 'Darwin' and not is_simulator:
         ota_maker()
     purpose = args.purpose
     if purpose and purpose == "debug":
         ota_maker()
-
