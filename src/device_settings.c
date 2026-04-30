@@ -17,6 +17,7 @@
 #include "power_manager.h"
 #include "account_manager.h"
 #include "version.h"
+#include "legacy_web_update_pad.h"
 #include "lv_i18n_api.h"
 #include "fetch_sensitive_data_task.h"
 #include "ctaes.h"
@@ -90,12 +91,19 @@ typedef struct {
 
 static BootParam_t g_bootParam;
 static const char g_deviceSettingsVersion[] = "1.0.0";
-DeviceSettings_t g_deviceSettings;
+static DeviceSettings_t g_deviceSettings;
 static const uint8_t g_integrityFlag[16] = {
     0x01, 0x09, 0x00, 0x03,
     0x01, 0x09, 0x00, 0x03,
     0x01, 0x09, 0x00, 0x03,
     0x01, 0x09, 0x00, 0x03,
+};
+
+static const uint8_t g_recoveryModeFlag[16] = {
+    'r', 'e', 'c', 'o',
+    'v', 'e', 'r', 'y',
+    'm', 'o', 'd', 'e',
+    'f', 'l', 'a', 'g',
 };
 void DeviceSettingsInit(void)
 {
@@ -142,15 +150,20 @@ void DeviceSettingsInit(void)
         SaveDeviceSettingsSync();
     }
 
-    // init boot param
+    if (jsonString != NULL) {
+        SRAM_FREE(jsonString);
+    }
+
     InitBootParam();
+
+    LegacyWebUpdatePadTouch();
 }
 
 void InitBootParam(void)
 {
 #ifdef COMPILE_SIMULATOR
     return;
-#endif
+#else
     BootParam_t bootParam;
     bool needSave = false;
     Gd25FlashReadBuffer(BOOT_SECURE_PARAM_FLAG, (uint8_t *)&bootParam, sizeof(bootParam));
@@ -160,15 +173,18 @@ void InitBootParam(void)
         memcpy(g_bootParam.bootCheckFlag, g_integrityFlag, sizeof(bootParam.bootCheckFlag));
         needSave = true;
     }
-    if (CheckAllFF(bootParam.recoveryModeSwitch, sizeof(bootParam.recoveryModeSwitch))) {
-    }
     if (needSave) {
         SaveBootParam();
     } else {
         AesDecryptBuffer(&g_bootParam, sizeof(g_bootParam), &bootParam);
         PrintArray("bootParam.bootCheckFlag", g_bootParam.bootCheckFlag, sizeof(g_bootParam.bootCheckFlag));
         PrintArray("bootParam.recoveryModeSwitch", g_bootParam.recoveryModeSwitch, sizeof(g_bootParam.recoveryModeSwitch));
+        if (memcmp(g_bootParam.recoveryModeSwitch, g_recoveryModeFlag, sizeof(g_bootParam.recoveryModeSwitch)) == 0) {
+            memset(g_bootParam.recoveryModeSwitch, 0, sizeof(g_bootParam.recoveryModeSwitch));
+            SaveBootParam();
+        }
     }
+#endif
 }
 
 void ResetBootParam(void)
@@ -241,10 +257,13 @@ uint32_t GetBright(void)
     return g_deviceSettings.bright;
 }
 
-void SetBright(uint32_t bight)
+void SetBright(uint32_t bright)
 {
-    SetLcdBright(bight);
-    g_deviceSettings.bright = bight;
+    if (bright > MAX_BRIGHT) {
+        bright = MAX_BRIGHT;
+    }
+    SetLcdBright(bright);
+    g_deviceSettings.bright = bright;
 }
 
 uint32_t GetAutoLockScreen(void)

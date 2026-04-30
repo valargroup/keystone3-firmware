@@ -26,6 +26,9 @@
 #define ACCOUNT_TOTAL_LEN                       (AES_IV_LEN + ENTROPY_MAX_LEN + SEED_LEN + SLIP39_EMS_LEN + SE_DATA_RESERVED_LEN + HMAC_LEN)
 #define PARAM_LEN                               32
 
+#define MIN_PASSWORD_LEN                        6
+#define TON_MNEMONIC_WORDS_COUNT                24
+
 #define ITERATION_TIME                          700
 
 typedef struct {
@@ -43,9 +46,7 @@ typedef struct {
 } PassphraseInfo_t;
 
 int32_t GenerateEntropy(uint8_t *entropy, uint8_t entropyLen, const char *password);
-int32_t GenerateTonMnemonic(char* mnemonic, const char *password);
 int32_t SaveNewBip39Entropy(uint8_t accountIndex, const uint8_t *entropy, uint8_t entropyLen, const char *password);
-int32_t SaveNewTonMnemonic(uint8_t accountIndex, const char *mnemonic, const char *password);
 int32_t SaveNewSlip39Entropy(uint8_t accountIndex, const uint8_t *ems, const uint8_t *entropy, uint8_t entropyLen, const char *password, uint16_t id, uint8_t ie);
 int32_t GetAccountEntropy(uint8_t accountIndex, uint8_t *entropy, uint8_t *entropyLen, const char *password);
 int32_t GetAccountSeed(uint8_t accountIndex, uint8_t *seed, const char *password);

@@ -21,10 +21,15 @@ bool g_reboot = false;
 bool g_otpProtect = false;
 
 // Comment out this macro if you need to retrieve data from the file
-#define GET_QR_DATA_FROM_SCREEN
+// #define GET_QR_DATA_FROM_SCREEN
 
 void OTP_PowerOn(void)
 {
+}
+
+bool NeedUpdateBoot(void)
+{
+    return false;
 }
 
 void StampTimeToUtcTime(int64_t timeStamp, char *utcTime, int maxLen)

@@ -5,6 +5,7 @@
 #include "secret_cache.h"
 #include "gui_chain.h"
 #include "gui_chain_components.h"
+#include "keystore.h"
 
 #define CHECK_FREE_PARSE_RESULT(result)                                     \
     if (result != NULL)                                                     \
@@ -19,10 +20,6 @@ static void *g_parseResult = NULL;
 static bool g_isMulti = false;
 static ViewType g_viewType = ViewTypeUnKnown;
 
-static lv_obj_t *CreateOverviewAmountView(lv_obj_t *parent, DisplayAvaxTx *data, lv_obj_t *lastView);
-static lv_obj_t *CreateOverviewActionView(lv_obj_t *parent, DisplayAvaxTx *data, lv_obj_t *lastView);
-static lv_obj_t *CreateOverviewDestinationView(lv_obj_t *parent, DisplayAvaxTx *data, lv_obj_t *lastView);
-static lv_obj_t *CreateOverviewContractDataView(lv_obj_t *parent, DisplayAvaxTx *data, lv_obj_t *lastView);
 UREncodeResult *GetAvaxSignDataDynamic(bool isUnlimited);
 
 void GuiSetAvaxUrData(URParseResult *urResult, URParseMultiResult *urMultiResult, bool multi)
@@ -35,34 +32,14 @@ void GuiSetAvaxUrData(URParseResult *urResult, URParseMultiResult *urMultiResult
 
 UREncodeResult *GuiGetAvaxSignQrCodeData(void)
 {
-    return GetAvaxSignDataDynamic(false);
+    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    return SignInternal(avax_sign, data);
 }
 
 UREncodeResult *GuiGetAvaxSignUrDataUnlimited(void)
 {
-    return GetAvaxSignDataDynamic(true);
-}
-
-UREncodeResult *GetAvaxSignDataDynamic(bool isUnlimited)
-{
-    bool enable = IsPreviousLockScreenEnable();
-    SetLockScreen(false);
-    UREncodeResult *encodeResult;
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
-    do {
-        uint8_t seed[64];
-        int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
-        if (isUnlimited) {
-            encodeResult = avax_sign_unlimited(data, seed, len);
-        } else {
-            encodeResult = avax_sign(data, seed, len);
-        }
-        ClearSecretCache();
-        CHECK_CHAIN_BREAK(encodeResult);
-    } while (0);
-    SetLockScreen(enable);
-    return encodeResult;
+    return SignInternal(avax_sign_unlimited, data);
 }
 
 PtrT_TransactionCheckResult GuiGetAvaxCheckResult(void)
@@ -81,14 +58,16 @@ void *GuiGetAvaxGUIData(void)
         uint8_t mfp[4] = {0};
         GetMasterFingerPrint(mfp);
         PtrT_CSliceFFI_ExtendedPublicKey public_keys = SRAM_MALLOC(sizeof(CSliceFFI_ExtendedPublicKey));
-        ExtendedPublicKey keys[2];
+        ExtendedPublicKey keys[11];
         public_keys->data = keys;
         public_keys->size = NUMBER_OF_ARRAYS(keys);
         keys[0].path = "m/44'/60'/0'";
         keys[0].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_BIP44_STANDARD);
-        keys[1].path = "m/44'/9000'/0'";
-        keys[1].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_X_P);
-        PtrT_TransactionParseResult_DisplayTonTransaction parseResult = avax_parse_transaction(data, mfp, sizeof(mfp), public_keys);
+        for (int i = 0; i < 10; i++) {
+            keys[1 + i].path = GetCurrentAccountPath(XPUB_TYPE_AVAX_X_P_0 + i);
+            keys[1 + i].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_X_P_0 + i);
+        }
+        PtrT_TransactionParseResult_DisplayAvaxTx parseResult = avax_parse_transaction(data, mfp, sizeof(mfp), public_keys);
         SRAM_FREE(public_keys);
         CHECK_CHAIN_BREAK(parseResult);
         g_parseResult = (void *)parseResult;
@@ -113,7 +92,7 @@ lv_obj_t *CreateTxOverviewFromTo(lv_obj_t *parent, void *from, int fromLen, void
     for (int i = 0; i < fromLen; i++) {
         lv_obj_t *label = GuiCreateIllustrateLabel(container, ptr[i].address);
         lv_obj_set_width(label, 360);
-        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 54 + 60 * i);
+        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 54 + 65 * i);
     }
 
     ptr = (DisplayUtxoFromTo *)to;
@@ -195,7 +174,7 @@ void GuiAvaxTxOverview(lv_obj_t *parent, void *totalData)
         GuiAlignToPrevObj(container, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     }
 
-    container = CreateTxOverviewFromTo(parent, txData->data->from, 1, txData->data->to->data, txData->data->to->size);
+    container = CreateTxOverviewFromTo(parent, txData->data->from->data, txData->data->from->size, txData->data->to->data, txData->data->to->size);
     GuiAlignToPrevObj(container, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     lv_obj_update_layout(parent);
 }
@@ -237,7 +216,7 @@ void GuiAvaxTxRawData(lv_obj_t *parent, void *totalData)
         GuiAlignToPrevObj(container, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     }
 
-    container = CreateTxDetailsFromTo(parent, "From", txData->data->from, 1);
+    container = CreateTxDetailsFromTo(parent, "From", txData->data->from->data, txData->data->from->size);
     GuiAlignToPrevObj(container, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
 
     container = CreateTxDetailsFromTo(parent, "To", txData->data->to->data, txData->data->to->size);

@@ -48,28 +48,16 @@ UREncodeResult *GuiGetTonSignQrCodeData(void)
     SetLockScreen(false);
     UREncodeResult *encodeResult;
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    uint8_t seed[64];
     do {
-        MnemonicType type = GetMnemonicType();
-        uint8_t seed[64];
-        int len = 64;
-        switch (type) {
-        case MNEMONIC_TYPE_BIP39: {
-            len = sizeof(seed);
-            break;
-
-        }
-        case MNEMONIC_TYPE_SLIP39: {
-            len = GetCurrentAccountEntropyLen();
-            break;
-        }
-        default:
-            break;
-        }
-        GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        int len = GetCurrentAccountSeedLen();
+        int ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        CHECK_ERRCODE_BREAK("GetAccountSeed", ret);
         encodeResult = ton_sign_transaction(data, seed, len);
-        ClearSecretCache();
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
+    memset_s(seed, sizeof(seed), 0, sizeof(seed));
+    ClearSecretCache();
     SetLockScreen(enable);
     return encodeResult;
 }
@@ -80,28 +68,16 @@ UREncodeResult *GuiGetTonProofSignQrCodeData(void)
     SetLockScreen(false);
     UREncodeResult *encodeResult;
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    uint8_t seed[64];
     do {
-        MnemonicType type = GetMnemonicType();
-        uint8_t seed[64];
-        int len = 64;
-        switch (type) {
-        case MNEMONIC_TYPE_BIP39: {
-            len = sizeof(seed);
-            break;
-
-        }
-        case MNEMONIC_TYPE_SLIP39: {
-            len = GetCurrentAccountEntropyLen();
-            break;
-        }
-        default:
-            break;
-        }
-        GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        int len = GetCurrentAccountSeedLen();
+        int ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        CHECK_ERRCODE_BREAK("GetAccountSeed", ret);
         encodeResult = ton_sign_proof(data, seed, len);
-        ClearSecretCache();
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
+    memset_s(seed, sizeof(seed), 0, sizeof(seed));
+    ClearSecretCache();
     SetLockScreen(enable);
     return encodeResult;
 }
@@ -111,13 +87,7 @@ PtrT_TransactionCheckResult GuiGetTonCheckResult(void)
     uint8_t mfp[4];
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
     GetMasterFingerPrint(mfp);
-    char* publicKey;
-    bool isTonNative = GetMnemonicType() == MNEMONIC_TYPE_TON;
-    if (isTonNative) {
-        publicKey = GetCurrentAccountPublicKey(XPUB_TYPE_TON_NATIVE);
-    } else {
-        publicKey = GetCurrentAccountPublicKey(XPUB_TYPE_TON_BIP39);
-    }
+    char* publicKey = GetCurrentAccountPublicKey(XPUB_TYPE_TON_BIP39);
     return ton_check_transaction(data, publicKey);
 }
 
@@ -211,13 +181,8 @@ static lv_obj_t *CreateOverviewDestinationView(lv_obj_t *parent, DisplayTonTrans
 {
     lv_obj_t *container = CreateContentContainer(parent, 408, 244);
     lv_obj_align_to(container, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
-    bool isTonNative = GetMnemonicType() == MNEMONIC_TYPE_TON;
     char *xPub = NULL;
-    if (isTonNative) {
-        xPub = GetCurrentAccountPublicKey(XPUB_TYPE_TON_NATIVE);
-    } else {
-        xPub = GetCurrentAccountPublicKey(XPUB_TYPE_TON_BIP39);
-    }
+    xPub = GetCurrentAccountPublicKey(XPUB_TYPE_TON_BIP39);
     SimpleResponse_c_char *from = ton_get_address(xPub);
 
     lv_obj_t *label = GuiCreateIllustrateLabel(container, _("From"));

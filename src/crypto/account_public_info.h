@@ -20,6 +20,7 @@ typedef enum {
     XPUB_TYPE_BTC_TAPROOT,
 #ifdef WEB3_VERSION
     XPUB_TYPE_LTC,
+    XPUB_TYPE_LTC_NATIVE_SEGWIT,
     XPUB_TYPE_DOGE,
     XPUB_TYPE_DASH,
     XPUB_TYPE_BCH,
@@ -46,7 +47,16 @@ typedef enum {
     XPUB_TYPE_XRP,
     XPUB_TYPE_THOR,
     XPUB_TYPE_AVAX_BIP44_STANDARD,
-    XPUB_TYPE_AVAX_X_P,
+    XPUB_TYPE_AVAX_X_P_0,
+    XPUB_TYPE_AVAX_X_P_1,
+    XPUB_TYPE_AVAX_X_P_2,
+    XPUB_TYPE_AVAX_X_P_3,
+    XPUB_TYPE_AVAX_X_P_4,
+    XPUB_TYPE_AVAX_X_P_5,
+    XPUB_TYPE_AVAX_X_P_6,
+    XPUB_TYPE_AVAX_X_P_7,
+    XPUB_TYPE_AVAX_X_P_8,
+    XPUB_TYPE_AVAX_X_P_9,
     XPUB_TYPE_IOTA_0,
     XPUB_TYPE_IOTA_1,
     XPUB_TYPE_IOTA_2,
@@ -233,8 +243,7 @@ typedef enum {
     XPUB_TYPE_STELLAR_3,
     XPUB_TYPE_STELLAR_4,
     XPUB_TYPE_TON_BIP39,
-    XPUB_TYPE_TON_NATIVE,
-    PUBLIC_INFO_TON_CHECKSUM,
+    XPUB_TYPE_ZEC_TRANSPARENT_LEGACY,
 #endif
 
 #ifdef CYPHERPUNK_VERSION
@@ -265,13 +274,13 @@ int32_t AccountPublicInfoSwitch(uint8_t accountIndex, const char *password, bool
 int32_t TempAccountPublicInfo(uint8_t accountIndex, const char *password, bool set);
 void DeleteAccountPublicInfo(uint8_t accountIndex);
 char *GetCurrentAccountPublicKey(ChainType chain);
-uint8_t SpecifiedXPubExist(const char *xPub, bool isTon);
+char *GetCurrentAccountPath(ChainType chain);
+uint8_t SpecifiedXPubExist(const char *xPub);
 void AccountPublicInfoTest(int argc, char *argv[]);
 bool GetFirstReceive(const char* chainName);
 void SetFirstReceive(const char* chainName, bool isFirst);
 void AccountPublicHomeCoinGet(WalletState_t *walletList, uint8_t count);
 char *GetXPubPath(uint8_t index);
-void CalculateTonChecksum(uint8_t *entropy, char* output);
 uint32_t GetAccountReceiveIndex(const char* chainName);
 void SetAccountReceiveIndex(const char* chainName, uint32_t index);
 uint32_t GetAccountReceivePath(const char* chainName);

@@ -3,13 +3,8 @@ use alloc::{
     string::{String, ToString},
     vec,
 };
-use zcash_note_encryption::{
-    try_output_recovery_with_ovk, try_output_recovery_with_pkd_esk, Domain,
-};
+use zcash_note_encryption::{try_output_recovery_with_ovk, try_output_recovery_with_pkd_esk};
 use zcash_vendor::{
-    orchard::{
-        self, keys::OutgoingViewingKey, note::Note, note_encryption::OrchardDomain, Address,
-    },
     pczt::{self, roles::verifier::Verifier, Pczt},
     ripemd::{Digest, Ripemd160},
     sha2::Sha256,
@@ -25,8 +20,14 @@ use zcash_vendor::{
     },
 };
 
-use crate::errors::ZcashError;
+#[cfg(feature = "cypherpunk")]
+use zcash_note_encryption::Domain;
+#[cfg(feature = "cypherpunk")]
+use zcash_vendor::orchard::{
+    self, keys::OutgoingViewingKey, note::Note, note_encryption::OrchardDomain, Address,
+};
 
+use crate::errors::ZcashError;
 use super::structs::{ParsedFrom, ParsedOrchard, ParsedPczt, ParsedTo, ParsedTransparent};
 
 const ZEC_DIVIDER: u32 = 100_000_000;
@@ -48,6 +49,7 @@ fn format_zec_value(value: f64) -> String {
 /// - `Ok(None)` if the output cannot be decrypted.
 /// - `Err(_)` if `ovk` is `None` and the PCZT is missing fields needed to directly
 ///   decrypt the output.
+#[cfg(feature = "cypherpunk")]
 pub fn decode_output_enc_ciphertext(
     action: &orchard::pczt::Action,
     ovk: Option<&OutgoingViewingKey>,
@@ -114,7 +116,8 @@ pub fn decode_output_enc_ciphertext(
 /// 3. Handles Sapling pool interactions (though full Sapling decoding is not supported)
 /// 4. Computes transfer values and fees
 /// 5. Returns a structured representation of the transaction
-pub fn parse_pczt<P: consensus::Parameters>(
+#[cfg(feature = "cypherpunk")]
+pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
     ufvk: &UnifiedFullViewingKey,
@@ -203,6 +206,77 @@ pub fn parse_pczt<P: consensus::Parameters>(
     Ok(ParsedPczt::new(
         parsed_transparent,
         parsed_orchard,
+        total_transfer_value,
+        fee_value,
+        has_sapling,
+    ))
+}
+#[cfg(feature = "multi_coins")]
+pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
+    params: &P,
+    seed_fingerprint: &[u8; 32],
+    pczt: &Pczt,
+) -> Result<ParsedPczt, ZcashError> {
+    let mut parsed_transparent = None;
+
+    Verifier::new(pczt.clone())
+        .with_transparent(|bundle| {
+            parsed_transparent = parse_transparent(params, seed_fingerprint, bundle)
+                .map_err(pczt::roles::verifier::TransparentError::Custom)?;
+            Ok(())
+        })
+        .map_err(|e| ZcashError::InvalidDataError(alloc::format!("{e:?}")))?;
+
+    let mut total_input_value = 0;
+    let mut total_output_value = 0;
+    let mut total_change_value = 0;
+    //total_input_value = total_output_value + fee_value
+    //total_output_value = total_transfer_value + total_change_value
+
+    if let Some(transparent) = &parsed_transparent {
+        total_change_value += transparent
+            .get_to()
+            .iter()
+            .filter(|v| v.get_is_change())
+            .fold(0, |acc, to| acc + to.get_amount());
+        total_input_value += transparent
+            .get_from()
+            .iter()
+            .fold(0, |acc, from| acc + from.get_amount());
+        total_output_value += transparent
+            .get_to()
+            .iter()
+            .fold(0, |acc, to| acc + to.get_amount());
+    }
+
+    //treat all sapling output as output value since we don't support sapling decoding yet
+    //sapling value_sum can be trusted
+
+    let value_balance = (*pczt.sapling().value_sum())
+        .try_into()
+        .ok()
+        .and_then(|v| ZatBalance::from_i64(v).ok())
+        .ok_or(ZcashError::InvalidPczt(
+            "sapling value_sum is invalid".to_string(),
+        ))?;
+    let sapling_value_sum: i64 = value_balance.into();
+    if sapling_value_sum < 0 {
+        //value transfered to sapling pool
+        total_output_value = total_output_value.saturating_add(sapling_value_sum.unsigned_abs())
+    } else {
+        //value transfered from sapling pool
+        //this should not happen with Zashi.
+        total_input_value = total_input_value.saturating_add(sapling_value_sum as u64)
+    };
+
+    let total_transfer_value = format_zec_value((total_output_value - total_change_value) as f64);
+    let fee_value = format_zec_value((total_input_value - total_output_value) as f64);
+
+    let has_sapling = !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
+
+    Ok(ParsedPczt::new(
+        parsed_transparent,
+        None,
         total_transfer_value,
         fee_value,
         has_sapling,
@@ -314,17 +388,11 @@ fn parse_transparent_output(
                 ZcashError::InvalidPczt("missing user address for transparent output".into())
             })?;
             let zec_value = format_zec_value(output.value().into_u64() as f64);
-            // we only consider the simple p2sh script at the moment. multisig is not considered;
-            let is_change = output
-                .bip32_derivation()
-                .first_key_value()
-                .map(|(_, derivation)| seed_fingerprint == derivation.seed_fingerprint())
-                .unwrap_or(false);
             Ok(ParsedTo::new(
                 address,
                 zec_value,
                 output.value().into_u64(),
-                is_change,
+                false,
                 false,
                 None,
             ))
@@ -335,6 +403,7 @@ fn parse_transparent_output(
     }
 }
 
+#[cfg(feature = "cypherpunk")]
 fn parse_orchard<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
@@ -367,6 +436,7 @@ fn parse_orchard<P: consensus::Parameters>(
     }
 }
 
+#[cfg(feature = "cypherpunk")]
 fn parse_orchard_spend(
     seed_fingerprint: &[u8; 32],
     spend: &orchard::pczt::Spend,
@@ -387,6 +457,35 @@ fn parse_orchard_spend(
     Ok(ParsedFrom::new(None, zec_value, value, is_mine))
 }
 
+#[cfg(feature = "cypherpunk")]
+fn is_wallet_orchard_address(
+    ufvk: &UnifiedFullViewingKey,
+    address: &Address,
+) -> Result<bool, ZcashError> {
+    let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
+        "orchard is not present in ufvk".to_string(),
+    ))?;
+    let external_ivk = fvk.to_ivk(zcash_vendor::zip32::Scope::External);
+    let internal_ivk = fvk.to_ivk(zcash_vendor::zip32::Scope::Internal);
+
+    Ok(external_ivk.diversifier_index(address).is_some()
+        || internal_ivk.diversifier_index(address).is_some())
+}
+
+#[cfg(feature = "cypherpunk")]
+fn is_internal_orchard_address(
+    ufvk: &UnifiedFullViewingKey,
+    address: &Address,
+) -> Result<bool, ZcashError> {
+    let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
+        "orchard is not present in ufvk".to_string(),
+    ))?;
+    let internal_ivk = fvk.to_ivk(zcash_vendor::zip32::Scope::Internal);
+
+    Ok(internal_ivk.diversifier_index(address).is_some())
+}
+
+#[cfg(feature = "cypherpunk")]
 fn parse_orchard_output<P: consensus::Parameters>(
     params: &P,
     ufvk: &UnifiedFullViewingKey,
@@ -410,11 +509,10 @@ fn parse_orchard_output<P: consensus::Parameters>(
         .ok_or(ZcashError::InvalidPczt("value is not present".to_string()))?
         .inner();
 
-    let decode_output =
-        |vk: Option<OutgoingViewingKey>, is_internal: bool| match decode_output_enc_ciphertext(
-            action,
-            vk.as_ref(),
-        )? {
+    let decode_output = |vk: Option<OutgoingViewingKey>, is_internal_ovk: bool| match decode_output_enc_ciphertext(
+        action,
+        vk.as_ref(),
+    )? {
             Some((note, address, memo)) => {
                 let zec_value = format_zec_value(note.value().inner() as f64);
                 let memo = decode_memo(memo);
@@ -445,6 +543,13 @@ fn parse_orchard_output<P: consensus::Parameters>(
                     }
                 }
 
+                let belongs_to_wallet = is_wallet_orchard_address(ufvk, &address)?;
+                let is_internal = is_internal_orchard_address(ufvk, &address)?;
+                if is_internal_ovk && !belongs_to_wallet {
+                    return Err(ZcashError::InvalidPczt(
+                        "Orchard output was recoverable with an internal OVK but does not belong to this wallet".into(),
+                    ));
+                }
                 let is_dummy = match vk {
                     Some(_) => false,
                     None => matches!((action.output().user_address(), value), (None, 0)),
@@ -569,12 +674,47 @@ fn decode_memo(memo_bytes: [u8; 512]) -> Option<String> {
     Some(hex::encode(memo_bytes))
 }
 
+#[cfg(feature = "cypherpunk")]
 #[cfg(test)]
 mod tests {
+    use alloc::collections::BTreeMap;
     use super::*;
-    use zcash_vendor::zcash_protocol::consensus::MAIN_NETWORK;
+    use zcash_vendor::{
+        transparent::pczt,
+        zcash_address::ZcashAddress,
+        zcash_protocol::consensus::{Parameters, MAIN_NETWORK},
+    };
 
     extern crate std;
+
+    fn p2sh_output_with_matching_seed_fingerprint(
+        seed_fingerprint: [u8; 32],
+    ) -> transparent::pczt::Output {
+        let hash = [0x11; 20];
+        let script_pubkey = {
+            let mut script = vec![0xa9, 0x14];
+            script.extend_from_slice(&hash);
+            script.push(0x87);
+            script
+        };
+        let user_address =
+            ZcashAddress::from_transparent_p2sh(MAIN_NETWORK.network_type(), hash).encode();
+        let mut bip32_derivation = BTreeMap::new();
+        bip32_derivation.insert(
+            [0x02; 33],
+            pczt::Bip32Derivation::parse(seed_fingerprint, vec![0]).unwrap(),
+        );
+
+        pczt::Output::parse(
+            42_000,
+            script_pubkey,
+            Some(vec![0x51]),
+            bip32_derivation,
+            Some(user_address),
+            BTreeMap::new(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn test_format_zec_value() {
@@ -611,7 +751,7 @@ mod tests {
         let fingerprint = fingerprint.try_into().unwrap();
         let unified_fvk = UnifiedFullViewingKey::decode(&MAIN_NETWORK, ufvk).unwrap();
 
-        let result = parse_pczt(&MAIN_NETWORK, &fingerprint, &unified_fvk, &pczt);
+        let result = parse_pczt_cypherpunk(&MAIN_NETWORK, &fingerprint, &unified_fvk, &pczt);
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(!result.get_has_sapling());
@@ -659,11 +799,264 @@ mod tests {
         let fingerprint = fingerprint.try_into().unwrap();
         let unified_fvk = UnifiedFullViewingKey::decode(&MAIN_NETWORK, ufvk).unwrap();
 
-        let result = parse_pczt(&MAIN_NETWORK, &fingerprint, &unified_fvk, &pczt);
+        let result = parse_pczt_cypherpunk(&MAIN_NETWORK, &fingerprint, &unified_fvk, &pczt);
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.get_has_sapling());
         assert_eq!(result.get_total_transfer_value(), "0.001 ZEC");
         assert_eq!(result.get_fee_value(), "0.0002 ZEC");
+    }
+
+    #[test]
+    fn test_parse_p2sh_output_is_never_marked_as_change() {
+        let seed_fingerprint = [0x22; 32];
+        let output = p2sh_output_with_matching_seed_fingerprint(seed_fingerprint);
+
+        let parsed = parse_transparent_output(&seed_fingerprint, &output).unwrap();
+
+        assert!(!parsed.get_is_change());
+    }
+
+    #[test]
+    fn test_decode_memo_with_hex_content() {
+        {
+            let mut memo = [0u8; 512];
+            memo[0] = 0xF6;
+            memo[1] = 0x01;
+            let result = decode_memo(memo);
+            assert!(result.is_some());
+            let hex_str = result.unwrap();
+            assert!(hex_str.starts_with("f6"));
+        }
+        {
+            let mut memo = [0u8; 512];
+            memo[0] = 0xF5;
+            let result = decode_memo(memo);
+            assert!(result.is_some());
+        }
+    }
+
+    #[test]
+    fn test_format_zec_value_with_different_amounts() {
+        let test_cases = vec![
+            (0, "0 ZEC"),
+            (1, "0.00000001 ZEC"),
+            (100_000_000, "1 ZEC"),
+            (150_000_000, "1.5 ZEC"),
+            (10_000, "0.0001 ZEC"),
+            (123_456_789, "1.23456789 ZEC"),
+            (1, "0.00000001 ZEC"),
+            (10, "0.0000001 ZEC"),
+        ];
+
+        for (input, expected) in test_cases {
+            assert_eq!(format_zec_value(input as f64), expected);
+        }
+    }
+
+    #[test]
+    fn test_format_zec_value_rounding() {
+        // Test trailing zero removal
+        let value = 100_000_000; // 1.00000000 ZEC
+        let result = format_zec_value(value as f64);
+        assert_eq!(result, "1 ZEC");
+
+        let value = 150_000_000; // 1.50000000 ZEC
+        let result = format_zec_value(value as f64);
+        assert_eq!(result, "1.5 ZEC");
+    }
+
+    #[test]
+    fn test_format_zec_value_edge_cases() {
+        // Test very large values
+        let value = u64::MAX as f64;
+        let result = format_zec_value(value);
+        assert!(result.ends_with(" ZEC"));
+
+        // Test max realistic ZEC value (21 million ZEC = 2.1e15 zatoshis)
+        let max_zec = 2_100_000_000_000_000_u64;
+        let result = format_zec_value(max_zec as f64);
+        assert_eq!(result, "21000000 ZEC");
+    }
+
+    #[test]
+    fn test_decode_memo_empty() {
+        let memo = [0u8; 512];
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        let decoded = result.unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_decode_memo_full_text() {
+        let memo = [b'A'; 512];
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        let decoded = result.unwrap();
+        assert_eq!(decoded.len(), 512);
+    }
+
+    #[test]
+    fn test_decode_memo_with_padding() {
+        let mut memo = [0u8; 512];
+        let text = b"Hello World";
+        memo[..text.len()].copy_from_slice(text);
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "Hello World");
+    }
+
+    #[test]
+    fn test_decode_memo_utf8_with_multibyte() {
+        let mut memo = [0u8; 512];
+        let text = "测试中文".as_bytes();
+        memo[..text.len()].copy_from_slice(text);
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "测试中文");
+    }
+
+    #[test]
+    fn test_decode_memo_boundary_cases() {
+        // Test with first byte <= 0xF4 (UTF-8 decoding path) - simple ASCII
+        let mut memo = [0u8; 512];
+        memo[0] = b'A';
+        memo[1] = b'B';
+        memo[2] = b'C';
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "ABC");
+
+        // Test with 0xF5 (should use hex encoding)
+        let mut memo = [0u8; 512];
+        memo[0] = 0xF5;
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        let hex_str = result.unwrap();
+        assert!(hex_str.starts_with("f5"));
+    }
+
+    #[test]
+    fn test_decode_memo_f6_marker_with_zeros() {
+        // Test 0xF6 marker with all zeros after it (should return None)
+        let mut memo = [0u8; 512];
+        memo[0] = 0xF6;
+        let result = decode_memo(memo);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_memo_f6_marker_with_data() {
+        // Test 0xF6 marker with non-zero data after it
+        let mut memo = [0u8; 512];
+        memo[0] = 0xF6;
+        memo[1] = 0xFF;
+        memo[2] = 0xAB;
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        let hex_str = result.unwrap();
+        assert!(hex_str.starts_with("f6ff"));
+    }
+
+    #[test]
+    fn test_decode_memo_special_characters() {
+        let mut memo = [0u8; 512];
+        let text = b"Test!@#$%^&*()_+-=[]{}|;:',.<>?/`~";
+        memo[..text.len()].copy_from_slice(text);
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "Test!@#$%^&*()_+-=[]{}|;:',.<>?/`~");
+    }
+
+    #[test]
+    fn test_format_zec_value_precision() {
+        // Test that we maintain proper precision
+        let value = 12345678; // 0.12345678 ZEC
+        let result = format_zec_value(value as f64);
+        assert_eq!(result, "0.12345678 ZEC");
+
+        // Test single zatoshi
+        let value = 1;
+        let result = format_zec_value(value as f64);
+        assert_eq!(result, "0.00000001 ZEC");
+    }
+
+    #[test]
+    fn test_format_zec_value_no_fractional() {
+        // Test whole number amounts
+        let test_cases = vec![
+            (100_000_000u64, "1 ZEC"),
+            (200_000_000u64, "2 ZEC"),
+            (1_000_000_000u64, "10 ZEC"),
+            (10_000_000_000u64, "100 ZEC"),
+        ];
+
+        for (input, expected) in test_cases {
+            assert_eq!(format_zec_value(input as f64), expected);
+        }
+    }
+
+    #[test]
+    fn test_decode_memo_newlines_and_tabs() {
+        let mut memo = [0u8; 512];
+        let text = b"Line1\nLine2\tTabbed";
+        memo[..text.len()].copy_from_slice(text);
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "Line1\nLine2\tTabbed");
+    }
+
+    #[test]
+    fn test_decode_memo_all_printable_ascii() {
+        let mut memo = [0u8; 512];
+        // Test all printable ASCII characters (32-126)
+        for i in 32..=126 {
+            memo[i - 32] = i as u8;
+        }
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        let decoded = result.unwrap();
+        // Should decode all printable ASCII
+        assert!(decoded.len() <= 512);
+    }
+
+    #[test]
+    fn test_format_zec_value_fractional_cents() {
+        // Test values that should show as fractional cents
+        let value = 1000; // 0.00001 ZEC
+        let result = format_zec_value(value as f64);
+        assert_eq!(result, "0.00001 ZEC");
+
+        let value = 500; // 0.000005 ZEC
+        let result = format_zec_value(value as f64);
+        assert_eq!(result, "0.000005 ZEC");
+    }
+
+    #[test]
+    fn test_decode_memo_mixed_content() {
+        let mut memo = [0u8; 512];
+        let text = b"Test123!@# ZEC Payment";
+        memo[..text.len()].copy_from_slice(text);
+        let result = decode_memo(memo);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "Test123!@# ZEC Payment");
+    }
+
+    #[test]
+    fn test_format_zec_value_typical_transaction_amounts() {
+        // Test common transaction amounts
+        let test_cases = vec![
+            (10_000_000u64, "0.1 ZEC"),     // 0.1 ZEC
+            (50_000_000u64, "0.5 ZEC"),     // 0.5 ZEC
+            (100_000_000u64, "1 ZEC"),      // 1 ZEC
+            (250_000_000u64, "2.5 ZEC"),    // 2.5 ZEC
+            (1_000_000_000u64, "10 ZEC"),   // 10 ZEC
+            (10_000_000_000u64, "100 ZEC"), // 100 ZEC
+        ];
+
+        for (input, expected) in test_cases {
+            assert_eq!(format_zec_value(input as f64), expected);
+        }
     }
 }

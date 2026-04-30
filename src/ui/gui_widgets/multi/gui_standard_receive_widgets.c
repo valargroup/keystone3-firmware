@@ -918,8 +918,7 @@ static void ModelGetAddress(uint32_t index, AddressDataItem_t *item)
 #ifdef CYPHERPUNK_VERSION
     if (g_chainCard == HOME_WALLET_CARD_ZEC) {
         char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
-        uint8_t sfp[32];
-        GetZcashUFVK(GetCurrentAccountIndex(), ufvk, sfp);
+        GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
         result = generate_zcash_default_address(ufvk, GetZcashNetworkType());
     }
 #endif
@@ -954,18 +953,18 @@ static void ModelGetAddress(uint32_t index, AddressDataItem_t *item)
         xPub = GetCurrentAccountPublicKey(XPUB_TYPE_ARWEAVE);
         result = arweave_get_address(xPub);
         break;
+    case HOME_WALLET_CARD_ZEC:
+        xPub = GetCurrentAccountPublicKey(XPUB_TYPE_ZEC_TRANSPARENT_LEGACY);
+        snprintf_s(hdPath, BUFFER_SIZE_128, "m/44'/133'/0'/0/%u", index);
+        result = utxo_get_address(hdPath, xPub);
+        break;
     case HOME_WALLET_CARD_XLM:
         xPub = GetCurrentAccountPublicKey(XPUB_TYPE_STELLAR_0 + index);
         snprintf_s(hdPath, BUFFER_SIZE_64, "m/44'/148'/%u'", index);
         result = stellar_get_address(xPub);
         break;
     case HOME_WALLET_CARD_TON: {
-        bool isTonNative = GetMnemonicType() == MNEMONIC_TYPE_TON;
-        if (isTonNative) {
-            xPub = GetCurrentAccountPublicKey(XPUB_TYPE_TON_NATIVE);
-        } else {
-            xPub = GetCurrentAccountPublicKey(XPUB_TYPE_TON_BIP39);
-        }
+        xPub = GetCurrentAccountPublicKey(XPUB_TYPE_TON_BIP39);
         result = ton_get_address(xPub);
         break;
     }
@@ -1078,8 +1077,6 @@ void GuiResetAllStandardAddressIndex(void)
     memset_s(g_tgdChainSelectIndex, sizeof(g_tgdChainSelectIndex), 0, sizeof(g_tgdChainSelectIndex));
     memset_s(g_thorChainSelectIndex, sizeof(g_thorChainSelectIndex), 0, sizeof(g_thorChainSelectIndex));
 }
-
-
 
 static void SetCurrentSelectIndex(uint32_t selectIndex)
 {

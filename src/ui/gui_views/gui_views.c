@@ -159,14 +159,6 @@ void GuiWriteSeWidget(lv_obj_t *parent)
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 }
 
-void GuiUpdateTonWriteSeWidget(lv_obj_t *parent)
-{
-    lv_obj_t *label = GuiCreateNoticeLabel(parent, _("ton_write_se_predict_text"));
-    GuiAlignToPrevObj(label, LV_ALIGN_OUT_BOTTOM_MID, 0, 18);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, ORANGE_COLOR, LV_PART_MAIN);
-}
-
 void DuplicateShareHandler(lv_event_t *e)
 {
     GuiCloseCurrentWorkingView();
@@ -312,6 +304,10 @@ void *GuiCreateErrorCodeWindow(int32_t errCode, lv_obj_t **param, ErrorWindowCal
     case ERR_EXPORT_XPUB_SDCARD_NOT_DETECTED:
         titleText = _("firmware_update_sd_failed_access_title");
         descText = _("firmware_update_sd_failed_access_desc");
+        break;
+    case ERR_SIGN_MESSAGE_INVALID_CHARACTERS:
+        titleText = _("sign_message_invalid_characters_title");
+        descText = _("sign_message_invalid_characters_desc");
         break;
     }
 

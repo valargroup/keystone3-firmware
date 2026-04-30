@@ -35,6 +35,8 @@ static SetChainData_t g_chainViewArray[] = {
     {REMAPVIEW_ETH_PERSONAL_MESSAGE, (SetChainDataFunc)GuiSetEthUrData},
     {REMAPVIEW_ETH_TYPEDDATA, (SetChainDataFunc)GuiSetEthUrData},
     {REMAPVIEW_TRX, (SetChainDataFunc)GuiSetTrxUrData},
+    {REMAPVIEW_TRX_PERSONAL_MESSAGE, (SetChainDataFunc)GuiSetTrxUrData},
+    {REMAPVIEW_TRX_SWAP, (SetChainDataFunc)GuiSetTrxUrData},
     {REMAPVIEW_COSMOS, (SetChainDataFunc)GuiSetCosmosUrData},
     {REMAPVIEW_SUI, (SetChainDataFunc)GuiSetSuiUrData},
     {REMAPVIEW_SUI_SIGN_MESSAGE_HASH, (SetChainDataFunc)GuiSetSuiUrData},
@@ -56,6 +58,7 @@ static SetChainData_t g_chainViewArray[] = {
     {REMAPVIEW_AVAX, (SetChainDataFunc)GuiSetAvaxUrData},
     {REMAPVIEW_IOTA, (SetChainDataFunc)GuiSetIotaUrData},
     {REMAPVIEW_IOTA_SIGN_MESSAGE_HASH, (SetChainDataFunc)GuiSetIotaUrData},
+    {REMAPVIEW_ZCASH, (SetChainDataFunc)GuiSetZcashUrData},
 #endif
 };
 

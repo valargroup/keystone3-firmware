@@ -20,6 +20,7 @@
 #include "gui_global_resources.h"
 
 #define GENERAL_ADDRESS_INDEX_MAX                       (999999999)
+#define AVAX_X_P_ADDRESS_INDEX_MAX                      (9)
 #define ETH_LEDGER_LIVE_ADDRESS_INDEX_MAX               (9)
 #define SOL_BIP44_ADDRESS_INDEX_MAX                     (49)
 #define SOL_BIP44_ROOT_ADDRESS_INDEX_MAX                (0)
@@ -645,17 +646,17 @@ static void GetChangePathLabelHint(char* hint)
 {
     switch (g_chainCard) {
     case HOME_WALLET_CARD_ETH:
-        snprintf_s(hint, BUFFER_SIZE_128, _("derivation_path_select_eth"));
+        snprintf_s(hint, BUFFER_SIZE_128, "%s", _("derivation_path_select_eth"));
         break;
     case HOME_WALLET_CARD_AVAX:
-        snprintf_s(hint, BUFFER_SIZE_128, _("derivation_path_select_avax"));
+        snprintf_s(hint, BUFFER_SIZE_128, "%s", _("derivation_path_select_avax"));
         break;
     case HOME_WALLET_CARD_SOL:
     case HOME_WALLET_CARD_HNT:
-        snprintf_s(hint, BUFFER_SIZE_128, _("derivation_path_select_sol"));
+        snprintf_s(hint, BUFFER_SIZE_128, "%s", _("derivation_path_select_sol"));
         break;
     case HOME_WALLET_CARD_ADA:
-        snprintf_s(hint, BUFFER_SIZE_128, _("derivation_path_select_ada"));
+        snprintf_s(hint, BUFFER_SIZE_128, "%s", _("derivation_path_select_ada"));
         break;
     default:
         break;
@@ -944,6 +945,19 @@ static int GetEthMaxAddressIndex(void)
     return GENERAL_ADDRESS_INDEX_MAX;
 }
 
+static int GetAvaxMaxAddressIndex(void)
+{
+    switch (GetPathIndex()) {
+    case 0:
+        return GENERAL_ADDRESS_INDEX_MAX;
+    case 1:
+        return AVAX_X_P_ADDRESS_INDEX_MAX;
+    default:
+        break;
+    }
+    return GENERAL_ADDRESS_INDEX_MAX;
+}
+
 static int GetSOLMaxAddressIndex(void)
 {
     switch (GetPathIndex()) {
@@ -967,7 +981,7 @@ static int GetMaxAddressIndex(void)
 {
     switch (g_chainCard) {
     case HOME_WALLET_CARD_AVAX:
-        return GENERAL_ADDRESS_INDEX_MAX;
+        return GetAvaxMaxAddressIndex();
     case HOME_WALLET_CARD_ETH:
         return GetEthMaxAddressIndex();
     case HOME_WALLET_CARD_SOL:
@@ -1138,7 +1152,7 @@ static void GetAvaxPathItemSubTittle(char* subTitle, int index, uint32_t maxLen)
         strcpy_s(subTitle, maxLen, "m/44'/60'/0'/0/#F5870A X#");
         break;
     case 1:
-        strcpy_s(subTitle, maxLen, "m/44'/9000'/0'/0/#F5870A X#");
+        strcpy_s(subTitle, maxLen, "m/44'/9000'/#F5870A X'#/0/0");
         break;
     default:
         break;
@@ -1406,10 +1420,10 @@ static void ModelGetAvaxAddress(uint32_t index, AddressDataItem_t *item)
         free_simple_response_c_char(result);
     } else {
         // x p chain address
-        xPub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_X_P);
+        xPub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_X_P_0 + index);
         ASSERT(xPub);
-        snprintf_s(hdPath, sizeof(hdPath), "%s/0/%u", "m/44'/9000'/0'", index);
-        strcpy_s(rootPath, sizeof(rootPath), "m/44'/9000'/0'");
+        snprintf_s(hdPath, sizeof(hdPath), "m/44'/9000'/%u'/0/0", index);
+        snprintf_s(rootPath, sizeof(rootPath), "m/44'/9000'/%u'", index);
         SimpleResponse_c_char *result = avalanche_get_x_p_address(hdPath, xPub, rootPath);
         if (result->error_code == 0) {
             item->index = index;

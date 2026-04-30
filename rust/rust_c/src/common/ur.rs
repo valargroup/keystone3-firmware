@@ -69,6 +69,8 @@ use ur_registry::sui::sui_sign_hash_request::SuiSignHashRequest;
 use ur_registry::sui::sui_sign_request::SuiSignRequest;
 #[cfg(feature = "ton")]
 use ur_registry::ton::ton_sign_request::TonSignRequest;
+#[cfg(feature = "tron")]
+use ur_registry::tron::tron_sign_request::TronSignRequest;
 #[cfg(feature = "zcash")]
 use ur_registry::zcash::zcash_pczt::ZcashPczt;
 
@@ -82,9 +84,8 @@ use crate::{
     impl_response,
 };
 
-#[no_mangle]
-pub static FRAGMENT_MAX_LENGTH_DEFAULT: usize = 200;
-pub static FRAGMENT_UNLIMITED_LENGTH: usize = 11000;
+pub const FRAGMENT_MAX_LENGTH_DEFAULT: usize = 200;
+pub const FRAGMENT_UNLIMITED_LENGTH: usize = 11000;
 
 #[repr(C)]
 pub struct UREncodeResult {
@@ -225,6 +226,10 @@ pub enum ViewType {
     EthTypedData,
     #[cfg(feature = "tron")]
     TronTx,
+    #[cfg(feature = "tron")]
+    TronPersonalMessage,
+    #[cfg(feature = "tron")]
+    TronSwapTx,
     #[cfg(feature = "solana")]
     SolanaTx,
     #[cfg(feature = "solana")]
@@ -315,6 +320,8 @@ pub enum QRCodeType {
     EthBatchSignRequest,
     #[cfg(feature = "solana")]
     SolSignRequest,
+    #[cfg(feature = "tron")]
+    TronSignRequest,
     #[cfg(feature = "near")]
     NearSignRequest,
     #[cfg(feature = "cardano")]
@@ -384,6 +391,8 @@ impl QRCodeType {
             InnerURType::EthBatchSignRequest(_) => Ok(QRCodeType::EthBatchSignRequest),
             #[cfg(feature = "solana")]
             InnerURType::SolSignRequest(_) => Ok(QRCodeType::SolSignRequest),
+            #[cfg(feature = "tron")]
+            InnerURType::TronSignRequest(_) => Ok(QRCodeType::TronSignRequest),
             #[cfg(feature = "near")]
             InnerURType::NearSignRequest(_) => Ok(QRCodeType::NearSignRequest),
             #[cfg(feature = "cosmos")]
@@ -524,6 +533,10 @@ unsafe fn free_ur(ur_type: &QRCodeType, data: PtrUR) {
         #[cfg(feature = "solana")]
         QRCodeType::SolSignRequest => {
             free_ptr_with_type!(data, SolSignRequest);
+        }
+        #[cfg(feature = "tron")]
+        QRCodeType::TronSignRequest => {
+            free_ptr_with_type!(data, TronSignRequest);
         }
         #[cfg(feature = "near")]
         QRCodeType::NearSignRequest => {
@@ -739,6 +752,8 @@ pub fn decode_ur(ur: String) -> URParseResult {
         QRCodeType::EthBatchSignRequest => _decode_ur::<EthBatchSignRequest>(ur, ur_type),
         #[cfg(feature = "solana")]
         QRCodeType::SolSignRequest => _decode_ur::<SolSignRequest>(ur, ur_type),
+        #[cfg(feature = "tron")]
+        QRCodeType::TronSignRequest => _decode_ur::<TronSignRequest>(ur, ur_type),
         #[cfg(feature = "near")]
         QRCodeType::NearSignRequest => _decode_ur::<NearSignRequest>(ur, ur_type),
         #[cfg(feature = "cardano")]
@@ -843,6 +858,8 @@ fn receive_ur(ur: String, decoder: &mut KeystoneURDecoder) -> URParseMultiResult
         QRCodeType::EthBatchSignRequest => _receive_ur::<EthBatchSignRequest>(ur, ur_type, decoder),
         #[cfg(feature = "solana")]
         QRCodeType::SolSignRequest => _receive_ur::<SolSignRequest>(ur, ur_type, decoder),
+        #[cfg(feature = "tron")]
+        QRCodeType::TronSignRequest => _receive_ur::<TronSignRequest>(ur, ur_type, decoder),
         #[cfg(feature = "near")]
         QRCodeType::NearSignRequest => _receive_ur::<NearSignRequest>(ur, ur_type, decoder),
         #[cfg(feature = "cardano")]

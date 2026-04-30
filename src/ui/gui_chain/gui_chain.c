@@ -1,5 +1,10 @@
 #include "define.h"
 #include "gui_chain.h"
+#include "keystore.h"
+#include "user_memory.h"
+#ifdef COMPILE_SIMULATOR
+#include "simulator_model.h"
+#endif
 
 typedef TransactionCheckResult *(*CheckUrResultHandler)(void);
 
@@ -31,6 +36,8 @@ bool CheckViewTypeIsAllow(uint8_t viewType)
     case REMAPVIEW_ADA_CATALYST:
     case REMAPVIEW_APT:
     case REMAPVIEW_AVAX:
+    case REMAPVIEW_TRX:
+    case REMAPVIEW_TRX_PERSONAL_MESSAGE:
         return true;
     default:
         return false;
@@ -58,7 +65,9 @@ static const ViewHandlerEntry g_viewHandlerMap[] = {
     {EthPersonalMessage, GuiGetEthSignQrCodeData, GuiGetEthSignUrDataUnlimited, GuiGetEthCheckResult, CHAIN_ETH, REMAPVIEW_ETH_PERSONAL_MESSAGE},
     {EthTypedData, GuiGetEthSignQrCodeData, GuiGetEthSignUrDataUnlimited, GuiGetEthCheckResult, CHAIN_ETH, REMAPVIEW_ETH_TYPEDDATA},
     {EthBatchTx, GuiGetEthBatchTxSignQrCodeData, NULL, NULL, CHAIN_ETH, REMAPVIEW_ETH_BATCH_TX},
-    {TronTx, GuiGetTrxSignQrCodeData, NULL, GuiGetTrxCheckResult, CHAIN_TRX, REMAPVIEW_TRX},
+    {TronTx, GuiGetTrxSignQrCodeData, GuiGetTrxSignUrDataUnlimited, GuiGetTrxCheckResult, CHAIN_TRX, REMAPVIEW_TRX},
+    {TronPersonalMessage, GuiGetTrxSignQrCodeData, GuiGetTrxSignUrDataUnlimited, GuiGetTrxCheckResult, CHAIN_TRX, REMAPVIEW_TRX_PERSONAL_MESSAGE},
+    {TronSwapTx, GuiGetTrxSignQrCodeData, GuiGetTrxSignUrDataUnlimited, GuiGetTrxCheckResult, CHAIN_TRX, REMAPVIEW_TRX_SWAP},
 
     // avax
     {AvaxTx, GuiGetAvaxSignQrCodeData, GuiGetAvaxSignUrDataUnlimited, GuiGetAvaxCheckResult, CHAIN_AVAX, REMAPVIEW_AVAX},
@@ -95,6 +104,7 @@ static const ViewHandlerEntry g_viewHandlerMap[] = {
 
     {TonTx, GuiGetTonSignQrCodeData, NULL, GuiGetTonCheckResult, CHAIN_TON, REMAPVIEW_TON},
     {TonSignProof, GuiGetTonProofSignQrCodeData, NULL, GuiGetTonCheckResult, CHAIN_TON, REMAPVIEW_TON_SIGNPROOF},
+    {ZcashTx, GuiGetZcashSignQrCodeData, NULL, GuiGetZcashCheckResult, CHAIN_ZCASH, REMAPVIEW_ZCASH},
 #endif
 
 #ifdef CYPHERPUNK_VERSION
@@ -133,7 +143,7 @@ GuiChainCoinType ViewTypeToChainTypeSwitch(uint8_t viewType)
 #ifdef WEB3_VERSION
 bool IsMessageType(uint8_t type)
 {
-    return type == EthPersonalMessage || type == EthTypedData || IsCosmosMsg(type) || type == SolanaMessage || IsAptosMsg(type) || type == BtcMsg || type == ArweaveMessage || type == CardanoSignData || type == CardanoSignCip8Data;
+    return type == EthPersonalMessage || type == EthTypedData || type == TronPersonalMessage || IsCosmosMsg(type) || type == SolanaMessage || IsAptosMsg(type) || type == BtcMsg || type == ArweaveMessage || type == CardanoSignData || type == CardanoSignCip8Data;
 }
 
 bool isCatalystVotingRegistration(uint8_t type)
@@ -183,4 +193,30 @@ static const ViewHandlerEntry *GetViewHandlerEntry(ViewType viewType)
         }
     }
     return NULL;
+}
+
+UREncodeResult *SignInternal(SignFn sign_func, void *data)
+{
+    bool enable = IsPreviousLockScreenEnable();
+    SetLockScreen(false);
+    UREncodeResult *encodeResult = NULL;
+    uint8_t seed[SEED_LEN] = {0};
+    int ret = 0;
+
+    do {
+        ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        if (ret != 0) {
+            break;
+        }
+
+        int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
+        encodeResult = sign_func(data, seed, len);
+        CHECK_CHAIN_BREAK(encodeResult);
+    } while (0);
+
+    memset_s(seed, sizeof(seed), 0, sizeof(seed));
+    ClearSecretCache();
+    SetLockScreen(enable);
+
+    return encodeResult;
 }

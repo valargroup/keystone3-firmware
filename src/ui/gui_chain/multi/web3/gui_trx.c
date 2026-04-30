@@ -12,19 +12,31 @@ static bool g_isMulti = false;
 static URParseResult *g_urResult = NULL;
 static URParseMultiResult *g_urMultiResult = NULL;
 static void *g_parseResult = NULL;
+static ViewType g_viewType = ViewTypeUnKnown;
 
 void GuiSetTrxUrData(URParseResult *urResult, URParseMultiResult *urMultiResult, bool multi)
 {
     g_urResult = urResult;
     g_urMultiResult = urMultiResult;
     g_isMulti = multi;
+    g_viewType = g_isMulti ? g_urMultiResult->t : g_urResult->t;
 }
 
 #define CHECK_FREE_PARSE_RESULT(result)                                                              \
     if (result != NULL)                                                                              \
-    {                                                                                                \
-        free_TransactionParseResult_DisplayTron((PtrT_TransactionParseResult_DisplayTron)result);    \
-        result = NULL;                                                                               \
+    {                                                                                                                             \
+        switch (g_viewType)                                                                                                       \
+        {                                                                                                                         \
+        case TronTx:                                                                                                               \
+            free_TransactionParseResult_DisplayTron((PtrT_TransactionParseResult_DisplayTron)result);                               \
+            break;                                                                                                                \
+        case TronPersonalMessage:                                                                                                  \
+            free_TransactionParseResult_DisplayTRONPersonalMessage((PtrT_TransactionParseResult_DisplayTRONPersonalMessage)result); \
+            break;                                                                                                                \
+        default:                                                                                                                  \
+            break;                                                                                                                \
+        }                                                                                                                         \
+        result = NULL;                                                                                                            \
     }
 
 void *GuiGetTrxData(void)
@@ -36,23 +48,33 @@ void *GuiGetTrxData(void)
     char *trxXpub = GetCurrentAccountPublicKey(XPUB_TYPE_TRX);
     GetMasterFingerPrint(mfp);
     do {
-        PtrT_TransactionParseResult_DisplayTron parseResult = tron_parse_keystone(data, urType, mfp, sizeof(mfp), trxXpub);
+        PtrT_TransactionParseResult_DisplayTron parseResult = NULL;
+        if (urType == TronSignRequest) {
+            parseResult = tron_parse_sign_request(data);
+        } else {
+            parseResult = tron_parse_keystone(data, urType, mfp, sizeof(mfp), trxXpub);
+        }
+        
         CHECK_CHAIN_BREAK(parseResult);
         g_parseResult = (void *)parseResult;
     } while (0);
+    
     return g_parseResult;
 }
 
 PtrT_TransactionCheckResult GuiGetTrxCheckResult(void)
 {
-    printf("GuiGetTrxCheckResult\r\n");
     uint8_t mfp[4];
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
-    QRCodeType urType = g_isMulti ? g_urMultiResult->ur_type : g_urResult->ur_type;
     char *trxXpub = GetCurrentAccountPublicKey(XPUB_TYPE_TRX);
+    QRCodeType urType = g_isMulti ? g_urMultiResult->ur_type : g_urResult->ur_type;
     GetMasterFingerPrint(mfp);
+    if (urType == TronSignRequest) {
+        return tron_check_sign_request(data, trxXpub, mfp, sizeof(mfp));
+    }
     return tron_check_keystone(data, urType, mfp, sizeof(mfp), trxXpub);
 }
+
 void FreeTrxMemory(void)
 {
     CHECK_FREE_UR_RESULT(g_urResult, false);
@@ -108,24 +130,311 @@ void GetTrxToken(void *indata, void *param, uint32_t maxLen)
     strcpy_s((char *)indata,  maxLen, trx->detail->token);
 }
 
-UREncodeResult *GuiGetTrxSignQrCodeData(void)
+static const char* map_thor_asset_name(const char* raw) {
+    if (strcmp(raw, "b") == 0)  return "BTC";
+    if (strcmp(raw, "e") == 0)  return "ETH";
+    if (strcmp(raw, "r") == 0 || strcmp(raw, "rune") == 0) return "RUNE";
+    if (strcmp(raw, "a") == 0)  return "AVAX";
+    if (strcmp(raw, "s") == 0)  return "BSC";
+    if (strcmp(raw, "f") == 0)  return "BASE.ETH";
+    if (strcmp(raw, "g") == 0)  return "ATOM";
+    if (strcmp(raw, "l") == 0)  return "LTC";
+    if (strcmp(raw, "c") == 0)  return "BCH";
+    if (strcmp(raw, "d") == 0)  return "DOGE";
+    if (strcmp(raw, "p") == 0)  return "POL";
+    if (strcmp(raw, "x") == 0)  return "XRP";
+    if (strcmp(raw, "o") == 0)  return "SOL";
+    if (strcmp(raw, "z") == 0)  return "ZEC";
+    if (strcmp(raw, "u") == 0)  return "SUI";
+    if (strcmp(raw, "tr") == 0) return "TRX";
+    if (strcmp(raw, "ad") == 0) return "ADA";
+
+    return raw;
+}
+
+void GetTrxSwapDstAsset(void *indata, void *param, uint32_t maxLen)
+{
+    DisplayTron *trx = (DisplayTron *)param;
+    const char *memo = trx->detail->memo;
+    char *out = (char *)indata;
+
+    if (memo == NULL || strlen(memo) == 0) {
+        strcpy_s(out, maxLen, "Unknown");
+        return;
+    }
+
+    const char *first_colon = strchr(memo, ':');
+    if (!first_colon) {
+        strcpy_s(out, maxLen, "");
+        return;
+    }
+
+    const char *start = first_colon + 1;
+    const char *second_colon = strchr(start, ':');
+
+    char temp[64] = {0};
+    size_t len = 0;
+
+    if (second_colon) {
+        len = second_colon - start;
+    } else {
+        len = strlen(start);
+    }
+
+    if (len >= sizeof(temp)) len = sizeof(temp) - 1;
+    strncpy_s(temp, sizeof(temp), start, len);
+    temp[len] = '\0';
+
+    char *dash = strchr(temp, '-');
+    if (dash) {
+        *dash = '\0';
+    }
+
+    ConvertToLowerCase(temp);
+    const char *final_name = map_thor_asset_name(temp);
+
+    if (final_name != temp) {
+        strcpy_s(out, maxLen, final_name);
+    } else {
+        ConvertToUpperCase(temp);
+        char *separator = strpbrk(temp, "./~-"); 
+        if (separator) {
+            size_t chainLen = separator - temp;
+            const char *assetPart = separator + 1;
+
+            if (strncmp(temp, assetPart, chainLen) == 0 && assetPart[chainLen] == '\0') {
+                *separator = '\0'; 
+            }
+        }
+        strcpy_s(out, maxLen, temp);
+    }
+}
+
+void GetTrxSwapDstAddress(void *indata, void *param, uint32_t maxLen)
+{
+    //do a mapping
+    DisplayTron *trx = (DisplayTron *)param;
+    const char *memo = trx->detail->memo;
+    char *out = (char *)indata;
+
+    const char *first_colon = strchr(memo, ':');
+    if (first_colon) {
+        const char *second_colon = strchr(first_colon + 1, ':');
+        if (second_colon) {
+            const char *start = second_colon + 1;
+            const char *third_colon = strchr(start, ':');
+            
+            if (third_colon) {
+                size_t len = third_colon - start;
+                if (len >= maxLen) len = maxLen - 1;
+                strncpy_s(out, maxLen, start, len);
+                return;
+            } else {
+                strcpy_s(out, maxLen, start);
+                return;
+            }
+        }
+    }
+    strcpy_s(out, maxLen, "");
+}
+
+void GetTrxMemo(void *indata, void *param, uint32_t maxLen)
+{
+    DisplayTron *trx = (DisplayTron *)param;
+    strcpy_s((char *)indata, maxLen, trx->detail->memo);
+}
+
+void GetTrxNetwork(void *indata, void *param, uint32_t maxLen)
+{
+    DisplayTron *trx = (DisplayTron *)param;
+    strcpy_s((char *)indata, maxLen, trx->detail->network);
+}
+
+void GetTrxExpiration(void *indata, void *param, uint32_t maxLen)
+{
+    DisplayTron *trx = (DisplayTron *)param;
+    strcpy_s((char *)indata, maxLen, trx->detail->expiration);
+}
+
+void GetTrxValueRaw(void *indata, void *param, uint32_t maxLen)
+{
+    DisplayTron *trx = (DisplayTron *)param;
+    strcpy_s((char *)indata, maxLen, trx->detail->raw_value);
+}
+
+void TrxCheckVault(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        lv_obj_t *v_btn = lv_event_get_current_target(e); 
+        
+        lv_obj_t *address_card = lv_obj_get_parent(v_btn);
+        if (!address_card) return;
+
+        lv_obj_t *t_val_obj = lv_obj_get_child(address_card, 3);
+        
+        if (t_val_obj) {
+            const char *address = lv_label_get_text(t_val_obj);
+            if (address && strlen(address) > 10) {
+                char url[256] = {0};
+                snprintf(url, sizeof(url), "https://tronscan.org/#/address/%s", address);
+                GuiQRCodeHintBoxOpen(url, _("SwapKit Tron Vault"), url);
+            }
+        }
+    }
+}
+
+
+static UREncodeResult *GuiGetTrxSignUrDataDynamic(bool unLimit)
 {
     bool enable = IsPreviousLockScreenEnable();
     SetLockScreen(false);
-    UREncodeResult *encodeResult;
+    UREncodeResult *encodeResult = NULL;
+    
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
     QRCodeType urType = g_isMulti ? g_urMultiResult->ur_type : g_urResult->ur_type;
+    uint8_t mfp[4];
+    GetMasterFingerPrint(mfp);
+    uint8_t seed[SEED_LEN];
+    uint32_t fragmentLen = unLimit ? FRAGMENT_UNLIMITED_LENGTH : FRAGMENT_MAX_LENGTH_DEFAULT;
+    
     do {
-        uint8_t mfp[4];
-        GetMasterFingerPrint(mfp);
-        uint8_t seed[64];
-        GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
-        char *xPub = GetCurrentAccountPublicKey(XPUB_TYPE_TRX);
-        int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        encodeResult = tron_sign_keystone(data, urType, mfp, sizeof(mfp), xPub, SOFTWARE_VERSION, seed, len);
-        ClearSecretCache();
+        int ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        if (ret != 0) {
+            break;
+        }
+        if (urType == TronSignRequest) {
+            encodeResult = tron_sign_request(data, seed, GetCurrentAccountSeedLen(), fragmentLen);
+        } else {
+            encodeResult = tron_sign_keystone(data, urType, mfp, sizeof(mfp), GetCurrentAccountPublicKey(XPUB_TYPE_TRX),
+                                          SOFTWARE_VERSION, seed, GetCurrentAccountSeedLen());
+        }
+        
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
+
+    memset_s(seed, sizeof(seed), 0, sizeof(seed));
+    ClearSecretCache();
     SetLockScreen(enable);
+    
     return encodeResult;
+}
+
+UREncodeResult *GuiGetTrxSignQrCodeData(void)
+{
+    return GuiGetTrxSignUrDataDynamic(false);
+}
+
+UREncodeResult *GuiGetTrxSignUrDataUnlimited(void)
+{
+    return GuiGetTrxSignUrDataDynamic(true);
+}
+
+void *GuiGetTrxPersonalMessage(void)
+{   
+    CHECK_FREE_PARSE_RESULT(g_parseResult);
+
+    uint8_t mfp[4];
+    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    char *trxXpub = GetCurrentAccountPublicKey(XPUB_TYPE_TRX);
+    GetMasterFingerPrint(mfp);
+
+    TransactionCheckResult *result = NULL;
+    do {
+        result = tron_check_sign_request(data, trxXpub, mfp, sizeof(mfp));
+        CHECK_CHAIN_BREAK(result);
+
+        PtrT_TransactionParseResult_DisplayTRONPersonalMessage parseResult = tron_parse_personal_message(data, trxXpub);
+        
+        CHECK_CHAIN_BREAK(parseResult);
+        
+        g_parseResult = (void *)parseResult; 
+    } while (0);
+
+    free_TransactionCheckResult(result);
+    return g_parseResult;
+}
+
+void GetTrxPersonalMessageType(void *indata, void *param, uint32_t maxLen)
+{   
+    if (param == NULL) {
+        strcpy_s((char *)indata, maxLen, "raw_message");
+        return;
+    }
+    DisplayTRONPersonalMessage *message = (DisplayTRONPersonalMessage *)param;
+    if (message->utf8_message != NULL && strlen(message->utf8_message) > 0) {
+        strcpy_s((char *)indata, maxLen, "utf8_message");
+    } else {
+        strcpy_s((char *)indata, maxLen, "raw_message");
+    }
+}
+
+static void CopyTrxMessageWithEllipsis(char *dest, uint32_t maxLen, const char *src)
+{
+    if (dest == NULL || maxLen == 0) {
+        return;
+    }
+    if (src == NULL) {
+        dest[0] = '\0';
+        return;
+    }
+    size_t src_len = strlen(src);
+    if (src_len < maxLen) {
+        snprintf(dest, maxLen, "%s", src);
+        return;
+    }
+    if (maxLen <= 4) {
+        snprintf(dest, maxLen, "%.*s", (int)(maxLen - 1), "...");
+        return;
+    }
+    snprintf(dest, maxLen, "%.*s...", (int)(maxLen - 4), src);
+}
+
+void GetTrxMessageFrom(void *indata, void *param, uint32_t maxLen)
+{
+    DisplayTRONPersonalMessage *message = (DisplayTRONPersonalMessage *)param;
+    CopyTrxMessageWithEllipsis((char *)indata, maxLen, message ? message->from : NULL);
+}
+
+void GetTrxMessageUtf8(void *indata, void *param, uint32_t maxLen)
+{
+    DisplayTRONPersonalMessage *message = (DisplayTRONPersonalMessage *)param;
+    CopyTrxMessageWithEllipsis((char *)indata, maxLen, message ? message->utf8_message : NULL);
+}
+
+void GetTrxMessageRaw(void *indata, void *param, uint32_t maxLen)
+{
+    const char *warning = "\n#F5C131 The data is not parseable. Please#\n#F5C131 refer to the software wallet interface#\n#F5C131 for viewing.#";
+    size_t warningLen = strlen(warning);
+    DisplayTRONPersonalMessage *message = (DisplayTRONPersonalMessage *)param;
+    size_t rawLen = message && message->raw_message ? strlen(message->raw_message) : 0;
+    if (maxLen == 0) {
+        return;
+    }
+    if (rawLen + warningLen >= (size_t)maxLen) {
+        if (maxLen <= 4) {
+            snprintf((char *)indata, maxLen, "%s", "");
+            return;
+        }
+        snprintf((char *)indata, maxLen, "%.*s...", (int)(maxLen - 4), message && message->raw_message ? message->raw_message : "");
+    } else {
+        snprintf((char *)indata, maxLen, "%s%s", message && message->raw_message ? message->raw_message : "", warning);
+    }
+}
+
+bool GetTrxMessageFromExist(void *indata, void *param)
+{   
+    if (param == NULL) return false;
+    DisplayTRONPersonalMessage *trx = (DisplayTRONPersonalMessage *)param;
+    return trx->from != NULL;
+}
+
+bool GetTrxMessageFromNotExist(void *indata, void *param)
+{
+    return !GetTrxMessageFromExist(indata, param);
+}
+
+void GetTrxMessagePos(uint16_t *x, uint16_t *y, void *param)
+{
+    *x = GetTrxMessageFromExist(NULL, param) ? 0 : 24;
+    *y = 11;
 }

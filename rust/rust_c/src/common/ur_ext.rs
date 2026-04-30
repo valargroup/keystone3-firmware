@@ -63,6 +63,8 @@ use ur_registry::sui::sui_sign_hash_request::SuiSignHashRequest;
 use ur_registry::sui::sui_sign_request::SuiSignRequest;
 #[cfg(feature = "ton")]
 use ur_registry::ton::ton_sign_request::{DataType, TonSignRequest};
+#[cfg(feature = "tron")]
+use ur_registry::tron::tron_sign_request::TronSignRequest;
 #[cfg(feature = "zcash")]
 use ur_registry::zcash::zcash_pczt::ZcashPczt;
 
@@ -228,6 +230,18 @@ impl InferViewType for AvaxSignRequest {
     }
 }
 
+#[cfg(feature = "tron")]
+impl InferViewType for TronSignRequest {
+    fn infer(&self) -> Result<ViewType, URError> {
+        match self.get_data_type() {
+            ur_registry::tron::tron_sign_request::DataType::Transaction => Ok(ViewType::TronTx),
+            ur_registry::tron::tron_sign_request::DataType::PersonalMessage => {
+                Ok(ViewType::TronPersonalMessage)
+            }
+        }
+    }
+}
+
 fn get_view_type_from_keystone(bytes: Vec<u8>) -> Result<ViewType, URError> {
     let unzip_data = unzip(bytes)
         .map_err(|_| URError::NotSupportURTypeError("bytes can not unzip".to_string()))?;
@@ -254,7 +268,20 @@ fn get_view_type_from_keystone(bytes: Vec<u8>) -> Result<ViewType, URError> {
                 #[cfg(feature = "ethereum")]
                 "ETH" => ViewType::EthTx,
                 #[cfg(feature = "tron")]
-                "TRON" => ViewType::TronTx,
+                "TRON" => {
+                    if let Some(protoc::sign_transaction::Transaction::TronTx(tx)) =
+                        sign_tx_content.transaction
+                    {
+                        if tx.memo.starts_with("=:") || tx.memo.to_uppercase().starts_with("SWAP:")
+                        {
+                            ViewType::TronSwapTx
+                        } else {
+                            ViewType::TronTx
+                        }
+                    } else {
+                        ViewType::TronTx
+                    }
+                }
                 #[cfg(feature = "xrp")]
                 "XRP" => ViewType::XRPTx,
                 _ => {

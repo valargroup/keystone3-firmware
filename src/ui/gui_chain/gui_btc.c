@@ -10,12 +10,13 @@
 #include "screen_manager.h"
 #include "account_manager.h"
 #include "gui_chain_components.h"
+#include "gui_qr_hintbox.h"
 #include "gui_home_widgets.h"
 #include "gui_transaction_detail_widgets.h"
+#include "err_code.h"
 #ifdef BTC_ONLY
 #include "gui_multisig_transaction_signature_widgets.h"
 #endif
-
 
 #define CHECK_FREE_PARSE_RESULT(result)                       \
     if (result != NULL)                                       \
@@ -68,7 +69,14 @@ static uint32_t g_psbtBytesLen = 0;
 static TransactionParseResult_DisplayTx *g_parseResult = NULL;
 static TransactionParseResult_DisplayBtcMsg *g_parseMsgResult = NULL;
 static bool IsMultiSigTx(DisplayTx *data);
+static bool NeedShowCheckInputValueHint(DisplayTx *data);
+static bool NeedShowSighashWarning(DisplayTx *data);
+static const char *GetSighashWarningText(DisplayTx *data);
+static const char *GetSighashDisplayText(const char *sighashType);
+static void OpenInputRefQrCode(lv_event_t *e);
+static void FormatFeeText(char *out, size_t outLen, const char *feeText, bool isLowerBound, bool isUnknown);
 static UREncodeResult *GetBtcSignDataDynamic(bool unLimit);
+static void PreparePublicKeys(PtrT_CSliceFFI_ExtendedPublicKey public_keys, ExtendedPublicKey *keys);
 
 void GuiSetPsbtUrData(URParseResult *urResult, URParseMultiResult *urMultiResult, bool multi)
 {
@@ -123,17 +131,24 @@ static UREncodeResult *GuiGetSignPsbtBytesCodeData(void)
         uint8_t mfp[4] = {0};
         GetMasterFingerPrint(mfp);
         uint8_t seed[64];
-        int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        int len = GetCurrentAccountSeedLen();
+        int ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        CHECK_ERRCODE_RETURN_NULL(ret);
         MultisigSignResult *result = btc_sign_multisig_psbt_bytes(g_psbtBytes, g_psbtBytesLen, seed, len, mfp, sizeof(mfp));
         encodeResult = result->ur_result;
         GuiMultisigTransactionSignatureSetSignStatus(result->sign_status, result->is_completed, result->psbt_hex, result->psbt_len);
+        memset_s(seed, sizeof(seed), 0, sizeof(seed));
         free_MultisigSignResult(result);
     }
     CHECK_CHAIN_PRINT(encodeResult);
     ClearSecretCache();
     SetLockScreen(enable);
     return encodeResult;
+}
+#else
+static UREncodeResult *GuiGetSignPsbtBytesCodeData(void)
+{
+    return NULL;
 }
 #endif
 
@@ -147,134 +162,126 @@ UREncodeResult *GuiGetBtcSignUrDataUnlimited(void)
     return GetBtcSignDataDynamic(true);
 }
 
+static UREncodeResult *BtcSignPsbt(void *data, uint8_t *seed, int len, uint8_t *mfp, uint32_t mfpLen, bool unLimit)
+{
+    UREncodeResult *encodeResult = NULL;
+    if (GuiGetCurrentTransactionNeedSign()) {
+        if (unLimit) {
+            encodeResult = btc_sign_psbt_unlimited(data, seed, len, mfp, mfpLen);
+        } else {
+            encodeResult = btc_sign_psbt(data, seed, len, mfp, mfpLen);
+        }
+    }
+    return encodeResult;
+}
+
+static UREncodeResult *BtcSignPsbtMultisig(void *data, uint8_t *seed, int len, uint8_t *mfp, uint32_t mfpLen)
+{
+#ifdef BTC_ONLY
+    UREncodeResult *encodeResult = NULL;
+    MultisigSignResult *result = !GuiGetCurrentTransactionNeedSign()
+                                 ? btc_export_multisig_psbt(data)
+                                 : btc_sign_multisig_psbt(data, seed, len, mfp, mfpLen);
+    if (result) {
+        encodeResult = result->ur_result;
+        GuiMultisigTransactionSignatureSetSignStatus(result->sign_status, result->is_completed, result->psbt_hex, result->psbt_len);
+        free_MultisigSignResult(result);
+    }
+    return encodeResult;
+#else
+    return NULL;
+#endif
+}
+
+static bool SupportSignPsbtFromSDCard(void)
+{
+#ifdef BTC_ONLY
+    return true;
+#else
+    return false;
+#endif
+}
+
+static bool SupportSignLegacyKeystoneTransactions(QRCodeType urType)
+{
+#ifdef WEB3_VERSION
+    return (urType == Bytes || urType == KeystoneSignRequest);
+#else
+    return false;
+#endif
+}
+
+static bool SupportSignPsbtExtend(QRCodeType urType)
+{
+#ifdef WEB3_VERSION
+    return (urType == CryptoPSBTExtend);
+#else
+    return false;
+#endif
+}
+
 // The results here are released in the close qr timer species
 static UREncodeResult *GetBtcSignDataDynamic(bool unLimit)
 {
-#ifdef BTC_ONLY
-    if (g_psbtBytes != NULL) {
+    if (SupportSignPsbtFromSDCard() && g_psbtBytes != NULL) {
         return GuiGetSignPsbtBytesCodeData();
     }
-#endif
     bool enable = IsPreviousLockScreenEnable();
     SetLockScreen(false);
     enum QRCodeType urType = URTypeUnKnown;
-#ifndef BTC_ONLY
     enum ViewType viewType = ViewTypeUnKnown;
-#endif
     void *data = NULL;
     if (g_isMulti) {
         urType = g_urMultiResult->ur_type;
-#ifndef BTC_ONLY
         viewType = g_urMultiResult->t;
-#endif
         data = g_urMultiResult->data;
     } else {
         urType = g_urResult->ur_type;
-#ifndef BTC_ONLY
         viewType = g_urResult->t;
-#endif
         data = g_urResult->data;
     }
     UREncodeResult *encodeResult = NULL;
     uint8_t mfp[4] = {0};
     GetMasterFingerPrint(mfp);
     uint8_t seed[64];
-    int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-    GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+    int len = GetCurrentAccountSeedLen();
+    int ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+    CHECK_ERRCODE_RETURN_NULL(ret);
 
     if (urType == CryptoPSBT) {
-        if (!GuiGetCurrentTransactionNeedSign()) {
-#ifdef BTC_ONLY
-            if (GuiGetCurrentTransactionType() == TRANSACTION_TYPE_BTC_MULTISIG) {
-                MultisigSignResult *result = btc_export_multisig_psbt(data);
-                encodeResult = result->ur_result;
-                GuiMultisigTransactionSignatureSetSignStatus(result->sign_status, result->is_completed, result->psbt_hex, result->psbt_len);
-                free_MultisigSignResult(result);
-            }
-#endif
+        if (GuiGetCurrentTransactionType() == TRANSACTION_TYPE_BTC_MULTISIG) {
+            encodeResult = BtcSignPsbtMultisig(data, seed, len, mfp, sizeof(mfp));
         } else {
-            uint8_t mfp[4] = {0};
-            GetMasterFingerPrint(mfp);
-#ifdef BTC_ONLY
-            if (GuiGetCurrentTransactionType() == TRANSACTION_TYPE_BTC_MULTISIG) {
-                MultisigSignResult *result = btc_sign_multisig_psbt(data, seed, len, mfp, sizeof(mfp));
-                encodeResult = result->ur_result;
-                GuiMultisigTransactionSignatureSetSignStatus(result->sign_status, result->is_completed, result->psbt_hex, result->psbt_len);
-                free_MultisigSignResult(result);
-            } else {
-                encodeResult = btc_sign_psbt(data, seed, len, mfp, sizeof(mfp));
-            }
-#else
-            if (unLimit) {
-                encodeResult = btc_sign_psbt_unlimited(data, seed, len, mfp, sizeof(mfp));
-            } else {
-                encodeResult = btc_sign_psbt(data, seed, len, mfp, sizeof(mfp));
-            }
-#endif
+            encodeResult = BtcSignPsbt(data, seed, len, mfp, sizeof(mfp), unLimit);
         }
-    }
-#ifndef BTC_ONLY
-    else if (CHECK_UR_TYPE()) {
+    } else if (SupportSignLegacyKeystoneTransactions(urType)) {
         char *hdPath = NULL;
         char *xPub = NULL;
+#ifdef WEB3_VERSION
         if (0 != GuiGetUtxoPubKeyAndHdPath(viewType, &xPub, &hdPath)) {
             return NULL;
         }
         encodeResult = utxo_sign_keystone(data, urType, mfp, sizeof(mfp), xPub, SOFTWARE_VERSION, seed, len);
-    }
 #endif
-    else if (urType == BtcSignRequest) {
+    } else if (urType == BtcSignRequest) {
         encodeResult = btc_sign_msg(data, seed, len, mfp, sizeof(mfp));
     } else if (urType == SeedSignerMessage) {
         encodeResult = sign_seed_signer_message(data, seed, len);
-#ifdef WEB3_VERSION
-    } else if (urType == CryptoPSBTExtend) {
+    } else if (SupportSignPsbtExtend(urType)) {
         encodeResult = utxo_sign_psbt_extend(data, seed, len, mfp, sizeof(mfp), unLimit);
-#endif
     }
     CHECK_CHAIN_PRINT(encodeResult);
+    memset_s(seed, sizeof(seed), 0, sizeof(seed));
     ClearSecretCache();
     SetLockScreen(enable);
     return encodeResult;
 }
-
 #ifdef BTC_ONLY
 static void *GuiGetParsedPsbtStrData(void)
 {
     PtrT_CSliceFFI_ExtendedPublicKey public_keys = SRAM_MALLOC(sizeof(CSliceFFI_ExtendedPublicKey));
     ExtendedPublicKey keys[14];
-    public_keys->data = keys;
-    public_keys->size = 14;
-    keys[0].path = "m/84'/0'/0'";
-    keys[0].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT);
-    keys[1].path = "m/49'/0'/0'";
-    keys[1].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC);
-    keys[2].path = "m/44'/0'/0'";
-    keys[2].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY);
-    keys[3].path = "m/86'/0'/0'";
-    keys[3].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT);
-    keys[4].path = "m/84'/1'/0'";
-    keys[4].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT_TEST);
-    keys[5].path = "m/49'/1'/0'";
-    keys[5].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TEST);
-    keys[6].path = "m/44'/1'/0'";
-    keys[6].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY_TEST);
-    keys[7].path = "m/86'/1'/0'";
-    keys[7].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT_TEST);
-
-    keys[8].path = "m/45'";
-    keys[8].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2SH);
-    keys[9].path = "m/48'/0'/0'/1'";
-    keys[9].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_P2SH);
-    keys[10].path = "m/48'/0'/0'/2'";
-    keys[10].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH);
-    keys[11].path = "m/45'";
-    keys[11].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2SH_TEST);
-    keys[12].path = "m/48'/1'/0'/1'";
-    keys[12].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_P2SH_TEST);
-    keys[13].path = "m/48'/1'/0'/2'";
-    keys[13].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_TEST);
-
+    PreparePublicKeys(public_keys, keys);
     uint8_t mfp[4] = {0};
     GetMasterFingerPrint(mfp);
 
@@ -297,38 +304,17 @@ static void *GuiGetParsedPsbtStrData(void)
     SRAM_FREE(wallet_config);
     return g_parseResult;
 }
+#else
+static void *GuiGetParsedPsbtStrData(void)
+{
+    return NULL;
+}
+
 #endif
 
-void *GuiGetParsedQrData(void)
+static void PreparePublicKeys(PtrT_CSliceFFI_ExtendedPublicKey public_keys, ExtendedPublicKey *keys)
 {
 #ifdef BTC_ONLY
-    if (g_psbtBytes != NULL) {
-        return GuiGetParsedPsbtStrData();
-    }
-#endif
-    enum QRCodeType urType = URTypeUnKnown;
-#ifndef BTC_ONLY
-    enum ViewType viewType = ViewTypeUnKnown;
-#endif
-    void *crypto = NULL;
-    if (g_isMulti) {
-        crypto = g_urMultiResult->data;
-        urType = g_urMultiResult->ur_type;
-#ifndef BTC_ONLY
-        viewType = g_urMultiResult->t;
-#endif
-    } else {
-        crypto = g_urResult->data;
-        urType = g_urResult->ur_type;
-#ifndef BTC_ONLY
-        viewType = g_urResult->t;
-#endif
-    }
-    uint8_t mfp[4] = {0};
-    GetMasterFingerPrint(mfp);
-    PtrT_CSliceFFI_ExtendedPublicKey public_keys = SRAM_MALLOC(sizeof(CSliceFFI_ExtendedPublicKey));
-#ifdef BTC_ONLY
-    ExtendedPublicKey keys[14];
     public_keys->data = keys;
     public_keys->size = 14;
     keys[0].path = "m/84'/0'/0'";
@@ -361,7 +347,6 @@ void *GuiGetParsedQrData(void)
     keys[13].path = "m/48'/1'/0'/2'";
     keys[13].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_TEST);
 #else
-    ExtendedPublicKey keys[9];
     public_keys->data = keys;
     public_keys->size = 4;
     keys[0].path = "m/84'/0'/0'";
@@ -373,7 +358,7 @@ void *GuiGetParsedQrData(void)
     keys[3].path = "m/86'/0'/0'";
     keys[3].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT);
 #ifdef WEB3_VERSION
-    public_keys->size = NUMBER_OF_ARRAYS(keys);
+    public_keys->size = 9;
     keys[4].path = "m/44'/60'/0'";
     keys[4].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_BIP44_STANDARD);
     keys[5].path = "m/44'/3'/0'";
@@ -381,106 +366,106 @@ void *GuiGetParsedQrData(void)
     // ltc、dash、bch
     keys[6].path = "m/49'/2'/0'";
     keys[6].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_LTC);
-    keys[7].path = "m/44'/5'/0'";
-    keys[7].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_DASH);
-    keys[8].path = "m/44'/145'/0'";
-    keys[8].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BCH);
+    keys[7].path = "m/84'/2'/0'";
+    keys[7].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_LTC_NATIVE_SEGWIT);
+    keys[8].path = "m/44'/5'/0'";
+    keys[8].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_DASH);
+    keys[9].path = "m/44'/145'/0'";
+    keys[9].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BCH);
 #endif
 #endif
-    do {
-        if (urType == CryptoPSBT) {
+}
+
+static void *ParsePsbt(void *crypto, uint8_t *mfp, uint32_t mfpLen, PtrT_CSliceFFI_ExtendedPublicKey public_keys)
+{
+    g_parseResult = NULL;
 #ifdef BTC_ONLY
-            char *wallet_config = NULL;
-            if (GetCurrentWalletIndex() != SINGLE_WALLET) {
-                MultiSigWalletItem_t *item = GetDefaultMultisigWallet();
-                if (item != NULL) {
-                    wallet_config = SRAM_MALLOC(MAX_WALLET_CONFIG_LEN);
-                    memset_s(wallet_config, MAX_WALLET_CONFIG_LEN, '\0', MAX_WALLET_CONFIG_LEN);
-                    strncpy_s(wallet_config, MAX_WALLET_CONFIG_LEN, item->walletConfig, strnlen_s(item->walletConfig, MAX_WALLET_CONFIG_LEN));
-                }
-            }
-            g_parseResult = btc_parse_psbt(crypto, mfp, sizeof(mfp), public_keys, wallet_config);
-            GuiSetCurrentTransactionNeedSign(g_parseResult->data->overview->need_sign);
-            SRAM_FREE(wallet_config);
+    char *wallet_config = NULL;
+    if (GetCurrentWalletIndex() != SINGLE_WALLET) {
+        MultiSigWalletItem_t *item = GetDefaultMultisigWallet();
+        if (item != NULL) {
+            wallet_config = SRAM_MALLOC(MAX_WALLET_CONFIG_LEN);
+            memset_s(wallet_config, MAX_WALLET_CONFIG_LEN, '\0', MAX_WALLET_CONFIG_LEN);
+            strncpy_s(wallet_config, MAX_WALLET_CONFIG_LEN, item->walletConfig, strnlen_s(item->walletConfig, MAX_WALLET_CONFIG_LEN));
+        }
+    }
+    g_parseResult = btc_parse_psbt(crypto, mfp, mfpLen, public_keys, wallet_config);
+    GuiSetCurrentTransactionNeedSign(g_parseResult->data->overview->need_sign);
+    SRAM_FREE(wallet_config);
 #else
-            g_parseResult = btc_parse_psbt(crypto, mfp, sizeof(mfp), public_keys, NULL);
+    g_parseResult = btc_parse_psbt(crypto, mfp, mfpLen, public_keys, NULL);
 #endif
-            CHECK_CHAIN_RETURN(g_parseResult);
-            if (IsMultiSigTx(g_parseResult->data)) {
-                GuiSetCurrentTransactionType(TRANSACTION_TYPE_BTC_MULTISIG);
-            }
-            SRAM_FREE(public_keys);
-            return g_parseResult;
-        }
-#ifndef BTC_ONLY
-        else if (CHECK_UR_TYPE()) {
-            char *hdPath = NULL;
-            char *xPub = NULL;
-            if (0 != GuiGetUtxoPubKeyAndHdPath(viewType, &xPub, &hdPath)) {
-                return NULL;
-            }
-            g_parseResult = utxo_parse_keystone(crypto, urType, mfp, sizeof(mfp), xPub);
-            CHECK_CHAIN_RETURN(g_parseResult);
-            return g_parseResult;
-        }
-#endif
-        else if (urType == BtcSignRequest) {
-            g_parseMsgResult = btc_parse_msg(crypto, public_keys, mfp, sizeof(mfp));
-            CHECK_CHAIN_RETURN(g_parseMsgResult);
-            return g_parseMsgResult;
-        } else if (urType == SeedSignerMessage) {
-            g_parseMsgResult = parse_seed_signer_message(crypto, public_keys);
-            CHECK_CHAIN_RETURN(g_parseMsgResult);
-            return g_parseMsgResult;
-#ifdef WEB3_VERSION
-        } else if (urType == CryptoPSBTExtend) {
-            g_parseResult = utxo_parse_extend_psbt(crypto, public_keys, mfp, sizeof(mfp));
-            CHECK_CHAIN_RETURN(g_parseResult);
-            return g_parseResult;
-#endif
-        }
-    } while (0);
     return g_parseResult;
 }
 
+void *GuiGetParsedQrData(void)
+{
+    if (SupportSignPsbtFromSDCard() && g_psbtBytes != NULL) {
+        return GuiGetParsedPsbtStrData();
+    }
+    enum QRCodeType urType = URTypeUnKnown;
+    enum ViewType viewType = ViewTypeUnKnown;
+    void *crypto = NULL;
+    if (g_isMulti) {
+        crypto = g_urMultiResult->data;
+        urType = g_urMultiResult->ur_type;
+        viewType = g_urMultiResult->t;
+    } else {
+        crypto = g_urResult->data;
+        urType = g_urResult->ur_type;
+        viewType = g_urResult->t;
+    }
+    uint8_t mfp[4] = {0};
+    GetMasterFingerPrint(mfp);
+    PtrT_CSliceFFI_ExtendedPublicKey public_keys = SRAM_MALLOC(sizeof(CSliceFFI_ExtendedPublicKey));
+    ExtendedPublicKey keys[14];
+    PreparePublicKeys(public_keys, keys);
+    if (urType == CryptoPSBT) {
+        g_parseResult = ParsePsbt(crypto, mfp, sizeof(mfp), public_keys);
+        SRAM_FREE(public_keys);
+        CHECK_CHAIN_RETURN(g_parseResult);
+        if (IsMultiSigTx(g_parseResult->data)) {
+            GuiSetCurrentTransactionType(TRANSACTION_TYPE_BTC_MULTISIG);
+        }
+        return g_parseResult;
+    } else if (SupportSignLegacyKeystoneTransactions(urType)) {
+        char *hdPath = NULL;
+        char *xPub = NULL;
+#ifdef WEB3_VERSION
+        if (0 != GuiGetUtxoPubKeyAndHdPath(viewType, &xPub, &hdPath)) {
+            return NULL;
+        }
+        g_parseResult = utxo_parse_keystone(crypto, urType, mfp, sizeof(mfp), xPub);
+        SRAM_FREE(public_keys);
+        CHECK_CHAIN_RETURN(g_parseResult);
+#endif
+        return g_parseResult;
+    } else if (SupportSignPsbtExtend(urType)) {
+        g_parseResult = utxo_parse_extend_psbt(crypto, public_keys, mfp, sizeof(mfp));
+        SRAM_FREE(public_keys);
+        CHECK_CHAIN_RETURN(g_parseResult);
+        return g_parseResult;
+    } else if (urType == BtcSignRequest) {
+        g_parseMsgResult = btc_parse_msg(crypto, public_keys, mfp, sizeof(mfp));
+        SRAM_FREE(public_keys);
+        CHECK_CHAIN_RETURN(g_parseMsgResult);
+        return g_parseMsgResult;
+    } else if (urType == SeedSignerMessage) {
+        g_parseMsgResult = parse_seed_signer_message(crypto, public_keys);
+        SRAM_FREE(public_keys);
+        CHECK_CHAIN_RETURN(g_parseMsgResult);
+        return g_parseMsgResult;
+    }
+    return NULL;
+}
+
 #ifdef BTC_ONLY
-PtrT_TransactionCheckResult GuiGetPsbtStrCheckResult(void)
+static PtrT_TransactionCheckResult GuiGetPsbtStrCheckResult(void)
 {
     PtrT_TransactionCheckResult result = NULL;
     PtrT_CSliceFFI_ExtendedPublicKey public_keys = SRAM_MALLOC(sizeof(CSliceFFI_ExtendedPublicKey));
     ExtendedPublicKey keys[14];
-    public_keys->data = keys;
-    public_keys->size = 14;
-    keys[0].path = "m/84'/0'/0'";
-    keys[0].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT);
-    keys[1].path = "m/49'/0'/0'";
-    keys[1].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC);
-    keys[2].path = "m/44'/0'/0'";
-    keys[2].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY);
-    keys[3].path = "m/86'/0'/0'";
-    keys[3].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT);
-    keys[4].path = "m/84'/1'/0'";
-    keys[4].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT_TEST);
-    keys[5].path = "m/49'/1'/0'";
-    keys[5].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TEST);
-    keys[6].path = "m/44'/1'/0'";
-    keys[6].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY_TEST);
-    keys[7].path = "m/86'/1'/0'";
-    keys[7].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT_TEST);
-
-    keys[8].path = "m/45'";
-    keys[8].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2SH);
-    keys[9].path = "m/48'/0'/0'/1'";
-    keys[9].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_P2SH);
-    keys[10].path = "m/48'/0'/0'/2'";
-    keys[10].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH);
-    keys[11].path = "m/45'";
-    keys[11].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2SH_TEST);
-    keys[12].path = "m/48'/1'/0'/1'";
-    keys[12].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_P2SH_TEST);
-    keys[13].path = "m/48'/1'/0'/2'";
-    keys[13].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_TEST);
-
+    PreparePublicKeys(public_keys, keys);
     uint8_t mfp[4] = {0};
     GetMasterFingerPrint(mfp);
 
@@ -501,7 +486,6 @@ PtrT_TransactionCheckResult GuiGetPsbtStrCheckResult(void)
             strncpy_s(wallet_config, MAX_WALLET_CONFIG_LEN, item->walletConfig, strnlen_s(item->walletConfig, MAX_WALLET_CONFIG_LEN));
         }
     }
-    printf("wallet_config = %s\n", wallet_config);
 
     result = btc_check_psbt_bytes(g_psbtBytes, g_psbtBytesLen, mfp, sizeof(mfp), public_keys, verify_without_mfp, wallet_config);
     if (result->error_code != 0 && strnlen_s(verify_without_mfp, MAX_VERIFY_CODE_LEN) == 0) {
@@ -515,175 +499,98 @@ PtrT_TransactionCheckResult GuiGetPsbtStrCheckResult(void)
     SRAM_FREE(wallet_config);
     return result;
 }
+#else
+static PtrT_TransactionCheckResult GuiGetPsbtStrCheckResult(void)
+{
+    return NULL;
+}
 #endif
+
+static PtrT_TransactionCheckResult CheckPsbt(void *crypto, uint8_t *mfp, uint32_t mfpLen, PtrT_CSliceFFI_ExtendedPublicKey public_keys)
+{
+    PtrT_TransactionCheckResult result = NULL;
+#ifdef BTC_ONLY
+    char *verify_without_mfp = NULL;
+    char *verify_code = NULL;
+    char *wallet_config = NULL;
+    if (GetCurrentWalletIndex() != SINGLE_WALLET) {
+        MultiSigWalletItem_t *item = GetDefaultMultisigWallet();
+        if (item != NULL) {
+            verify_without_mfp = SRAM_MALLOC(MAX_VERIFY_CODE_LEN);
+            memset_s(verify_without_mfp, MAX_VERIFY_CODE_LEN, '\0', MAX_VERIFY_CODE_LEN);
+            strncpy_s(verify_without_mfp, MAX_VERIFY_CODE_LEN, item->verifyWithoutMfp, strnlen_s(item->verifyWithoutMfp, MAX_VERIFY_CODE_LEN));
+            verify_code = SRAM_MALLOC(MAX_VERIFY_CODE_LEN);
+            memset_s(verify_code, MAX_VERIFY_CODE_LEN, '\0', MAX_VERIFY_CODE_LEN);
+            strncpy_s(verify_code, MAX_VERIFY_CODE_LEN, item->verifyCode, strnlen_s(item->verifyCode, MAX_VERIFY_CODE_LEN));
+            wallet_config = SRAM_MALLOC(MAX_WALLET_CONFIG_LEN);
+            memset_s(wallet_config, MAX_WALLET_CONFIG_LEN, '\0', MAX_WALLET_CONFIG_LEN);
+            strncpy_s(wallet_config, MAX_WALLET_CONFIG_LEN, item->walletConfig, strnlen_s(item->walletConfig, MAX_WALLET_CONFIG_LEN));
+        }
+    }
+
+    result = btc_check_psbt(crypto, mfp, sizeof(mfp), public_keys, verify_without_mfp, wallet_config);
+    if (result->error_code != 0 && strnlen_s(verify_without_mfp, MAX_VERIFY_CODE_LEN) == 0) {
+        free_TransactionCheckResult(result);
+        result = btc_check_psbt(crypto, mfp, sizeof(mfp), public_keys, verify_code, wallet_config);
+    }
+    SRAM_FREE(verify_without_mfp);
+    SRAM_FREE(verify_code);
+    SRAM_FREE(wallet_config);
+#else
+    result = btc_check_psbt(crypto, mfp, mfpLen, public_keys, NULL, NULL);
+#endif
+    return result;
+}
 
 PtrT_TransactionCheckResult GuiGetPsbtCheckResult(void)
 {
-#ifdef BTC_ONLY
-    if (g_psbtBytes != NULL) {
+    if (SupportSignPsbtFromSDCard() && g_psbtBytes != NULL) {
         return GuiGetPsbtStrCheckResult();
     }
-#endif
     PtrT_TransactionCheckResult result = NULL;
     enum QRCodeType urType = URTypeUnKnown;
-#ifndef BTC_ONLY
     enum ViewType viewType = ViewTypeUnKnown;
-#endif
     void *crypto = NULL;
     if (g_isMulti) {
         crypto = g_urMultiResult->data;
         urType = g_urMultiResult->ur_type;
-#ifndef BTC_ONLY
         viewType = g_urMultiResult->t;
-#endif
     } else {
         crypto = g_urResult->data;
         urType = g_urResult->ur_type;
-#ifndef BTC_ONLY
         viewType = g_urResult->t;
-#endif
     }
     uint8_t mfp[4] = {0};
     GetMasterFingerPrint(mfp);
     if (urType == CryptoPSBT) {
         PtrT_CSliceFFI_ExtendedPublicKey public_keys = SRAM_MALLOC(sizeof(CSliceFFI_ExtendedPublicKey));
-#ifdef BTC_ONLY
         ExtendedPublicKey keys[14];
-        public_keys->data = keys;
-        public_keys->size = 14;
-        keys[0].path = "m/84'/0'/0'";
-        keys[0].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT);
-        keys[1].path = "m/49'/0'/0'";
-        keys[1].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC);
-        keys[2].path = "m/44'/0'/0'";
-        keys[2].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY);
-        keys[3].path = "m/86'/0'/0'";
-        keys[3].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT);
-        keys[4].path = "m/84'/1'/0'";
-        keys[4].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT_TEST);
-        keys[5].path = "m/49'/1'/0'";
-        keys[5].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TEST);
-        keys[6].path = "m/44'/1'/0'";
-        keys[6].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY_TEST);
-        keys[7].path = "m/86'/1'/0'";
-        keys[7].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT_TEST);
-
-        keys[8].path = "m/45'";
-        keys[8].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2SH);
-        keys[9].path = "m/48'/0'/0'/1'";
-        keys[9].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_P2SH);
-        keys[10].path = "m/48'/0'/0'/2'";
-        keys[10].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH);
-        keys[11].path = "m/45'";
-        keys[11].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2SH_TEST);
-        keys[12].path = "m/48'/1'/0'/1'";
-        keys[12].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_P2SH_TEST);
-        keys[13].path = "m/48'/1'/0'/2'";
-        keys[13].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_MULTI_SIG_P2WSH_TEST);
-#else
-        ExtendedPublicKey keys[9];
-        public_keys->data = keys;
-        public_keys->size = 4;
-        keys[0].path = "m/84'/0'/0'";
-        keys[0].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT);
-        keys[1].path = "m/49'/0'/0'";
-        keys[1].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC);
-        keys[2].path = "m/44'/0'/0'";
-        keys[2].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY);
-        keys[3].path = "m/86'/0'/0'";
-        keys[3].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT);
-#ifdef WEB3_VERSION
-        public_keys->size = NUMBER_OF_ARRAYS(keys);
-        keys[4].path = "m/44'/60'/0'";
-        keys[4].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_BIP44_STANDARD);
-        keys[5].path = "m/44'/3'/0'";
-        keys[5].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_DOGE);
-        // ltc、dash、bch
-        keys[6].path = "m/49'/2'/0'";
-        keys[6].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_LTC);
-        keys[7].path = "m/44'/5'/0'";
-        keys[7].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_DASH);
-        keys[8].path = "m/44'/145'/0'";
-        keys[8].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BCH);
-#endif
-#endif
-#ifdef BTC_ONLY
-        char *verify_without_mfp = NULL;
-        char *verify_code = NULL;
-        char *wallet_config = NULL;
-        if (GetCurrentWalletIndex() != SINGLE_WALLET) {
-            MultiSigWalletItem_t *item = GetDefaultMultisigWallet();
-            if (item != NULL) {
-                verify_without_mfp = SRAM_MALLOC(MAX_VERIFY_CODE_LEN);
-                memset_s(verify_without_mfp, MAX_VERIFY_CODE_LEN, '\0', MAX_VERIFY_CODE_LEN);
-                strncpy_s(verify_without_mfp, MAX_VERIFY_CODE_LEN, item->verifyWithoutMfp, strnlen_s(item->verifyWithoutMfp, MAX_VERIFY_CODE_LEN));
-                verify_code = SRAM_MALLOC(MAX_VERIFY_CODE_LEN);
-                memset_s(verify_code, MAX_VERIFY_CODE_LEN, '\0', MAX_VERIFY_CODE_LEN);
-                strncpy_s(verify_code, MAX_VERIFY_CODE_LEN, item->verifyCode, strnlen_s(item->verifyCode, MAX_VERIFY_CODE_LEN));
-                wallet_config = SRAM_MALLOC(MAX_WALLET_CONFIG_LEN);
-                memset_s(wallet_config, MAX_WALLET_CONFIG_LEN, '\0', MAX_WALLET_CONFIG_LEN);
-                strncpy_s(wallet_config, MAX_WALLET_CONFIG_LEN, item->walletConfig, strnlen_s(item->walletConfig, MAX_WALLET_CONFIG_LEN));
-            }
-        }
-
-        result = btc_check_psbt(crypto, mfp, sizeof(mfp), public_keys, verify_without_mfp, wallet_config);
-        if (result->error_code != 0 && strnlen_s(verify_without_mfp, MAX_VERIFY_CODE_LEN) == 0) {
-            free_TransactionCheckResult(result);
-            result = btc_check_psbt(crypto, mfp, sizeof(mfp), public_keys, verify_code, wallet_config);
-        }
-        SRAM_FREE(verify_without_mfp);
-        SRAM_FREE(verify_code);
-        SRAM_FREE(wallet_config);
-#else
-        result = btc_check_psbt(crypto, mfp, sizeof(mfp), public_keys, NULL, NULL);
-#endif
+        PreparePublicKeys(public_keys, keys);
+        result = CheckPsbt(crypto, mfp, sizeof(mfp), public_keys);
         SRAM_FREE(public_keys);
-    }
-#ifndef BTC_ONLY
-    else if (CHECK_UR_TYPE()) {
+    } else if (SupportSignLegacyKeystoneTransactions(urType)) {
         char *hdPath = NULL;
         char *xPub = NULL;
+#ifdef WEB3_VERSION
         if (0 != GuiGetUtxoPubKeyAndHdPath(viewType, &xPub, &hdPath)) {
             return NULL;
         }
         result = utxo_check_keystone(crypto, urType, mfp, sizeof(mfp), xPub);
-    }
 #endif
-    else if (urType == BtcSignRequest) {
+    } else if (urType == BtcSignRequest) {
         result = btc_check_msg(crypto, mfp, sizeof(mfp));
     } else if (urType == SeedSignerMessage) {
         result = tx_check_pass();
-#ifdef WEB3_VERSION
-    } else if (urType == CryptoPSBTExtend) {
+    } else if (SupportSignPsbtExtend(urType)) {
         PtrT_CSliceFFI_ExtendedPublicKey public_keys = SRAM_MALLOC(sizeof(CSliceFFI_ExtendedPublicKey));
-        ExtendedPublicKey keys[9];
-        public_keys->data = keys;
-        public_keys->size = NUMBER_OF_ARRAYS(keys);
-        keys[0].path = "m/84'/0'/0'";
-        keys[0].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_NATIVE_SEGWIT);
-        keys[1].path = "m/49'/0'/0'";
-        keys[1].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC);
-        keys[2].path = "m/44'/0'/0'";
-        keys[2].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_LEGACY);
-        keys[3].path = "m/86'/0'/0'";
-        keys[3].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BTC_TAPROOT);
-        keys[4].path = "m/44'/60'/0'";
-        keys[4].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_AVAX_BIP44_STANDARD);
-        keys[5].path = "m/44'/3'/0'";
-        keys[5].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_DOGE);
-        // ltc、dash、bch
-        keys[6].path = "m/49'/2'/0'";
-        keys[6].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_LTC);
-        keys[7].path = "m/44'/5'/0'";
-        keys[7].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_DASH);
-        keys[8].path = "m/44'/145'/0'";
-        keys[8].xpub = GetCurrentAccountPublicKey(XPUB_TYPE_BCH);
+        ExtendedPublicKey keys[14];
+        PreparePublicKeys(public_keys, keys);
         result = utxo_check_psbt_extend(crypto, mfp, sizeof(mfp), public_keys, NULL, NULL);
-#endif
+        SRAM_FREE(public_keys);
     }
     return result;
 }
- 
+
 void GetPsbtTotalOutAmount(void *indata, void *param, uint32_t maxLen)
 {
     DisplayTx *psbt = (DisplayTx *)param;
@@ -693,10 +600,13 @@ void GetPsbtTotalOutAmount(void *indata, void *param, uint32_t maxLen)
 void GetPsbtFeeAmount(void *indata, void *param, uint32_t maxLen)
 {
     DisplayTx *psbt = (DisplayTx *)param;
+    char feeText[BUFFER_SIZE_64] = {0};
+    FormatFeeText(feeText, sizeof(feeText), psbt->overview->fee_amount,
+                  psbt->overview->fee_is_lower_bound, psbt->overview->fee_is_unknown);
     if (psbt->overview->fee_larger_than_amount) {
-        snprintf_s((char *)indata, maxLen, "#F55831 %s#", psbt->overview->fee_amount);
+        snprintf_s((char *)indata, maxLen, "#F55831 %s#", feeText);
     } else {
-        strcpy_s((char *)indata, maxLen, psbt->overview->fee_amount);
+        strcpy_s((char *)indata, maxLen, feeText);
     }
 }
 
@@ -709,10 +619,13 @@ void GetPsbtTotalOutSat(void *indata, void *param, uint32_t maxLen)
 void GetPsbtFeeSat(void *indata, void *param, uint32_t maxLen)
 {
     DisplayTx *psbt = (DisplayTx *)param;
+    char feeText[BUFFER_SIZE_64] = {0};
+    FormatFeeText(feeText, sizeof(feeText), psbt->overview->fee_sat,
+                  psbt->overview->fee_is_lower_bound, psbt->overview->fee_is_unknown);
     if (psbt->overview->fee_larger_than_amount) {
-        snprintf_s((char *)indata, maxLen, "#F55831 %s#", psbt->overview->fee_sat);
+        snprintf_s((char *)indata, maxLen, "#F55831 %s#", feeText);
     } else {
-        strcpy_s((char *)indata, maxLen, psbt->overview->fee_sat);
+        strcpy_s((char *)indata, maxLen, feeText);
     }
 }
 
@@ -737,7 +650,8 @@ void GetPsbtDetailOutputValue(void *indata, void *param, uint32_t maxLen)
 void GetPsbtDetailFee(void *indata, void *param, uint32_t maxLen)
 {
     DisplayTx *psbt = (DisplayTx *)param;
-    strcpy_s((char *)indata, maxLen, psbt->detail->fee_amount);
+    FormatFeeText((char *)indata, maxLen, psbt->detail->fee_amount, psbt->detail->fee_is_lower_bound,
+                  psbt->detail->fee_is_unknown);
 }
 
 void *GetPsbtInputData(uint8_t *row, uint8_t *col, void *param)
@@ -863,6 +777,27 @@ static bool IsMultiSigTx(DisplayTx *data)
     return data->overview->is_multisig;
 }
 
+static bool NeedShowCheckInputValueHint(DisplayTx *data)
+{
+    return data->overview->has_witness_only_inputs;
+}
+
+static void OpenInputRefQrCode(lv_event_t *e)
+{
+    DisplayTxDetailInput *inputData = (DisplayTxDetailInput *)lv_event_get_user_data(e);
+    if (inputData == NULL || inputData->input_txid == NULL) {
+        return;
+    }
+
+    char url[128] = {0};
+    char outpoint[160] = {0};
+    snprintf_s(url, sizeof(url), "https://mempool.space/tx/%s", inputData->input_txid);
+    snprintf_s(outpoint, sizeof(outpoint), "%s:\n%s:%u", "Outpoint", inputData->input_txid,
+               inputData->input_vout);
+
+    GuiQRCodeHintBoxOpenCompact(url, "Input Reference", outpoint);
+}
+
 static bool IsAvalancheTx(DisplayTx *data)
 {
     return strcmp(data->overview->network, "Avalanche BTC") == 0;
@@ -899,12 +834,17 @@ static void SwitchValueUnit(lv_event_t *e)
 {
     ClickParamItem_t *item = (ClickParamItem_t *)lv_event_get_user_data(e);
     if (item != NULL) {
+        char feeText[BUFFER_SIZE_64] = {0};
         if (*(item->isSat) == true) {
             lv_label_set_text(item->amountValue, item->overviewData->total_output_amount);
-            lv_label_set_text(item->feeValue, item->overviewData->fee_amount);
+            FormatFeeText(feeText, sizeof(feeText), item->overviewData->fee_amount,
+                          item->overviewData->fee_is_lower_bound, item->overviewData->fee_is_unknown);
+            lv_label_set_text(item->feeValue, feeText);
         } else {
             lv_label_set_text(item->amountValue, item->overviewData->total_output_sat);
-            lv_label_set_text(item->feeValue, item->overviewData->fee_sat);
+            FormatFeeText(feeText, sizeof(feeText), item->overviewData->fee_sat,
+                          item->overviewData->fee_is_lower_bound, item->overviewData->fee_is_unknown);
+            lv_label_set_text(item->feeValue, feeText);
         }
         *item->isSat = !(*item->isSat);
     }
@@ -913,10 +853,25 @@ static void SwitchValueUnit(lv_event_t *e)
 static ClickParamItem_t clickParam;
 static bool isSat = false;
 
-static lv_obj_t *CreateSignStatusView(lv_obj_t *parent, char *multi_sig_status)
+static void FormatFeeText(char *out, size_t outLen, const char *feeText, bool isLowerBound, bool isUnknown)
+{
+    if (isUnknown) {
+        strcpy_s(out, outLen, "Unknown");
+    } else if (isLowerBound) {
+        snprintf_s(out, outLen, ">= %s", feeText);
+    } else {
+        strcpy_s(out, outLen, feeText);
+    }
+}
+
+static lv_obj_t *CreateSignStatusView(lv_obj_t *parent, char *multi_sig_status, lv_obj_t *lastView)
 {
     lv_obj_t *signStatusContainer = GuiCreateContainerWithParent(parent, 408, 62);
-    lv_obj_align(signStatusContainer, LV_ALIGN_DEFAULT, 0, 0);
+    if (lastView == NULL) {
+        lv_obj_align(signStatusContainer, LV_ALIGN_DEFAULT, 0, 0);
+    } else {
+        lv_obj_align_to(signStatusContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    }
     SetContainerDefaultStyle(signStatusContainer);
 
     lv_obj_t *label = lv_label_create(signStatusContainer);
@@ -938,7 +893,7 @@ static lv_obj_t *CreateAvalancheNoticeView(lv_obj_t *parent, lv_obj_t *lastView)
     if (lastView == NULL) {
         lv_obj_align(noticeContainer, LV_ALIGN_DEFAULT, 0, 0);
     } else {
-        lv_obj_align_to(noticeContainer, lastView, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
+        lv_obj_align_to(noticeContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     }
     SetContainerDefaultStyle(noticeContainer);
 
@@ -956,13 +911,80 @@ static lv_obj_t *CreateAvalancheNoticeView(lv_obj_t *parent, lv_obj_t *lastView)
     return noticeContainer;
 }
 
+static lv_obj_t *CreateCheckInputValueHintView(lv_obj_t *parent, lv_obj_t *lastView)
+{
+    lv_obj_t *hintView = CreateNoticeCard(parent, _("btc_check_input_value_hint"));
+    if (lastView == NULL) {
+        lv_obj_align(hintView, LV_ALIGN_DEFAULT, 0, 0);
+    } else {
+        lv_obj_align_to(hintView, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    }
+
+    return hintView;
+}
+
+static lv_obj_t *CreateSighashWarningView(lv_obj_t *parent, lv_obj_t *lastView, const char *warningText)
+{
+    uint16_t height = 24 + 36 + 8 + 24;
+    lv_obj_t *warningView = GuiCreateContainerWithParent(parent, 408, 24);
+    lv_obj_set_style_radius(warningView, 24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(warningView, RED_COLOR, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(warningView, 30, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    if (lastView == NULL) {
+        lv_obj_align(warningView, LV_ALIGN_DEFAULT, 0, 0);
+    } else {
+        lv_obj_align_to(warningView, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    }
+
+    lv_obj_t *warningIcon = GuiCreateImg(warningView, &imgWarningRed);
+    lv_obj_align(warningIcon, LV_ALIGN_TOP_LEFT, 24, 24);
+
+    lv_obj_t *titleLabel = GuiCreateTextLabel(warningView, "Warning");
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(0xF55831), LV_PART_MAIN);
+    lv_obj_align_to(titleLabel, warningIcon, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    lv_obj_t *contentLabel = GuiCreateIllustrateLabel(warningView, warningText);
+    lv_obj_set_width(contentLabel, 360);
+    lv_label_set_long_mode(contentLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_update_layout(contentLabel);
+    height += lv_obj_get_self_height(contentLabel);
+    lv_obj_set_height(warningView, height);
+    lv_obj_align(contentLabel, LV_ALIGN_TOP_LEFT, 24, 68);
+
+    return warningView;
+}
+
+static lv_obj_t *CreateInputRefView(lv_obj_t *parent, lv_obj_t *lastView, DisplayTxDetailInput *inputData)
+{
+    lv_obj_t *inputRefContainer = GuiCreateContainerWithParent(parent, 160, 30);
+    lv_obj_set_style_bg_opa(inputRefContainer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(inputRefContainer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(inputRefContainer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(inputRefContainer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(inputRefContainer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align_to(inputRefContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
+    lv_obj_add_event_cb(inputRefContainer, OpenInputRefQrCode, LV_EVENT_CLICKED, inputData);
+
+    lv_obj_t *inputRefLabel = GuiCreateIllustrateLabel(inputRefContainer, "Input Ref");
+    lv_obj_set_style_text_color(inputRefLabel, lv_color_hex(0x1BE0C6), LV_PART_MAIN);
+    lv_obj_align(inputRefLabel, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_clear_flag(inputRefLabel, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *inputRefIcon = GuiCreateImg(inputRefContainer, &imgQrcodeTurquoise);
+    lv_obj_align_to(inputRefIcon, inputRefLabel, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
+    lv_obj_clear_flag(inputRefIcon, LV_OBJ_FLAG_CLICKABLE);
+
+    return inputRefContainer;
+}
+
 static lv_obj_t *CreateOverviewAmountView(lv_obj_t *parent, DisplayTxOverview *overviewData, lv_obj_t *lastView)
 {
     lv_obj_t *amountContainer = GuiCreateContainerWithParent(parent, 408, 144);
     if (lastView == NULL) {
         lv_obj_align(amountContainer, LV_ALIGN_DEFAULT, 0, 0);
     } else {
-        lv_obj_align_to(amountContainer, lastView, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
+        lv_obj_align_to(amountContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     }
     SetContainerDefaultStyle(amountContainer);
 
@@ -984,10 +1006,12 @@ static lv_obj_t *CreateOverviewAmountView(lv_obj_t *parent, DisplayTxOverview *o
     SetTitleLabelStyle(label);
 
     lv_obj_t *feeValue = lv_label_create(amountContainer);
-    lv_label_set_text(feeValue, overviewData->fee_amount);
+    char feeText[BUFFER_SIZE_64] = {0};
+    FormatFeeText(feeText, sizeof(feeText), overviewData->fee_amount,
+                  overviewData->fee_is_lower_bound, overviewData->fee_is_unknown);
+    lv_label_set_text(feeValue, feeText);
     lv_obj_align_to(feeValue, label, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
-
-    lv_obj_set_style_text_font(feeValue, &openSansEnIllustrate, LV_PART_MAIN);
+    SetContentLableStyle(feeValue);
 
     if (overviewData->fee_larger_than_amount) {
         lv_obj_set_style_text_color(feeValue, lv_color_hex(0xf55831), LV_PART_MAIN);
@@ -1019,7 +1043,7 @@ static lv_obj_t *CreateNetworkView(lv_obj_t *parent, char *network, lv_obj_t *la
     if (lastView == NULL) {
         lv_obj_align(networkContainer, LV_ALIGN_DEFAULT, 0, 0);
     } else {
-        lv_obj_align_to(networkContainer, lastView, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
+        lv_obj_align_to(networkContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     }
     SetContainerDefaultStyle(networkContainer);
 
@@ -1033,6 +1057,16 @@ static lv_obj_t *CreateNetworkView(lv_obj_t *parent, char *network, lv_obj_t *la
     lv_obj_align_to(networkValue, label, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
     SetContentLableStyle(networkValue);
     return networkContainer;
+}
+
+static lv_obj_t *CreateSighashView(lv_obj_t *parent, char *sighashType, lv_obj_t *lastView)
+{
+    if (sighashType == NULL) {
+        return lastView;
+    }
+
+    char *displayText = (char *)GetSighashDisplayText(sighashType);
+    return CreateTransactionItemView(parent, "Sighash", displayText, lastView);
 }
 
 static lv_obj_t *CreateOverviewFromView(lv_obj_t *parent, DisplayTxOverview *overviewData, lv_obj_t *lastView)
@@ -1097,6 +1131,17 @@ static lv_obj_t *CreateOverviewFromView(lv_obj_t *parent, DisplayTxOverview *ove
 
 static lv_obj_t *CreateOverviewToView(lv_obj_t *parent, DisplayTxOverview *overviewData, lv_obj_t *lastView)
 {
+    bool showChange = true;
+#ifndef BTC_ONLY
+    enum QRCodeType urType = URTypeUnKnown;
+    if (g_isMulti) {
+        urType = g_urMultiResult->ur_type;
+    } else {
+        urType = g_urResult->ur_type;
+    }
+
+    showChange = !CHECK_UR_TYPE();
+#endif
     lv_obj_t *toContainer = GuiCreateContainerWithParent(parent, 408, 62);
     SetContainerDefaultStyle(toContainer);
     lv_obj_align_to(toContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
@@ -1142,12 +1187,40 @@ static lv_obj_t *CreateOverviewToView(lv_obj_t *parent, DisplayTxOverview *overv
         }
 
         int addressLabelHeight = lv_obj_get_y2(addressLabel);
+        toContainerHeight += (addressLabelHeight);
 
         lv_obj_set_height(toInnerContainer, addressLabelHeight);
+        if (to->data[i].is_mine && showChange) {
+            lv_obj_t *changeContainer = GuiCreateContainerWithParent(toInnerContainer, 87, 30);
+            lv_obj_set_style_radius(changeContainer, 16, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(changeContainer, WHITE_COLOR, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(changeContainer, 30, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_t *changeLabel = lv_label_create(changeContainer);
+            // show change or receive label in the detail page view
+            if (to->data[i].is_external) {
+                lv_label_set_text(changeLabel, "Receive");
+            } else {
+                lv_label_set_text(changeLabel, "Change");
+            }
+            lv_obj_set_style_text_font(changeLabel, g_defIllustrateFont, LV_PART_MAIN);
+            lv_obj_set_style_text_color(changeLabel, WHITE_COLOR, LV_PART_MAIN);
+            lv_obj_set_style_text_opa(changeLabel, 163, LV_PART_MAIN);
+            lv_obj_align(changeLabel, LV_ALIGN_CENTER, 0, 0);
+            lv_obj_update_layout(changeContainer);
+            int changeContainerHeight = lv_obj_get_y2(changeContainer);
+            toContainerHeight += changeContainerHeight;
+
+            lv_obj_set_height(toInnerContainer, addressLabelHeight + changeContainerHeight);
+
+            lv_obj_update_layout(toInnerContainer);
+
+            lv_obj_align(changeContainer, LV_ALIGN_BOTTOM_LEFT, 24, 0);
+        }
+
+        toContainerHeight += 8;
 
         lv_obj_align_to(toInnerContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
 
-        toContainerHeight += (addressLabelHeight + 8);
         lastView = toInnerContainer;
     }
 
@@ -1159,7 +1232,7 @@ static lv_obj_t *CreateOverviewToView(lv_obj_t *parent, DisplayTxOverview *overv
 static lv_obj_t *CreateDetailAmountView(lv_obj_t *parent, DisplayTxDetail *detailData, lv_obj_t *lastView)
 {
     lv_obj_t *amountContainer = GuiCreateContainerWithParent(parent, 408, 138);
-    lv_obj_align_to(amountContainer, lastView, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
+    lv_obj_align_to(amountContainer, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     SetContainerDefaultStyle(amountContainer);
 
     lv_obj_t *label = lv_label_create(amountContainer);
@@ -1190,7 +1263,10 @@ static lv_obj_t *CreateDetailAmountView(lv_obj_t *parent, DisplayTxDetail *detai
     SetTitleLabelStyle(label);
 
     lv_obj_t *feeValue = lv_label_create(amountContainer);
-    lv_label_set_text(feeValue, detailData->fee_amount);
+    char feeText[BUFFER_SIZE_64] = {0};
+    FormatFeeText(feeText, sizeof(feeText), detailData->fee_amount,
+                  detailData->fee_is_lower_bound, detailData->fee_is_unknown);
+    lv_label_set_text(feeValue, feeText);
     lv_obj_align_to(feeValue, label, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
     SetContentLableStyle(feeValue);
 
@@ -1279,7 +1355,8 @@ static lv_obj_t *CreateDetailFromView(lv_obj_t *parent, DisplayTxDetail *detailD
         lv_obj_align_to(pathLabel, addressLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
         lv_obj_update_layout(pathLabel);
 
-        int pathLabelBottom = lv_obj_get_y2(pathLabel);
+        lv_obj_t *inputRefLabel = CreateInputRefView(formInnerContainer, pathLabel, &from->data[i]);
+        int pathLabelBottom = lv_obj_get_y2(inputRefLabel);
 
         lv_obj_set_height(formInnerContainer, pathLabelBottom);
 
@@ -1383,8 +1460,16 @@ void GuiBtcTxOverview(lv_obj_t *parent, void *totalData)
 
     lv_obj_t *lastView = NULL;
 
+    if (NeedShowSighashWarning(txData)) {
+        lastView = CreateSighashWarningView(parent, lastView, GetSighashWarningText(txData));
+    }
+
+    if (NeedShowCheckInputValueHint(txData)) {
+        lastView = CreateCheckInputValueHintView(parent, lastView);
+    }
+
     if (IsMultiSigTx(txData)) {
-        lastView = CreateSignStatusView(parent, overviewData->sign_status);
+        lastView = CreateSignStatusView(parent, overviewData->sign_status, lastView);
     }
 
     if (IsAvalancheTx(txData)) {
@@ -1408,12 +1493,67 @@ void GuiBtcTxDetail(lv_obj_t *parent, void *totalData)
 
     lv_obj_t *lastView = NULL;
     if (IsMultiSigTx(txData)) {
-        lastView = CreateSignStatusView(parent, detailData->sign_status);
+        lastView = CreateSignStatusView(parent, detailData->sign_status, lastView);
     }
     lastView = CreateNetworkView(parent, detailData->network, lastView);
+    lastView = CreateSighashView(parent, txData->overview->sighash_type, lastView);
     lastView = CreateDetailAmountView(parent, detailData, lastView);
     lastView = CreateDetailFromView(parent, detailData, lastView);
     CreateDetailToView(parent, detailData, lastView);
+}
+
+static bool NeedShowSighashWarning(DisplayTx *data)
+{
+    if (data == NULL || data->overview == NULL) {
+        return false;
+    }
+
+    return data->overview->is_sighash_single || data->overview->is_sighash_none;
+}
+
+static const char *GetSighashWarningText(DisplayTx *data)
+{
+    if (data == NULL || data->overview == NULL) {
+        return NULL;
+    }
+
+    if (data->overview->is_sighash_single) {
+        return _("btc_sighash_single_warning");
+    }
+
+    if (data->overview->is_sighash_none) {
+        return _("btc_sighash_none_warning");
+    }
+
+    return NULL;
+}
+
+static const char *GetSighashDisplayText(const char *sighashType)
+{
+    if (sighashType == NULL) {
+        return "";
+    }
+
+    if (!strcmp(sighashType, "ALL")) {
+        return "All";
+    }
+    if (!strcmp(sighashType, "NONE")) {
+        return "None";
+    }
+    if (!strcmp(sighashType, "SINGLE")) {
+        return "Single";
+    }
+    if (!strcmp(sighashType, "ALL|ANYONE_CAN_PAY")) {
+        return "All | Anyone Can Pay";
+    }
+    if (!strcmp(sighashType, "NONE|ANYONE_CAN_PAY")) {
+        return "None | Anyone Can Pay";
+    }
+    if (!strcmp(sighashType, "SINGLE|ANYONE_CAN_PAY")) {
+        return "Single | Anyone Can Pay";
+    }
+
+    return sighashType;
 }
 
 void GuiBtcMsg(lv_obj_t *parent, void *totalData)

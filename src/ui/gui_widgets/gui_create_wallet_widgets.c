@@ -43,9 +43,6 @@ static void GuiRefreshNavBar(void);
 static void CloseChangeEntropyHandler(lv_event_t *e);
 static void OpenChangeEntropyTutorialHandler(lv_event_t *e);
 static void PassphraseButtonHandler(lv_event_t *e);
-#ifdef WEB3_VERSION
-static void TonPhraseButtonHandler(lv_event_t *e);
-#endif
 
 static PageWidget_t *g_pageWidget;
 static KeyBoard_t *g_nameWalletKb = NULL;
@@ -241,7 +238,7 @@ static void GuiCreateBackupWidget(lv_obj_t *parent, bool enablePassphrase)
         {.obj = labelNotice, .align = LV_ALIGN_DEFAULT, .position = {24, 62}},
         {.obj = GuiCreateImg(parent, &imgArrowRight), .align = LV_ALIGN_DEFAULT, .position = {372, 16}},
     };
-    lv_obj_t *importButton = GuiCreateButton(parent, 432, 136, importTable, 3, OpenSecretShareHandler, NULL);
+    lv_obj_t *importButton = GuiCreateButton(parent, 432, 146, importTable, 3, OpenSecretShareHandler, NULL);
     lv_obj_align_to(importButton, button, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
 
     lv_obj_t *obj = GuiCreateContainerWithParent(parent, 222, 30);
@@ -515,9 +512,6 @@ static void OpenMoreHandler(lv_event_t *e)
         MoreInfoTable_t moreInfoTable[] = {
             {.name = _("change_entropy"), .src = &imgDice, .callBack = OpenChangeEntropyHandler, NULL},
             {.name = passphraseText, .src = &imgEnterPassphrase, .callBack = PassphraseButtonHandler, NULL},
-#ifdef WEB3_VERSION
-            {.name = _("generate_ton_mnenonic"), .src = &imgTonPhrase, .callBack = TonPhraseButtonHandler, NULL},
-#endif
             {.name = _("Tutorial"), .src = &imgTutorial, .callBack = QuestionMarkEventCb, NULL},
         };
         g_openMoreHintBox = GuiCreateMoreInfoHintBox(NULL, NULL, moreInfoTable, NUMBER_OF_ARRAYS(moreInfoTable), true, &g_openMoreHintBox);
@@ -596,7 +590,7 @@ static void CreateChangeEntropyView(void)
     }
 
     // System Desc Container
-    lv_obj_t *descCont = GuiCreateContainerWithParent(cont, 408, 114);
+    lv_obj_t *descCont = GuiCreateContainerWithParent(cont, 408, 144);
     g_entropyMethods[0].descCont = descCont;
     lv_obj_align_to(descCont, method_cont, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
     lv_obj_set_style_radius(descCont, 24, LV_PART_MAIN);
@@ -728,10 +722,3 @@ bool GuiCreateWalletNeedPassphrase(void)
     return !lv_obj_has_flag(g_warningCont, LV_OBJ_FLAG_HIDDEN);
 }
 
-#ifdef WEB3_VERSION
-static void TonPhraseButtonHandler(lv_event_t *e)
-{
-    GUI_DEL_OBJ(g_openMoreHintBox);
-    GuiFrameOpenView(&g_tonMnemonicHintView);
-}
-#endif

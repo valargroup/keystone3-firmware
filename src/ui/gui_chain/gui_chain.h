@@ -4,6 +4,7 @@
 #include "gui_animating_qrcode.h"
 #include "gui_btc.h"
 #ifndef BTC_ONLY
+#include "gui_zcash.h"
 #ifdef WEB3_VERSION
 #include "gui_eth.h"
 #include "gui_eth_batch_tx_widgets.h"
@@ -20,7 +21,6 @@
 #include "gui_avax.h"
 #include "gui_iota.h"
 #else
-#include "gui_zcash.h"
 #include "gui_monero.h"
 #endif
 #endif
@@ -38,6 +38,7 @@ typedef enum {
     CHAIN_XRP,
     CHAIN_ADA,
     CHAIN_TON,
+    CHAIN_ZEC,
     CHAIN_DOT,
     CHAIN_TRX,
     CHAIN_LTC,
@@ -91,8 +92,11 @@ typedef enum {
     // cosmos end
 #endif
 
-#ifdef CYPHERPUNK_VERSION
+#ifndef BTC_ONLY
     CHAIN_ZCASH,
+#endif
+
+#ifdef CYPHERPUNK_VERSION
     CHAIN_XMR,
 #endif
     CHAIN_BUTT,
@@ -108,6 +112,8 @@ typedef enum {
     REMAPVIEW_ETH_TYPEDDATA,
     REMAPVIEW_ETH_BATCH_TX,
     REMAPVIEW_TRX,
+    REMAPVIEW_TRX_PERSONAL_MESSAGE,
+    REMAPVIEW_TRX_SWAP,
     REMAPVIEW_COSMOS,
     REMAPVIEW_SUI,
     REMAPVIEW_SUI_SIGN_MESSAGE_HASH,
@@ -129,6 +135,7 @@ typedef enum {
     REMAPVIEW_TON,
     REMAPVIEW_TON_SIGNPROOF,
     REMAPVIEW_AVAX,
+    REMAPVIEW_ZCASH,
 #endif
 
 #ifdef CYPHERPUNK_VERSION
@@ -144,6 +151,8 @@ typedef struct {
     uint16_t chain;
     SetChainDataFunc func;
 } SetChainData_t;
+
+typedef UREncodeResult *(*SignFn)(void *data, PtrBytes seed, uint32_t seed_len);
 
 #define CHECK_CHAIN_BREAK(result)                                       \
     if (result->error_code != 0) {                                      \
@@ -181,6 +190,7 @@ PtrT_TransactionCheckResult CheckUrResult(uint8_t viewType);
 GenerateUR GetUrGenerator(ViewType viewType);
 GenerateUR GetSingleUrGenerator(ViewType viewType);
 bool CheckViewTypeIsAllow(uint8_t viewType);
+UREncodeResult *SignInternal(SignFn sign_func, void *data);
 #ifndef BTC_ONLY
 bool IsMessageType(uint8_t type);
 bool isTonSignProof(uint8_t type);
