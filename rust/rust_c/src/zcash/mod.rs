@@ -157,12 +157,8 @@ pub unsafe extern "C" fn parse_zcash_tx_cypherpunk(
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
     let network = zcash_network();
-    match app_zcash::parse_pczt_cypherpunk(
-        &network,
-        &pczt.get_data(),
-        &ufvk_text,
-        seed_fingerprint,
-    ) {
+    match app_zcash::parse_pczt_cypherpunk(&network, &pczt.get_data(), &ufvk_text, seed_fingerprint)
+    {
         Ok(pczt) => TransactionParseResult::success(DisplayPczt::from(&pczt).c_ptr()).c_ptr(),
         Err(e) => TransactionParseResult::from(e).c_ptr(),
     }

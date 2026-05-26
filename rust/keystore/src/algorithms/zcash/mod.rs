@@ -87,7 +87,8 @@ pub fn sign_message_orchard<R: RngCore + CryptoRng>(
         && path[2].index() & HARDENED_FLAG == HARDENED_FLAG
     {
         let coin_type = path[1].index() - HARDENED_FLAG;
-        let account_id = zip32::AccountId::try_from(path[2].index() - HARDENED_FLAG).expect("valid");
+        let account_id =
+            zip32::AccountId::try_from(path[2].index() - HARDENED_FLAG).expect("valid");
 
         let osk = SpendingKey::from_zip32_seed(seed, coin_type, account_id).unwrap();
 
