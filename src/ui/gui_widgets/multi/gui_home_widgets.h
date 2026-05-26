@@ -22,6 +22,7 @@ typedef struct {
     bool state;
     const char *name;
     bool enable;
+    bool testNet;
     lv_obj_t *checkBox;
 } WalletState_t;
 
@@ -42,6 +43,8 @@ void GuiHomePasswordErrorCount(void *param);
 void GuiRemoveKeyboardWidget(void);
 void RecalculateManageWalletState(void);
 const ChainCoinCard_t* GetCoinCardByIndex(HOME_WALLET_CARD_ENUM index);
+bool GetZcashIsTestNet(void);
+void SetZcashIsTestNet(bool testNet);
 void GuiHomeDeInit(void);
 void GuiShowRsaSetupasswordHintbox(void);
 void GuiShowRsaInitializatioCompleteHintbox(void);
@@ -49,4 +52,3 @@ void ClearHomePageCurrentIndex(void);
 void ReturnManageWalletHandler(lv_event_t *e);
 
 #endif /* _GUI_HOME_WIDGETS_H */
-

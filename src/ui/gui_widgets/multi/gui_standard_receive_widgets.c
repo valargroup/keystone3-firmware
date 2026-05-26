@@ -918,9 +918,10 @@ static void ModelGetAddress(uint32_t index, AddressDataItem_t *item)
 #ifdef CYPHERPUNK_VERSION
     if (g_chainCard == HOME_WALLET_CARD_ZEC) {
         char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
-        GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+        bool isTestNet = GetZcashIsTestNet();
+        GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
 
-        result = generate_zcash_default_address(ufvk);
+        result = generate_zcash_default_address(ufvk, isTestNet);
     }
 #endif
 

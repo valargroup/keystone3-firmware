@@ -15,6 +15,7 @@
 #include "account_manager.h"
 #include "gui_animating_qrcode.h"
 #include "gui_global_resources.h"
+#include "gui_home_widgets.h"
 #include "gui_page.h"
 #include "keystore.h"
 #include "gui_select_address_widgets.h"
@@ -354,7 +355,7 @@ UREncodeResult *GuiGetZecData(void)
     keys->size = 1;
     char ufvk[384] = {'\0'};
     uint8_t sfp[32];
-    GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+    GetZcashUFVK(GetCurrentAccountIndex(), GetZcashIsTestNet(), ufvk);
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
     data[0].key_text = ufvk;
     data[0].key_name = GetWalletName();
