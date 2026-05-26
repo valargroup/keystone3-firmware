@@ -21,8 +21,18 @@ use keystore::algorithms::{
 };
 use structs::DisplayPczt;
 use ur_registry::{traits::RegistryItem, zcash::zcash_pczt::ZcashPczt};
-use zcash_vendor::zcash_protocol::consensus::MainNetwork;
+use zcash_vendor::zcash_protocol::consensus::Network;
 use zeroize::Zeroize;
+
+#[cfg(feature = "simulator")]
+fn zcash_network() -> Network {
+    Network::TestNetwork
+}
+
+#[cfg(not(feature = "simulator"))]
+fn zcash_network() -> Network {
+    Network::MainNetwork
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn derive_zcash_ufvk(
@@ -32,7 +42,8 @@ pub unsafe extern "C" fn derive_zcash_ufvk(
 ) -> *mut SimpleResponse<c_char> {
     let seed = extract_array!(seed, u8, seed_len as usize);
     let account_path = unsafe { recover_c_char(account_path) };
-    let ufvk_text = derive_ufvk(&MainNetwork, seed, &account_path);
+    let network = zcash_network();
+    let ufvk_text = derive_ufvk(&network, seed, &account_path);
     let result = match ufvk_text {
         Ok(text) => SimpleResponse::success(convert_c_char(text)).simple_c_ptr(),
         Err(e) => SimpleResponse::from(e).simple_c_ptr(),
@@ -62,7 +73,8 @@ pub unsafe extern "C" fn generate_zcash_default_address(
     ufvk_text: PtrString,
 ) -> *mut SimpleResponse<c_char> {
     let ufvk_text = unsafe { recover_c_char(ufvk_text) };
-    let address = get_address(&MainNetwork, &ufvk_text);
+    let network = zcash_network();
+    let address = get_address(&network, &ufvk_text);
     match address {
         Ok(text) => SimpleResponse::success(convert_c_char(text)).simple_c_ptr(),
         Err(e) => SimpleResponse::from(e).simple_c_ptr(),
@@ -88,8 +100,9 @@ pub unsafe extern "C" fn check_zcash_tx_cypherpunk(
     let ufvk_text = unsafe { recover_c_char(ufvk) };
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
+    let network = zcash_network();
     match app_zcash::check_pczt_cypherpunk(
-        &MainNetwork,
+        &network,
         &pczt.get_data(),
         &ufvk_text,
         seed_fingerprint,
@@ -119,8 +132,9 @@ pub unsafe extern "C" fn check_zcash_tx_multi_coins(
     let xpub_text = unsafe { recover_c_char(xpub) };
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
+    let network = zcash_network();
     match app_zcash::check_pczt_multi_coins(
-        &MainNetwork,
+        &network,
         &pczt.get_data(),
         &xpub_text,
         seed_fingerprint,
@@ -142,8 +156,9 @@ pub unsafe extern "C" fn parse_zcash_tx_cypherpunk(
     let ufvk_text = unsafe { recover_c_char(ufvk) };
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
+    let network = zcash_network();
     match app_zcash::parse_pczt_cypherpunk(
-        &MainNetwork,
+        &network,
         &pczt.get_data(),
         &ufvk_text,
         seed_fingerprint,
@@ -162,7 +177,8 @@ pub unsafe extern "C" fn parse_zcash_tx_multi_coins(
     let pczt = extract_ptr_with_type!(tx, ZcashPczt);
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
-    match app_zcash::parse_pczt_multi_coins(&MainNetwork, &pczt.get_data(), seed_fingerprint) {
+    let network = zcash_network();
+    match app_zcash::parse_pczt_multi_coins(&network, &pczt.get_data(), seed_fingerprint) {
         Ok(pczt) => TransactionParseResult::success(DisplayPczt::from(&pczt).c_ptr()).c_ptr(),
         Err(e) => TransactionParseResult::from(e).c_ptr(),
     }

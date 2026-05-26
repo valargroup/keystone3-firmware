@@ -1349,4 +1349,3 @@ void *GuiCreateLetterKeyBoard(lv_obj_t *parent, lv_event_cb_t cb, bool bip39, vo
 
     return keyBoard;
 }
-
