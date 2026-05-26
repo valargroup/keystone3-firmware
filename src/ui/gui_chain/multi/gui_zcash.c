@@ -6,6 +6,9 @@
 #include "keystore.h"
 #include "screen_manager.h"
 #include "gui_chain.h"
+#ifdef CYPHERPUNK_VERSION
+#include "gui_home_widgets.h"
+#endif
 
 #define MAX_MEMO_LENGTH 1024
 
@@ -42,9 +45,10 @@ void *GuiGetZcashGUIData(void)
         parseResult = parse_zcash_tx_multi_coins(data, sfp);
 #endif
 #ifdef CYPHERPUNK_VERSION
+        bool isTestNet = GetZcashIsTestNet();
         char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
-        GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
-        parseResult = parse_zcash_tx_cypherpunk(data, ufvk, sfp);
+        GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
+        parseResult = parse_zcash_tx_cypherpunk(data, ufvk, sfp, isTestNet);
 #endif
         CHECK_CHAIN_BREAK(parseResult);
         g_zcashData = parseResult->data;
@@ -316,9 +320,10 @@ PtrT_TransactionCheckResult GuiGetZcashCheckResult(void)
     return check_zcash_tx_multi_coins(data, xpub, sfp, zcash_account_index, mnemonicType == MNEMONIC_TYPE_SLIP39);
 #endif
 #ifdef CYPHERPUNK_VERSION
+    bool isTestNet = GetZcashIsTestNet();
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
-    GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
-    return check_zcash_tx_cypherpunk(data, ufvk, sfp, zcash_account_index, !IsZcashSupportedForCurrentMnemonic());
+    GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
+    return check_zcash_tx_cypherpunk(data, ufvk, sfp, zcash_account_index, isTestNet, !IsZcashSupportedForCurrentMnemonic());
 #endif
 }
 

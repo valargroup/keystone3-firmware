@@ -230,6 +230,17 @@ void RecalculateManageWalletState(void)
     AccountPublicHomeCoinSet(walletState, NUMBER_OF_ARRAYS(walletState));
 }
 
+bool GetZcashIsTestNet(void)
+{
+    return g_walletState[HOME_WALLET_CARD_ZEC].testNet;
+}
+
+void SetZcashIsTestNet(bool testNet)
+{
+    g_walletState[HOME_WALLET_CARD_ZEC].testNet = testNet;
+    AccountPublicHomeCoinSet(g_walletState, NUMBER_OF_ARRAYS(g_walletState));
+}
+
 static void ManageCoinChainHandler(lv_event_t *e)
 {
     bool state;
