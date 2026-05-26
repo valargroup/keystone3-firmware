@@ -122,7 +122,7 @@ fn check_transparent_input<P: consensus::Parameters>(
 ) -> Result<bool, ZcashError> {
     let script = input.script_pubkey().clone();
     //p2sh transparent input is not supported yet
-    match script.address() {
+    match TransparentAddress::from_script_from_chain(&script) {
         Some(TransparentAddress::PublicKeyHash(hash)) => {
             // 1: find my derivation
             let my_derivation = input
@@ -177,7 +177,7 @@ fn check_transparent_output<P: consensus::Parameters>(
     output: &transparent::pczt::Output,
 ) -> Result<(), ZcashError> {
     let script = output.script_pubkey().clone();
-    match script.address() {
+    match TransparentAddress::from_script_pubkey(&script) {
         Some(TransparentAddress::PublicKeyHash(hash)) => {
             //check user_address and script_pubkey
             match output.user_address() {
