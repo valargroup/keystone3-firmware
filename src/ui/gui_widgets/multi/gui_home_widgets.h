@@ -43,8 +43,10 @@ void GuiHomePasswordErrorCount(void *param);
 void GuiRemoveKeyboardWidget(void);
 void RecalculateManageWalletState(void);
 const ChainCoinCard_t* GetCoinCardByIndex(HOME_WALLET_CARD_ENUM index);
+#ifdef CYPHERPUNK_VERSION
 bool GetZcashIsTestNet(void);
 void SetZcashIsTestNet(bool testNet);
+#endif
 void GuiHomeDeInit(void);
 void GuiShowRsaSetupasswordHintbox(void);
 void GuiShowRsaInitializatioCompleteHintbox(void);

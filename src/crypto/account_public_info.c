@@ -560,6 +560,26 @@ static const ChainItem_t g_chainTable[] = {
 #endif
 };
 
+static bool WalletUsesTestnetState(const char *name)
+{
+#ifdef BTC_ONLY
+    (void)name;
+    return true;
+#else
+    return strcmp(name, "ZEC") == 0;
+#endif
+}
+
+static bool IsZcashTestnetUfvkChain(ChainType chain)
+{
+#ifdef CYPHERPUNK_VERSION
+    return chain == ZCASH_UFVK_TEST_ENCRYPTED_0;
+#else
+    (void)chain;
+    return false;
+#endif
+}
+
 #ifdef WEB3_VERSION
 ChainType CheckSolPathSupport(char *path)
 {
@@ -676,7 +696,9 @@ void AccountPublicHomeCoinGet(WalletState_t *walletList, uint8_t count)
             } else {
                 cJSON_AddItemToObject(jsonItem, "manage", cJSON_CreateBool(false));
             }
-            cJSON_AddItemToObject(jsonItem, "testNet", cJSON_CreateBool(false));
+            if (WalletUsesTestnetState(walletList[i].name)) {
+                cJSON_AddItemToObject(jsonItem, "testNet", cJSON_CreateBool(false));
+            }
 #ifdef BTC_ONLY
             cJSON_AddItemToObject(jsonItem, "defaultWallet", cJSON_CreateNumber(SINGLE_WALLET));
             cJSON_AddItemToObject(jsonItem, "defaultPassphraseWallet", cJSON_CreateNumber(SINGLE_WALLET));
@@ -703,7 +725,11 @@ void AccountPublicHomeCoinGet(WalletState_t *walletList, uint8_t count)
         cJSON *item = cJSON_GetObjectItem(rootJson, walletList[i].name);
         if (item != NULL) {
             walletList[i].state = GetBoolValue(item, "manage", false);
-            walletList[i].testNet = GetBoolValue(item, "testNet", false);
+            if (WalletUsesTestnetState(walletList[i].name)) {
+                walletList[i].testNet = GetBoolValue(item, "testNet", false);
+            } else {
+                walletList[i].testNet = false;
+            }
 #ifdef BTC_ONLY
             walletList[i].defaultWallet = GetIntValue(item, "defaultWallet", SINGLE_WALLET);
             walletList[i].defaultPassphraseWallet = GetIntValue(item, "defaultPassphraseWallet", SINGLE_WALLET);
@@ -741,7 +767,9 @@ void AccountPublicHomeCoinSet(WalletState_t *walletList, uint8_t count)
             cJSON_AddItemToObject(item, "recvPath", cJSON_CreateNumber(0));
             cJSON_AddItemToObject(item, "firstRecv", cJSON_CreateBool(false));
             cJSON_AddItemToObject(item, "manage", cJSON_CreateBool(walletList[i].state));
-            cJSON_AddItemToObject(item, "testNet", cJSON_CreateBool(walletList[i].testNet));
+            if (WalletUsesTestnetState(walletList[i].name)) {
+                cJSON_AddItemToObject(item, "testNet", cJSON_CreateBool(walletList[i].testNet));
+            }
 #ifdef BTC_ONLY
             cJSON_AddItemToObject(item, "defaultWallet", cJSON_CreateNumber(walletList[i].defaultWallet));
             cJSON_AddItemToObject(item, "defaultPassphraseWallet", cJSON_CreateNumber(walletList[i].defaultPassphraseWallet));
@@ -756,12 +784,14 @@ void AccountPublicHomeCoinSet(WalletState_t *walletList, uint8_t count)
                 cJSON_ReplaceItemInObject(item, "manage", cJSON_CreateBool(walletList[i].state));
                 needUpdate = true;
             }
-            if (cJSON_GetObjectItem(item, "testNet") == NULL) {
-                cJSON_AddItemToObject(item, "testNet", cJSON_CreateBool(walletList[i].testNet));
-                needUpdate = true;
-            } else if (GetBoolValue(item, "testNet", false) != walletList[i].testNet) {
-                cJSON_ReplaceItemInObject(item, "testNet", cJSON_CreateBool(walletList[i].testNet));
-                needUpdate = true;
+            if (WalletUsesTestnetState(walletList[i].name)) {
+                if (cJSON_GetObjectItem(item, "testNet") == NULL) {
+                    cJSON_AddItemToObject(item, "testNet", cJSON_CreateBool(walletList[i].testNet));
+                    needUpdate = true;
+                } else if (GetBoolValue(item, "testNet", false) != walletList[i].testNet) {
+                    cJSON_ReplaceItemInObject(item, "testNet", cJSON_CreateBool(walletList[i].testNet));
+                    needUpdate = true;
+                }
             }
 #ifdef BTC_ONLY
             if (cJSON_GetObjectItem(item, "defaultWallet") == NULL) {
@@ -903,7 +933,7 @@ int32_t AccountPublicSavePublicInfo(uint8_t accountIndex, const char *password, 
                                          seed,
                                          seedLen,
                                          g_chainTable[i].path,
-                                         g_chainTable[i].chain == ZCASH_UFVK_TEST_ENCRYPTED_0);
+                                         IsZcashTestnetUfvkChain(g_chainTable[i].chain));
                 CHECK_AND_FREE_XPUB(zcash_ufvk_response)
                 zcashUfvk = zcash_ufvk_response->data;
                 SimpleResponse_u8 *iv_response = rust_derive_iv_from_seed(seed, seedLen);
@@ -1102,7 +1132,7 @@ int32_t TempAccountPublicInfo(uint8_t accountIndex, const char *password, bool s
                                          seed,
                                          seedLen,
                                          g_chainTable[i].path,
-                                         g_chainTable[i].chain == ZCASH_UFVK_TEST_ENCRYPTED_0);
+                                         IsZcashTestnetUfvkChain(g_chainTable[i].chain));
                 CHECK_AND_FREE_XPUB(zcash_ufvk_response)
                 zcashUfvk = zcash_ufvk_response->data;
                 SimpleResponse_u8 *iv_response = rust_derive_iv_from_seed(seed, seedLen);

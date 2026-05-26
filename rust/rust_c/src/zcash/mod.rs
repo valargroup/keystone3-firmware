@@ -121,7 +121,6 @@ pub unsafe extern "C" fn check_zcash_tx_multi_coins(
     xpub: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
-    is_testnet: bool,
     disabled: bool,
 ) -> *mut TransactionCheckResult {
     if disabled {
@@ -134,9 +133,8 @@ pub unsafe extern "C" fn check_zcash_tx_multi_coins(
     let xpub_text = unsafe { recover_c_char(xpub) };
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
-    let network = zcash_network(is_testnet);
     match app_zcash::check_pczt_multi_coins(
-        &network,
+        &Network::MainNetwork,
         &pczt.get_data(),
         &xpub_text,
         seed_fingerprint,
@@ -172,13 +170,15 @@ pub unsafe extern "C" fn parse_zcash_tx_cypherpunk(
 pub unsafe extern "C" fn parse_zcash_tx_multi_coins(
     tx: PtrUR,
     seed_fingerprint: PtrBytes,
-    is_testnet: bool,
 ) -> Ptr<TransactionParseResult<DisplayPczt>> {
     let pczt = extract_ptr_with_type!(tx, ZcashPczt);
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
-    let network = zcash_network(is_testnet);
-    match app_zcash::parse_pczt_multi_coins(&network, &pczt.get_data(), seed_fingerprint) {
+    match app_zcash::parse_pczt_multi_coins(
+        &Network::MainNetwork,
+        &pczt.get_data(),
+        seed_fingerprint,
+    ) {
         Ok(pczt) => TransactionParseResult::success(DisplayPczt::from(&pczt).c_ptr()).c_ptr(),
         Err(e) => TransactionParseResult::from(e).c_ptr(),
     }

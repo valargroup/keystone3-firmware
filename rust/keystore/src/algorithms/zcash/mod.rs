@@ -82,6 +82,8 @@ pub fn sign_message_orchard<R: RngCore + CryptoRng>(
 ) -> Result<()> {
     ensure_non_trivial_seed(seed)?;
     const HARDENED_FLAG: u32 = 1 << 31;
+    const ZCASH_MAINNET_COIN_TYPE: u32 = 133;
+    const ZCASH_TESTNET_COIN_TYPE: u32 = 1;
 
     if path.len() == 3
         && path[0] == zip32::ChildIndex::hardened(32)
@@ -89,6 +91,11 @@ pub fn sign_message_orchard<R: RngCore + CryptoRng>(
         && path[2].index() & HARDENED_FLAG == HARDENED_FLAG
     {
         let coin_type = path[1].index() - HARDENED_FLAG;
+        if coin_type != ZCASH_MAINNET_COIN_TYPE && coin_type != ZCASH_TESTNET_COIN_TYPE {
+            return Err(KeystoreError::ZcashOrchardSign(format!(
+                "invalid orchard account path: {path:?}"
+            )));
+        }
         let account_id =
             zip32::AccountId::try_from(path[2].index() - HARDENED_FLAG).expect("valid");
 
