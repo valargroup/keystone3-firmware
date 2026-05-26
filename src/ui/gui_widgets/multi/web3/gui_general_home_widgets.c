@@ -441,32 +441,12 @@ static void OpenMoreViewHandler(lv_event_t *e)
     GuiFrameOpenView(lv_event_get_user_data(e));
 }
 
-#ifdef COMPILE_SIMULATOR
-static void ToggleZcashTestnetHandler(lv_event_t *e)
-{
-    GUI_DEL_OBJ(g_moreHintbox)
-    SetZcashIsTestNet(!GetZcashIsTestNet());
-    GuiHomeRefresh();
-}
-#endif
-
 static void OpenMoreSettingHandler(lv_event_t *e)
 {
-#ifdef COMPILE_SIMULATOR
-    static char zcashTestnetLabel[32] = {0};
-    snprintf_s(zcashTestnetLabel, sizeof(zcashTestnetLabel), "ZEC Testnet %s",
-               GetZcashIsTestNet() ? "On" : "Off");
-    MoreInfoTable_t moreInfoTable[] = {
-        {.name = _("home_more_connect_wallet"), .src = &imgConnect, .callBack = OpenMoreViewHandler, &g_connectWalletView},
-        {.name = zcashTestnetLabel, .src = &imgNetwork, .callBack = ToggleZcashTestnetHandler, NULL},
-        {.name = _("device_setting_mid_btn"), .src = &imgSettings, .callBack = OpenMoreViewHandler, &g_settingView},
-    };
-#else
     MoreInfoTable_t moreInfoTable[] = {
         {.name = _("home_more_connect_wallet"), .src = &imgConnect, .callBack = OpenMoreViewHandler, &g_connectWalletView},
         {.name = _("device_setting_mid_btn"), .src = &imgSettings, .callBack = OpenMoreViewHandler, &g_settingView},
     };
-#endif
     g_moreHintbox = GuiCreateMoreInfoHintBox(NULL, NULL, moreInfoTable, NUMBER_OF_ARRAYS(moreInfoTable), true, &g_moreHintbox);
 }
 
