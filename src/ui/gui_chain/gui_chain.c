@@ -44,7 +44,9 @@ bool CheckViewTypeIsAllow(uint8_t viewType)
     }
 #endif
 #ifdef CYPHERPUNK_VERSION
-    return ViewTypeReMap(viewType) == REMAPVIEW_BTC || ViewTypeReMap(viewType) == REMAPVIEW_BTC_MESSAGE;
+    GuiRemapViewType remapType = ViewTypeReMap(viewType);
+    return remapType == REMAPVIEW_BTC ||
+           remapType == REMAPVIEW_BTC_MESSAGE;
 #endif
     return false;
 }
@@ -109,6 +111,7 @@ static const ViewHandlerEntry g_viewHandlerMap[] = {
 
 #ifdef CYPHERPUNK_VERSION
     {ZcashTx, GuiGetZcashSignQrCodeData, NULL, GuiGetZcashCheckResult, CHAIN_ZCASH, REMAPVIEW_ZCASH},
+    {ZcashBatchTx, GuiGetZcashBatchSignQrCodeData, NULL, GuiGetZcashBatchCheckResult, CHAIN_ZCASH, REMAPVIEW_ZCASH_BATCH_TX},
     {XmrOutput, GuiGetMoneroKeyimagesQrCodeData, NULL, GuiGetMoneroOutputCheckResult, CHAIN_XMR, REMAPVIEW_XMR_OUTPUT},
     {XmrTxUnsigned, GuiGetMoneroSignedTransactionQrCodeData, NULL, GuiGetMoneroUnsignedTxCheckResult, CHAIN_XMR, REMAPVIEW_XMR_UNSIGNED},
 #endif

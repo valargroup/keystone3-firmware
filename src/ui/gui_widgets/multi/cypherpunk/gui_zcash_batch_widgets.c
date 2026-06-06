@@ -1,0 +1,306 @@
+#include "gui_zcash_batch_widgets.h"
+#include "account_manager.h"
+#include "gui_button.h"
+#include "gui_chain.h"
+#include "gui_chain_components.h"
+#include "gui_keyboard_hintbox.h"
+#include "gui_lock_widgets.h"
+#include "gui_model.h"
+#include "gui_page.h"
+#include "gui_views.h"
+#include "gui_zcash.h"
+#include "keystore.h"
+#include "screen_manager.h"
+#include "user_memory.h"
+
+#define QRCODE_CONFIRM_SIGN_PROCESS 66
+
+static URParseResult *g_urResult = NULL;
+static URParseMultiResult *g_urMultiResult = NULL;
+static bool g_isMulti = false;
+
+static uint32_t g_currentTxIndex = 0;
+static uint32_t g_txCount = 0;
+
+static TransactionParseResult_DisplayZcashBatch *g_parseResult = NULL;
+static DisplayZcashBatch *g_displayZcashBatch = NULL;
+static DisplayPczt *g_currentTransaction = NULL;
+
+static PageWidget_t *g_pageWidget = NULL;
+static lv_obj_t *g_cont = NULL;
+static lv_obj_t *g_txContainer = NULL;
+static lv_obj_t *g_bottomBtnContainer = NULL;
+static lv_obj_t *g_signSlider = NULL;
+static lv_obj_t *g_parseErrorHintBox = NULL;
+static KeyboardWidget_t *g_keyboardWidget = NULL;
+
+static void *GuiParseZcashBatchData(void);
+static void CheckSliderProcessHandler(lv_event_t *e);
+static void GuiRenderCurrentTransaction(bool showSignSlider);
+static void GuiRenderBottomBtn(lv_obj_t *parent, bool showSignSlider);
+static void HandleClickPreviousBtn(lv_event_t *e);
+static void HandleClickNextBtn(lv_event_t *e);
+
+static void ClearPageData(void)
+{
+    g_currentTxIndex = 0;
+    g_txCount = 0;
+    g_currentTransaction = NULL;
+    g_displayZcashBatch = NULL;
+
+    if (g_parseResult != NULL) {
+        free_TransactionParseResult_DisplayZcashBatch(g_parseResult);
+        g_parseResult = NULL;
+    }
+
+    if (g_isMulti) {
+        CHECK_FREE_UR_RESULT(g_urMultiResult, true);
+    } else {
+        CHECK_FREE_UR_RESULT(g_urResult, false);
+    }
+}
+
+void GuiSetZcashBatchUrData(URParseResult *urResult, URParseMultiResult *urMultiResult, bool multi)
+{
+    g_urResult = urResult;
+    g_urMultiResult = urMultiResult;
+    g_isMulti = multi;
+}
+
+UREncodeResult *GuiGetZcashBatchSignQrCodeData(void)
+{
+    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    return SignInternal(sign_zcash_batch_tx, data);
+}
+
+#ifdef CYPHERPUNK_VERSION
+PtrT_TransactionCheckResult GuiGetZcashBatchCheckResult(void)
+{
+    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    uint8_t sfp[32] = {0};
+    uint32_t zcashAccountIndex = 0;
+    uint8_t accountNum = 0;
+    char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
+
+    GetExistAccountNum(&accountNum);
+    if (accountNum <= 0) {
+        return check_zcash_batch_tx_cypherpunk(data, ufvk, sfp, zcashAccountIndex, true);
+    }
+
+    GetZcashSFP(GetCurrentAccountIndex(), sfp);
+    GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+    return check_zcash_batch_tx_cypherpunk(
+               data,
+               ufvk,
+               sfp,
+               zcashAccountIndex,
+               !IsZcashSupportedForCurrentMnemonic());
+}
+#endif
+
+void GuiZcashBatchWidgetsVerifyPasswordSuccess(void)
+{
+    GuiDeleteKeyboardWidget(g_keyboardWidget);
+    uint8_t viewType = ZcashBatchTx;
+    GuiFrameOpenViewWithParam(&g_transactionSignatureView, &viewType, sizeof(viewType));
+}
+
+void GuiZcashBatchWidgetsSignVerifyPasswordErrorCount(void *param)
+{
+    PasswordVerifyResult_t *passwordVerifyResult = (PasswordVerifyResult_t *)param;
+    GuiShowErrorNumber(g_keyboardWidget, passwordVerifyResult);
+}
+
+static void SignByPasswordCb(bool cancel)
+{
+    (void)cancel;
+    g_keyboardWidget = GuiCreateKeyboardWidget(g_pageWidget->contentZone);
+    SetKeyboardWidgetSelf(g_keyboardWidget, &g_keyboardWidget);
+    static uint16_t sig = SIG_SIGN_TRANSACTION_WITH_PASSWORD;
+    SetKeyboardWidgetSig(g_keyboardWidget, &sig);
+}
+
+static void CheckSliderProcessHandler(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_RELEASED) {
+        return;
+    }
+
+    int32_t value = lv_slider_get_value(lv_event_get_target(e));
+    if (value >= QRCODE_CONFIRM_SIGN_PROCESS) {
+        SignByPasswordCb(false);
+        lv_slider_set_value(lv_event_get_target(e), 0, LV_ANIM_OFF);
+    } else {
+        lv_slider_set_value(lv_event_get_target(e), 0, LV_ANIM_ON);
+    }
+}
+
+static void HandleClickPreviousBtn(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED && g_currentTxIndex > 0) {
+        g_currentTxIndex--;
+        GuiZcashBatchWidgetsRefresh();
+    }
+}
+
+static void HandleClickNextBtn(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED && g_currentTxIndex < g_txCount - 1) {
+        g_currentTxIndex++;
+        GuiZcashBatchWidgetsRefresh();
+    }
+}
+
+static void GuiReturnHome(void)
+{
+    GuiCloseToTargetView(&g_homeView);
+}
+
+static void OnReturnHandler(lv_event_t *e)
+{
+    GuiReturnHome();
+}
+
+static void ZcashBatchNavBarInit(void)
+{
+    SetNavBarLeftBtn(g_pageWidget->navBarWidget, NVS_BAR_RETURN, OnReturnHandler, NULL);
+}
+
+static void ZcashBatchNavBarRefresh(void)
+{
+    char text[BUFFER_SIZE_128] = {0};
+    if (g_txCount > 1) {
+        snprintf_s(
+            text,
+            sizeof(text),
+            "%s (%d/%d)",
+            _("confirm_transaction"),
+            (int)(g_currentTxIndex + 1),
+            (int)g_txCount);
+    } else {
+        snprintf_s(text, sizeof(text), "%s", _("confirm_transaction"));
+    }
+    SetCoinWallet(g_pageWidget->navBarWidget, CHAIN_ZCASH, text);
+
+    if (g_currentTxIndex == 0) {
+        SetNavBarLeftBtn(g_pageWidget->navBarWidget, NVS_BAR_RETURN, OnReturnHandler, NULL);
+    } else {
+        SetNavBarLeftBtn(g_pageWidget->navBarWidget, NVS_BAR_RETURN, HandleClickPreviousBtn, NULL);
+    }
+}
+
+static void GuiRenderBottomBtn(lv_obj_t *parent, bool showSignSlider)
+{
+    if (showSignSlider) {
+        GUI_DEL_OBJ(g_bottomBtnContainer)
+        if (g_signSlider == NULL) {
+            g_signSlider = GuiCreateConfirmSlider(parent, CheckSliderProcessHandler);
+        }
+        return;
+    }
+
+    GUI_DEL_OBJ(g_signSlider)
+    if (g_bottomBtnContainer != NULL) {
+        return;
+    }
+
+    g_bottomBtnContainer = GuiCreateContainerWithParent(parent, 480, 114);
+    lv_obj_align(g_bottomBtnContainer, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    lv_obj_t *leftBtn = GuiCreateTextBtn(g_bottomBtnContainer, _("Previous"));
+    lv_obj_align(leftBtn, LV_ALIGN_BOTTOM_LEFT, 36, -24);
+    lv_obj_set_size(leftBtn, 192, 66);
+    lv_obj_set_style_bg_color(leftBtn, DARK_GRAY_COLOR, LV_PART_MAIN);
+    lv_obj_add_event_cb(leftBtn, HandleClickPreviousBtn, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *rightBtn = GuiCreateTextBtn(g_bottomBtnContainer, _("Next"));
+    lv_obj_align(rightBtn, LV_ALIGN_BOTTOM_RIGHT, -36, -24);
+    lv_obj_set_size(rightBtn, 192, 66);
+    lv_obj_set_style_bg_color(rightBtn, ORANGE_COLOR, LV_PART_MAIN);
+    lv_obj_add_event_cb(rightBtn, HandleClickNextBtn, LV_EVENT_CLICKED, NULL);
+}
+
+static void GuiRenderCurrentTransaction(bool showSignSlider)
+{
+    GUI_DEL_OBJ(g_txContainer)
+
+    g_txContainer = GuiCreateContainerWithParent(g_cont, 408, 542);
+    lv_obj_align(g_txContainer, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_add_flag(g_txContainer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_style(g_txContainer, NULL, LV_PART_SCROLLBAR);
+
+    GuiZcashOverviewWithData(g_txContainer, g_currentTransaction);
+    GuiRenderBottomBtn(g_cont, showSignSlider);
+}
+
+void GuiZcashBatchWidgetsRefresh(void)
+{
+    if (g_parseResult == NULL || g_parseResult->error_code != 0) {
+        return;
+    }
+
+    ZcashBatchNavBarRefresh();
+    g_currentTransaction = &g_displayZcashBatch->txs->data[g_currentTxIndex];
+    GuiRenderCurrentTransaction(g_currentTxIndex == g_txCount - 1);
+}
+
+static void *GuiParseZcashBatchData(void)
+{
+    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    uint8_t sfp[32];
+    uint32_t zcashAccountIndex = 0;
+    GetZcashSFP(GetCurrentAccountIndex(), sfp);
+
+    char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
+    GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+    g_parseResult = parse_zcash_batch_tx_cypherpunk(
+        data,
+        ufvk,
+        sfp,
+        zcashAccountIndex,
+        !IsZcashSupportedForCurrentMnemonic());
+
+    return g_parseResult;
+}
+
+void GuiZcashBatchWidgetsTransactionParseSuccess(void)
+{
+    g_displayZcashBatch = g_parseResult->data;
+    g_txCount = g_displayZcashBatch->txs->size;
+    g_currentTxIndex = 0;
+    GuiZcashBatchWidgetsRefresh();
+}
+
+void GuiZcashBatchWidgetsTransactionParseFail(void)
+{
+    printf("GuiZcashBatchWidgetsTransactionParseFail\n");
+    if (g_parseResult != NULL) {
+        printf("error: %s\n", g_parseResult->error_message);
+    }
+    g_parseErrorHintBox = GuiCreateErrorCodeWindow(ERR_INVALID_QRCODE, &g_parseErrorHintBox, GuiReturnHome);
+}
+
+void GuiZcashBatchWidgetsInit(void)
+{
+    g_pageWidget = CreatePageWidget();
+    g_cont = g_pageWidget->contentZone;
+    g_txContainer = NULL;
+    g_bottomBtnContainer = NULL;
+    g_signSlider = NULL;
+    g_parseErrorHintBox = NULL;
+    g_keyboardWidget = NULL;
+
+    lv_obj_add_flag(g_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_style(g_cont, NULL, LV_PART_SCROLLBAR);
+
+    ZcashBatchNavBarInit();
+    GuiEmitSignal(SIG_SHOW_TRANSACTION_LOADING, NULL, 0);
+    GuiModelParseTransaction(GuiParseZcashBatchData);
+}
+
+void GuiZcashBatchWidgetsDeInit(void)
+{
+    GuiDeleteKeyboardWidget(g_keyboardWidget);
+    GUI_PAGE_DEL(g_pageWidget);
+    ClearPageData();
+}

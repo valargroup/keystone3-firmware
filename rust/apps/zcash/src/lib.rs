@@ -208,6 +208,126 @@ pub fn sign_pczt(pczt: &[u8], seed: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[cfg(feature = "cypherpunk")]
+fn map_orchard_verifier_error(
+    e: zcash_vendor::pczt::roles::verifier::OrchardError<ZcashError>,
+) -> ZcashError {
+    use zcash_vendor::pczt::roles::verifier::OrchardError;
+
+    match e {
+        OrchardError::Custom(e) => e,
+        _ => ZcashError::InvalidPczt(alloc::format!("{e:?}")),
+    }
+}
+
+#[cfg(feature = "cypherpunk")]
+fn signable_orchard_action_indexes(pczt: Pczt, seed_fingerprint: &[u8; 32]) -> Result<Vec<usize>> {
+    use zcash_vendor::pczt::roles::verifier::{OrchardError, Verifier};
+
+    if !pczt.sapling().spends().is_empty() {
+        return Err(ZcashError::InvalidPczt(
+            "Zcash batch PCZT must not contain Sapling spends".to_string(),
+        ));
+    }
+
+    if !pczt.transparent().inputs().is_empty() {
+        return Err(ZcashError::InvalidPczt(
+            "Zcash batch PCZT must not contain transparent inputs".to_string(),
+        ));
+    }
+
+    let mut indexes = Vec::new();
+    Verifier::new(pczt)
+        .with_orchard::<ZcashError, _>(|bundle| {
+            for (index, action) in bundle.actions().iter().enumerate() {
+                let value = action.spend().value().ok_or_else(|| {
+                    OrchardError::Custom(ZcashError::InvalidPczt(
+                        "missing Orchard spend value for batch signing".to_string(),
+                    ))
+                })?;
+                if value.inner() == 0 {
+                    continue;
+                }
+
+                let matches_seed = action
+                    .spend()
+                    .zip32_derivation()
+                    .as_ref()
+                    .map(|derivation| derivation.seed_fingerprint() == seed_fingerprint)
+                    .unwrap_or(false);
+                if !matches_seed {
+                    return Err(OrchardError::Custom(ZcashError::PcztNoMyInputs));
+                }
+                indexes.push(index);
+            }
+            Ok(())
+        })
+        .map_err(map_orchard_verifier_error)?;
+
+    Ok(indexes)
+}
+
+/// Checks whether the PCZT contains at least one non-dummy Orchard action that
+/// can be signed by the account identified by `seed_fingerprint`.
+///
+/// `sign_pczt` intentionally returns a redacted PCZT even when no key matched.
+/// Batch signing needs this explicit preflight so one approval cannot silently
+/// produce a result with zero Orchard signatures for an entry.
+#[cfg(feature = "cypherpunk")]
+pub fn ensure_pczt_has_signable_orchard_action(
+    pczt: &[u8],
+    seed_fingerprint: &[u8; 32],
+) -> Result<()> {
+    let pczt =
+        Pczt::parse(pczt).map_err(|_e| ZcashError::InvalidPczt("invalid pczt data".to_string()))?;
+
+    if signable_orchard_action_indexes(pczt, seed_fingerprint)?.is_empty() {
+        Err(ZcashError::PcztNoMyInputs)
+    } else {
+        Ok(())
+    }
+}
+
+/// Confirms that every signable Orchard action in `unsigned_pczt` has a spend
+/// authorization signature in the same position in `signed_pczt`.
+#[cfg(feature = "cypherpunk")]
+pub fn ensure_signable_orchard_actions_are_signed(
+    unsigned_pczt: &[u8],
+    signed_pczt: &[u8],
+    seed_fingerprint: &[u8; 32],
+) -> Result<()> {
+    use zcash_vendor::pczt::roles::verifier::{OrchardError, Verifier};
+
+    let unsigned_pczt = Pczt::parse(unsigned_pczt)
+        .map_err(|_e| ZcashError::InvalidPczt("invalid pczt data".to_string()))?;
+    let signable_indexes = signable_orchard_action_indexes(unsigned_pczt, seed_fingerprint)?;
+    if signable_indexes.is_empty() {
+        Err(ZcashError::PcztNoMyInputs)
+    } else {
+        let signed_pczt = Pczt::parse(signed_pczt)
+            .map_err(|_e| ZcashError::InvalidPczt("invalid signed pczt data".to_string()))?;
+        Verifier::new(signed_pczt)
+            .with_orchard::<ZcashError, _>(|bundle| {
+                for index in &signable_indexes {
+                    let action = bundle.actions().get(*index).ok_or_else(|| {
+                        OrchardError::Custom(ZcashError::SigningError(
+                            "signed PCZT is missing an Orchard action".to_string(),
+                        ))
+                    })?;
+                    if action.spend().spend_auth_sig().is_none() {
+                        return Err(OrchardError::Custom(ZcashError::SigningError(
+                            "signed PCZT is missing an Orchard spend authorization signature"
+                                .to_string(),
+                        )));
+                    }
+                }
+                Ok(())
+            })
+            .map_err(map_orchard_verifier_error)?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "cypherpunk")]
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;

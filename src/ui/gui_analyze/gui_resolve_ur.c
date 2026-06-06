@@ -19,6 +19,9 @@
 #include "gui_key_derivation_request_widgets.h"
 #include "gui_eth_batch_tx_widgets.h"
 #endif
+#ifdef CYPHERPUNK_VERSION
+#include "gui_zcash_batch_widgets.h"
+#endif
 
 // The order of the enumeration must be guaranteed
 static SetChainData_t g_chainViewArray[] = {
@@ -88,6 +91,11 @@ void handleURResult(URParseResult *urResult, URParseMultiResult *urMultiResult, 
         GuiSetEthBatchTxData(urResult, urMultiResult, is_multi);
         break;
 #endif
+#ifdef CYPHERPUNK_VERSION
+    case ZcashBatchTx:
+        GuiSetZcashBatchUrData(urResult, urMultiResult, is_multi);
+        break;
+#endif
 #ifdef BTC_ONLY
     case MultisigWalletImport:
         GuiSetMultisigImportWalletDataByQRCode(urResult, urMultiResult, is_multi);
@@ -106,6 +114,9 @@ void handleURResult(URParseResult *urResult, URParseMultiResult *urMultiResult, 
 #ifdef WEB3_VERSION
             || urViewType.viewType == KeyDerivationRequest
             || urViewType.viewType == EthBatchTx
+#endif
+#ifdef CYPHERPUNK_VERSION
+            || urViewType.viewType == ZcashBatchTx
 #endif
 #ifdef BTC_ONLY
             || urViewType.viewType == MultisigWalletImport

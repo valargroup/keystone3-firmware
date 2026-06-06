@@ -52,3 +52,67 @@ zcash-pczt {
     data: bytes, ; Zcash PCZT, signatures inserted after signing.
 }
 ```
+
+### Zcash Batch Signing
+
+`zcash-sign-batch` wraps multiple signing messages into one Keystone approval.
+Version 1 is supported by cypherpunk firmware and currently supports up to six
+mainnet PCZT messages. It requires `atomic` to be `true`; if any message is
+invalid or cannot be signed, Keystone returns an error instead of a partial
+result. Batch PCZT entries must be fully Keystone-owned Orchard spends.
+Transparent inputs and Sapling spends are rejected.
+
+Message kinds:
+
+```cddl
+pczt-v1 = 1
+```
+
+Networks:
+
+```cddl
+zcash-mainnet = 1
+```
+
+Result statuses:
+
+```cddl
+signed = 0
+```
+
+#### CDDL for Zcash Sign Batch
+
+```cddl
+zcash-sign-batch = {
+    1: uint,                 ; version. Must be 1.
+    2: bytes,                ; request id. Echoed by zcash-sign-result.
+    3: uint,                 ; network. Must be zcash-mainnet.
+    4: [1*6 zcash-sign-message],
+   ?11: bool,                ; atomic. Defaults to true. Must be true.
+}
+
+zcash-sign-message = {
+    1: bytes,                ; caller-defined message id. Must be unique.
+    2: uint,                 ; message kind. Must be pczt-v1.
+    3: bytes,                ; message payload. For pczt-v1 this is raw PCZT bytes. Must be unique in the batch.
+   ?6: bytes.32,             ; SHA-256 of payload.
+}
+```
+
+#### CDDL for Zcash Sign Result
+
+```cddl
+zcash-sign-result = {
+    1: uint,                 ; version. Matches request version.
+    2: bytes,                ; request id from zcash-sign-batch.
+    3: [1*6 zcash-sign-message-result],
+}
+
+zcash-sign-message-result = {
+    1: bytes,                ; message id from zcash-sign-message.
+    2: uint,                 ; status. signed = 0.
+    3: uint,                 ; message kind from zcash-sign-message.
+    4: bytes,                ; signed payload. For pczt-v1 this is signed PCZT bytes.
+    6: bytes.32,             ; SHA-256 of signed payload.
+}
+```

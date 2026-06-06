@@ -43,8 +43,28 @@ impl From<&ParsedPczt> for DisplayPczt {
 impl Free for DisplayPczt {
     unsafe fn free(&self) {
         free_str_ptr!(self.total_transfer_value);
+        free_str_ptr!(self.fee_value);
         free_ptr_with_type!(self.transparent, DisplayTransparent);
         free_ptr_with_type!(self.orchard, DisplayOrchard);
+    }
+}
+
+#[repr(C)]
+pub struct DisplayZcashBatch {
+    pub txs: Ptr<VecFFI<DisplayPczt>>,
+}
+
+impl From<Vec<DisplayPczt>> for DisplayZcashBatch {
+    fn from(txs: Vec<DisplayPczt>) -> Self {
+        Self {
+            txs: VecFFI::from(txs).c_ptr(),
+        }
+    }
+}
+
+impl Free for DisplayZcashBatch {
+    unsafe fn free(&self) {
+        free_vec!(self.txs);
     }
 }
 
@@ -173,6 +193,7 @@ impl Free for DisplayOrchard {
 
 impl_c_ptrs!(
     DisplayPczt,
+    DisplayZcashBatch,
     DisplayTransparent,
     DisplayFrom,
     DisplayTo,
