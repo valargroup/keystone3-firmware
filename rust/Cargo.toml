@@ -121,4 +121,4 @@ zeroize = { version = "1.8.2", default-features = false }
 
 [patch.crates-io]
 # TODO: Replace this git patch with the Keystone-published ur-registry tag once available.
-ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "bab59a8e764d1901e30cd33586a764f4e28fed89" }
+ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "7195b0207e2e46cf0e92538d364a5fcd52bd7ae4" }
