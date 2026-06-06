@@ -19,6 +19,9 @@ use zcash_vendor::{
     zip32,
 };
 
+#[cfg(feature = "cypherpunk")]
+use zcash_vendor::zcash_protocol::consensus::NetworkConstants;
+
 /// Generates a Zcash address from a Unified Full Viewing Key (UFVK).
 ///
 /// # Parameters
@@ -220,7 +223,12 @@ fn map_orchard_verifier_error(
 }
 
 #[cfg(feature = "cypherpunk")]
-fn signable_orchard_action_indexes(pczt: Pczt, seed_fingerprint: &[u8; 32]) -> Result<Vec<usize>> {
+fn signable_orchard_action_indexes<P: consensus::Parameters>(
+    params: &P,
+    pczt: Pczt,
+    seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+) -> Result<Vec<usize>> {
     use zcash_vendor::pczt::roles::verifier::{OrchardError, Verifier};
 
     if !pczt.sapling().spends().is_empty() {
@@ -248,13 +256,21 @@ fn signable_orchard_action_indexes(pczt: Pczt, seed_fingerprint: &[u8; 32]) -> R
                     continue;
                 }
 
-                let matches_seed = action
+                let expected_derivation_path = [
+                    zip32::ChildIndex::hardened(32),
+                    zip32::ChildIndex::hardened(params.network_type().coin_type()),
+                    account_index.into(),
+                ];
+                let matches_account = action
                     .spend()
                     .zip32_derivation()
                     .as_ref()
-                    .map(|derivation| derivation.seed_fingerprint() == seed_fingerprint)
+                    .map(|derivation| {
+                        derivation.seed_fingerprint() == seed_fingerprint
+                            && derivation.derivation_path() == &expected_derivation_path
+                    })
                     .unwrap_or(false);
-                if !matches_seed {
+                if !matches_account {
                     return Err(OrchardError::Custom(ZcashError::PcztNoMyInputs));
                 }
                 indexes.push(index);
@@ -267,20 +283,25 @@ fn signable_orchard_action_indexes(pczt: Pczt, seed_fingerprint: &[u8; 32]) -> R
 }
 
 /// Checks whether the PCZT contains at least one non-dummy Orchard action that
-/// can be signed by the account identified by `seed_fingerprint`.
+/// can be signed by the account identified by `seed_fingerprint` and
+/// `account_index`.
 ///
 /// `sign_pczt` intentionally returns a redacted PCZT even when no key matched.
 /// Batch signing needs this explicit preflight so one approval cannot silently
 /// produce a result with zero Orchard signatures for an entry.
 #[cfg(feature = "cypherpunk")]
-pub fn ensure_pczt_has_signable_orchard_action(
+pub fn ensure_pczt_has_signable_orchard_action<P: consensus::Parameters>(
+    params: &P,
     pczt: &[u8],
     seed_fingerprint: &[u8; 32],
+    account_index: u32,
 ) -> Result<()> {
     let pczt =
         Pczt::parse(pczt).map_err(|_e| ZcashError::InvalidPczt("invalid pczt data".to_string()))?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
 
-    if signable_orchard_action_indexes(pczt, seed_fingerprint)?.is_empty() {
+    if signable_orchard_action_indexes(params, pczt, seed_fingerprint, account_index)?.is_empty() {
         Err(ZcashError::PcztNoMyInputs)
     } else {
         Ok(())
@@ -290,16 +311,21 @@ pub fn ensure_pczt_has_signable_orchard_action(
 /// Confirms that every signable Orchard action in `unsigned_pczt` has a spend
 /// authorization signature in the same position in `signed_pczt`.
 #[cfg(feature = "cypherpunk")]
-pub fn ensure_signable_orchard_actions_are_signed(
+pub fn ensure_signable_orchard_actions_are_signed<P: consensus::Parameters>(
+    params: &P,
     unsigned_pczt: &[u8],
     signed_pczt: &[u8],
     seed_fingerprint: &[u8; 32],
+    account_index: u32,
 ) -> Result<()> {
     use zcash_vendor::pczt::roles::verifier::{OrchardError, Verifier};
 
     let unsigned_pczt = Pczt::parse(unsigned_pczt)
         .map_err(|_e| ZcashError::InvalidPczt("invalid pczt data".to_string()))?;
-    let signable_indexes = signable_orchard_action_indexes(unsigned_pczt, seed_fingerprint)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    let signable_indexes =
+        signable_orchard_action_indexes(params, unsigned_pczt, seed_fingerprint, account_index)?;
     if signable_indexes.is_empty() {
         Err(ZcashError::PcztNoMyInputs)
     } else {
@@ -414,6 +440,13 @@ mod tests {
         let seed = hex::decode("d561f5aba9db8b100a9a84197322e522f952171a388ad74eaab1ab9db815be3335c3099a0a2bb0fee57e630db5ed7251412b6bd4b905cf518627411fee3f32dd").unwrap();
         let ufvk = derive_ufvk(&MainNetwork, &seed, "m/32'/133'/0'").unwrap();
         let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        ensure_pczt_has_signable_orchard_action(&MainNetwork, &pczt_hex, &seed_fingerprint, 0)
+            .unwrap();
+        assert_eq!(
+            ensure_pczt_has_signable_orchard_action(&MainNetwork, &pczt_hex, &seed_fingerprint, 1,)
+                .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
         let parsed_pczt = parse_pczt_cypherpunk(
             &MainNetwork,
             &pczt_hex,

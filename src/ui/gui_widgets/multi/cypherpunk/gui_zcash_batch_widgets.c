@@ -3,6 +3,7 @@
 #include "gui_button.h"
 #include "gui_chain.h"
 #include "gui_chain_components.h"
+#include "gui_hintbox.h"
 #include "gui_keyboard_hintbox.h"
 #include "gui_lock_widgets.h"
 #include "gui_model.h"
@@ -40,6 +41,8 @@ static void GuiRenderCurrentTransaction(bool showSignSlider);
 static void GuiRenderBottomBtn(lv_obj_t *parent, bool showSignSlider);
 static void HandleClickPreviousBtn(lv_event_t *e);
 static void HandleClickNextBtn(lv_event_t *e);
+static void CloseParseErrorHandler(lv_event_t *e);
+static UREncodeResult *SignZcashBatchInternal(void *data);
 
 static void ClearPageData(void)
 {
@@ -70,7 +73,65 @@ void GuiSetZcashBatchUrData(URParseResult *urResult, URParseMultiResult *urMulti
 UREncodeResult *GuiGetZcashBatchSignQrCodeData(void)
 {
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
-    return SignInternal(sign_zcash_batch_tx, data);
+    return SignZcashBatchInternal(data);
+}
+
+static UREncodeResult *SignZcashBatchInternal(void *data)
+{
+    bool enable = IsPreviousLockScreenEnable();
+    SetLockScreen(false);
+    UREncodeResult *encodeResult = NULL;
+    uint8_t seed[SEED_LEN] = {0};
+    uint8_t sfp[32] = {0};
+    uint32_t zcashAccountIndex = 0;
+    char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
+    bool disabled = !IsZcashSupportedForCurrentMnemonic();
+    int ret = 0;
+
+    do {
+        if (disabled) {
+            encodeResult = sign_zcash_batch_tx_cypherpunk(
+                               data,
+                               ufvk,
+                               sfp,
+                               zcashAccountIndex,
+                               true,
+                               seed,
+                               0);
+            CHECK_CHAIN_BREAK(encodeResult);
+            break;
+        }
+
+        ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
+        if (ret != 0) {
+            break;
+        }
+        ret = GetZcashSFP(GetCurrentAccountIndex(), sfp);
+        if (ret != 0) {
+            break;
+        }
+        ret = GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+        if (ret != 0) {
+            break;
+        }
+
+        int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
+        encodeResult = sign_zcash_batch_tx_cypherpunk(
+                           data,
+                           ufvk,
+                           sfp,
+                           zcashAccountIndex,
+                           false,
+                           seed,
+                           len);
+        CHECK_CHAIN_BREAK(encodeResult);
+    } while (0);
+
+    memset_s(seed, sizeof(seed), 0, sizeof(seed));
+    ClearSecretCache();
+    SetLockScreen(enable);
+
+    return encodeResult;
 }
 
 #ifdef CYPHERPUNK_VERSION
@@ -154,6 +215,29 @@ static void HandleClickNextBtn(lv_event_t *e)
 static void GuiReturnHome(void)
 {
     GuiCloseToTargetView(&g_homeView);
+}
+
+static void CloseParseErrorHandler(lv_event_t *e)
+{
+    lv_obj_del(lv_event_get_user_data(e));
+    g_parseErrorHintBox = NULL;
+    GuiReturnHome();
+}
+
+static lv_obj_t *GuiCreateZcashBatchParseErrorWindow(const char *errorMessage)
+{
+    const char *descText = (errorMessage != NULL && strlen(errorMessage) > 0)
+                               ? errorMessage
+                               : _("scan_qr_code_error_invalid_qrcode_desc");
+    lv_obj_t *cont = GuiCreateConfirmHintBox(
+        &imgFailed,
+        _("scan_qr_code_error_invalid_qrcode"),
+        descText,
+        NULL,
+        _("OK"),
+        WHITE_COLOR_OPA20);
+    lv_obj_add_event_cb(GuiGetHintBoxRightBtn(cont), CloseParseErrorHandler, LV_EVENT_CLICKED, cont);
+    return cont;
 }
 
 static void OnReturnHandler(lv_event_t *e)
@@ -276,6 +360,8 @@ void GuiZcashBatchWidgetsTransactionParseFail(void)
     printf("GuiZcashBatchWidgetsTransactionParseFail\n");
     if (g_parseResult != NULL) {
         printf("error: %s\n", g_parseResult->error_message);
+        g_parseErrorHintBox = GuiCreateZcashBatchParseErrorWindow(g_parseResult->error_message);
+        return;
     }
     g_parseErrorHintBox = GuiCreateErrorCodeWindow(ERR_INVALID_QRCODE, &g_parseErrorHintBox, GuiReturnHome);
 }
