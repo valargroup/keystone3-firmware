@@ -1,3 +1,14 @@
+## Unreleased
+
+**Cypherpunk:**
+
+### What's new
+
+1. Added support for Zcash batch PCZT signing
+
+
+
+
 ## 2.4.4 (2026-5-27)
 
 **Web3:**

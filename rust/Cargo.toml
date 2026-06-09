@@ -118,3 +118,7 @@ getrandom = "0.2"
 minicbor = { version = "0.19", features = ["alloc"] }
 zeroize = { version = "1.8.2", default-features = false }
 # third party dependencies end
+
+[patch.crates-io]
+# TODO: Replace this git patch with the Keystone-published ur-registry tag once available.
+ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "18b5d4e16b67fd9b9f4510f822f6f47e92b3d359" }

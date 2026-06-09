@@ -73,6 +73,8 @@ use ur_registry::ton::ton_sign_request::TonSignRequest;
 use ur_registry::tron::tron_sign_request::TronSignRequest;
 #[cfg(feature = "zcash")]
 use ur_registry::zcash::zcash_pczt::ZcashPczt;
+#[cfg(feature = "zcash_cypherpunk")]
+use ur_registry::zcash::zcash_sign_batch::ZcashSignBatch;
 
 use super::errors::{ErrorCodes, RustCError};
 use super::free::Free;
@@ -277,6 +279,8 @@ pub enum ViewType {
     TonSignProof,
     #[cfg(feature = "zcash")]
     ZcashTx,
+    #[cfg(feature = "zcash_cypherpunk")]
+    ZcashBatchTx,
     #[cfg(feature = "aptos")]
     AptosTx,
     #[cfg(feature = "monero")]
@@ -363,6 +367,8 @@ pub enum QRCodeType {
     AvaxSignRequest,
     #[cfg(feature = "zcash")]
     ZcashPczt,
+    #[cfg(feature = "zcash_cypherpunk")]
+    ZcashSignBatch,
     #[cfg(feature = "monero")]
     XmrOutputSignRequest,
     #[cfg(feature = "monero")]
@@ -431,6 +437,8 @@ impl QRCodeType {
             InnerURType::TonSignRequest(_) => Ok(QRCodeType::TonSignRequest),
             #[cfg(feature = "zcash")]
             InnerURType::ZcashPczt(_) => Ok(QRCodeType::ZcashPczt),
+            #[cfg(feature = "zcash_cypherpunk")]
+            InnerURType::ZcashSignBatch(_) => Ok(QRCodeType::ZcashSignBatch),
             #[cfg(feature = "monero")]
             InnerURType::XmrTxUnsigned(_) => Ok(QRCodeType::XmrTxUnsignedRequest),
             #[cfg(feature = "monero")]
@@ -482,12 +490,7 @@ impl URParseResult {
         }
     }
 
-    pub fn multi(
-        progress: u32,
-        t: ViewType,
-        ur_type: QRCodeType,
-        decoder: KeystoneURDecoder,
-    ) -> Self {
+    fn multi(progress: u32, t: ViewType, ur_type: QRCodeType, decoder: KeystoneURDecoder) -> Self {
         let _self = Self::new();
         let decoder = Box::into_raw(Box::new(decoder)) as PtrUR;
         Self {
@@ -603,6 +606,14 @@ unsafe fn free_ur(ur_type: &QRCodeType, data: PtrUR) {
         #[cfg(feature = "cardano")]
         QRCodeType::CardanoCatalystVotingRegistrationRequest => {
             free_ptr_with_type!(data, CardanoCatalystVotingRegistrationRequest);
+        }
+        #[cfg(feature = "zcash")]
+        QRCodeType::ZcashPczt => {
+            free_ptr_with_type!(data, ZcashPczt);
+        }
+        #[cfg(feature = "zcash_cypherpunk")]
+        QRCodeType::ZcashSignBatch => {
+            free_ptr_with_type!(data, ZcashSignBatch);
         }
         #[cfg(feature = "monero")]
         QRCodeType::XmrOutputSignRequest => {
@@ -792,6 +803,8 @@ pub fn decode_ur(ur: String) -> URParseResult {
         QRCodeType::TonSignRequest => _decode_ur::<TonSignRequest>(ur, ur_type),
         #[cfg(feature = "zcash")]
         QRCodeType::ZcashPczt => _decode_ur::<ZcashPczt>(ur, ur_type),
+        #[cfg(feature = "zcash_cypherpunk")]
+        QRCodeType::ZcashSignBatch => _decode_ur::<ZcashSignBatch>(ur, ur_type),
         #[cfg(feature = "monero")]
         QRCodeType::XmrOutputSignRequest => _decode_ur::<XmrOutput>(ur, ur_type),
         #[cfg(feature = "monero")]
@@ -904,6 +917,8 @@ fn receive_ur(ur: String, decoder: &mut KeystoneURDecoder) -> URParseMultiResult
         QRCodeType::TonSignRequest => _receive_ur::<TonSignRequest>(ur, ur_type, decoder),
         #[cfg(feature = "zcash")]
         QRCodeType::ZcashPczt => _receive_ur::<ZcashPczt>(ur, ur_type, decoder),
+        #[cfg(feature = "zcash_cypherpunk")]
+        QRCodeType::ZcashSignBatch => _receive_ur::<ZcashSignBatch>(ur, ur_type, decoder),
         #[cfg(feature = "monero")]
         QRCodeType::XmrOutputSignRequest => _receive_ur::<XmrOutput>(ur, ur_type, decoder),
         #[cfg(feature = "monero")]

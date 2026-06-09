@@ -316,13 +316,10 @@ pub(crate) mod test_support {
 
     use ::pczt::roles::{creator::Creator, updater::Updater};
     use bitcoin::secp256k1::Secp256k1;
-    #[cfg(zcash_unstable = "nu7")]
     use incrementalmerkletree::Retention;
     use keystore::algorithms::zcash::{calculate_seed_fingerprint, derive_ufvk};
     use rand_core::OsRng;
-    #[cfg(zcash_unstable = "nu7")]
     use shardtree::{store::memory::MemoryShardStore, ShardTree};
-    #[cfg(zcash_unstable = "nu7")]
     use zcash_note_encryption::try_note_decryption;
     use zcash_primitives::transaction::{
         builder::{BuildConfig, Builder, PcztParts, PcztResult},
