@@ -2551,7 +2551,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.53.2",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -4798,8 +4798,7 @@ dependencies = [
 [[package]]
 name = "ur-registry"
 version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9b75e98b4ddfd7140efcf02b4e5d420e91f14cb7a30623c7aa83dccac1c7f64"
+source = "git+https://github.com/valargroup/keystone-sdk-rust.git?rev=18b5d4e16b67fd9b9f4510f822f6f47e92b3d359#18b5d4e16b67fd9b9f4510f822f6f47e92b3d359"
 dependencies = [
  "bs58",
  "hex",

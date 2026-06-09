@@ -1,5 +1,4 @@
 use alloc::string::{String, ToString};
-
 use alloc::vec::Vec;
 
 use app_utils::impl_public_struct;
@@ -41,7 +40,6 @@ pub fn generate_sync_ur(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
     use alloc::vec;
 
     #[test]
@@ -66,5 +64,7 @@ mod tests {
         let accounts = result.unwrap();
         let cbor: Vec<u8> = accounts.try_into().unwrap();
         assert!(!cbor.is_empty());
+        let decoded = ZcashAccounts::try_from(cbor).unwrap();
+        assert_eq!(decoded.get_device_version(), Some("1.2.3".to_string()));
     }
 }

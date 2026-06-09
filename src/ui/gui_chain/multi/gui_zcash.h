@@ -5,10 +5,12 @@
 
 void GuiSetZcashUrData(URParseResult *urResult, URParseMultiResult *urMultiResult, bool multi);
 void *GuiGetZcashGUIData(void);
+void GuiZcashOverviewWithData(lv_obj_t *parent, DisplayPczt *data);
+void GuiZcashOverview(lv_obj_t *parent, void *totalData);
 PtrT_TransactionCheckResult GuiGetZcashCheckResult(void);
 UREncodeResult *GuiGetZcashSignQrCodeData(void);
+UREncodeResult *GuiGetZcashSignUrDataUnlimited(void);
 void FreeZcashMemory(void);
 
-void GuiZcashOverview(lv_obj_t *parent, void *totalData);
 
 #endif

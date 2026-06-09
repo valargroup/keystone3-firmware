@@ -9,13 +9,10 @@ pub(crate) mod test_support {
 
     use ::pczt::roles::{creator::Creator, updater::Updater};
     use bitcoin::secp256k1::Secp256k1;
-    #[cfg(zcash_unstable = "nu7")]
     use incrementalmerkletree::Retention;
     use keystore::algorithms::zcash::{calculate_seed_fingerprint, derive_ufvk};
     use rand_core::OsRng;
-    #[cfg(zcash_unstable = "nu7")]
     use shardtree::{store::memory::MemoryShardStore, ShardTree};
-    #[cfg(zcash_unstable = "nu7")]
     use zcash_note_encryption::try_note_decryption;
     use zcash_primitives::transaction::{
         builder::{BuildConfig, Builder, PcztResult},
@@ -151,6 +148,112 @@ pub(crate) mod test_support {
             ufvk_text,
             seed_fingerprint: calculate_seed_fingerprint(&seed).unwrap(),
             transparent_recipient,
+        }
+    }
+
+    pub(crate) fn sample_orchard_spend_pczt() -> SamplePczt {
+        let params = MainNetwork;
+        let seed = [7u8; 32];
+        let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
+        let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
+        let orchard_fvk = ufvk.orchard().unwrap().clone();
+        let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::External);
+        let orchard_ovk = orchard_fvk.to_ovk(orchard::keys::Scope::External);
+        let recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::External);
+
+        let value = orchard::value::NoteValue::from_raw(1_000_000);
+        let note = {
+            let mut orchard_builder = orchard::builder::Builder::new(
+                orchard::builder::BundleProtocol::Orchard,
+                orchard::builder::BundleType::DEFAULT,
+                orchard::Anchor::empty_tree(),
+            );
+            orchard_builder
+                .add_output(None, recipient, value, Memo::Empty.encode().into_bytes())
+                .unwrap();
+            let (bundle, meta) = orchard_builder.build::<i64>(&mut OsRng).unwrap().unwrap();
+            let action = bundle
+                .actions()
+                .get(meta.output_action_index(0).unwrap())
+                .unwrap();
+            let domain = orchard::note_encryption::OrchardDomain::for_action(action);
+            let (note, _, _) =
+                try_note_decryption(&domain, &orchard_ivk.prepare(), action).unwrap();
+            note
+        };
+
+        let (anchor, merkle_path) = {
+            let cmx: orchard::note::ExtractedNoteCommitment = note.commitment().into();
+            let leaf = orchard::tree::MerkleHashOrchard::from_cmx(&cmx);
+            let mut tree = ShardTree::<_, 32, 16>::new(
+                MemoryShardStore::<orchard::tree::MerkleHashOrchard, u32>::empty(),
+                100,
+            );
+            tree.append(leaf, Retention::Marked).unwrap();
+            tree.checkpoint(9_999_999).unwrap();
+            let merkle_path = tree
+                .witness_at_checkpoint_depth(0.into(), 0)
+                .unwrap()
+                .unwrap();
+            let anchor = merkle_path.root(leaf);
+            (anchor.into(), merkle_path.into())
+        };
+
+        let mut builder = Builder::new(
+            &params,
+            10_000_000.into(),
+            BuildConfig::Standard {
+                sapling_anchor: None,
+                orchard_anchor: Some(anchor),
+                #[cfg(zcash_unstable = "nu7")]
+                ironwood_anchor: None,
+            },
+        );
+        builder
+            .add_orchard_spend::<zip317::FeeRule>(orchard_fvk.clone(), note, merkle_path)
+            .unwrap();
+        builder
+            .add_orchard_output::<zip317::FeeRule>(
+                Some(orchard_ovk),
+                recipient,
+                Zatoshis::const_from_u64(990_000),
+                MemoBytes::empty(),
+            )
+            .unwrap();
+        let PcztResult {
+            pczt_parts,
+            orchard_meta,
+            ..
+        } = builder
+            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .unwrap();
+        let spend_action_index = orchard_meta.spend_action_index(0).unwrap();
+        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        let derivation = orchard::pczt::Zip32Derivation::parse(
+            seed_fingerprint,
+            vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(133).index(),
+                zip32::ChildIndex::hardened(0).index(),
+            ],
+        )
+        .unwrap();
+        let pczt = Updater::new(Creator::build_from_parts(pczt_parts).unwrap())
+            .update_orchard_with(|mut bundle| {
+                bundle.update_action_with(spend_action_index, |mut action| {
+                    action.set_spend_zip32_derivation(derivation);
+                    Ok(())
+                })
+            })
+            .unwrap()
+            .finish();
+
+        SamplePczt {
+            bytes: pczt.serialize(),
+            seed: seed.to_vec(),
+            ufvk_text,
+            seed_fingerprint,
+            transparent_recipient: String::new(),
         }
     }
 
