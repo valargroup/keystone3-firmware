@@ -1,13 +1,82 @@
 use alloc::{string::String, vec::Vec};
 use app_utils::impl_public_struct;
 
-impl_public_struct!(ParsedPczt {
+#[derive(Debug, Clone, Default)]
+pub struct ParsedPczt {
     transparent: Option<ParsedTransparent>,
     orchard: Option<ParsedOrchard>,
+    ironwood: Option<ParsedOrchard>,
     total_transfer_value: String,
     fee_value: String,
-    has_sapling: bool
-});
+    has_sapling: bool,
+}
+
+impl ParsedPczt {
+    pub fn new(
+        transparent: Option<ParsedTransparent>,
+        orchard: Option<ParsedOrchard>,
+        total_transfer_value: String,
+        fee_value: String,
+        has_sapling: bool,
+    ) -> Self {
+        Self {
+            transparent,
+            orchard,
+            ironwood: None,
+            total_transfer_value,
+            fee_value,
+            has_sapling,
+        }
+    }
+
+    pub fn get_transparent(&self) -> Option<ParsedTransparent> {
+        self.transparent.clone()
+    }
+
+    pub fn set_transparent(&mut self, transparent: Option<ParsedTransparent>) {
+        self.transparent = transparent;
+    }
+
+    pub fn get_orchard(&self) -> Option<ParsedOrchard> {
+        self.orchard.clone()
+    }
+
+    pub fn set_orchard(&mut self, orchard: Option<ParsedOrchard>) {
+        self.orchard = orchard;
+    }
+
+    pub fn get_ironwood(&self) -> Option<ParsedOrchard> {
+        self.ironwood.clone()
+    }
+
+    pub fn set_ironwood(&mut self, ironwood: Option<ParsedOrchard>) {
+        self.ironwood = ironwood;
+    }
+
+    pub fn get_total_transfer_value(&self) -> String {
+        self.total_transfer_value.clone()
+    }
+
+    pub fn set_total_transfer_value(&mut self, total_transfer_value: String) {
+        self.total_transfer_value = total_transfer_value;
+    }
+
+    pub fn get_fee_value(&self) -> String {
+        self.fee_value.clone()
+    }
+
+    pub fn set_fee_value(&mut self, fee_value: String) {
+        self.fee_value = fee_value;
+    }
+
+    pub fn get_has_sapling(&self) -> bool {
+        self.has_sapling
+    }
+
+    pub fn set_has_sapling(&mut self, has_sapling: bool) {
+        self.has_sapling = has_sapling;
+    }
+}
 
 impl_public_struct!(ParsedTransparent {
     from: Vec<ParsedFrom>,

@@ -20,13 +20,18 @@ zcash_note_encryption = "0.4.1"
 
 [dev-dependencies]
 keystore = { path = "../../keystore" }
-pczt = { version = "0.2.1", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
-zcash_primitives = { version = "0.22", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "53da18a8906db4e771b1f90e403217eac09047dc", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
+zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "53da18a8906db4e771b1f90e403217eac09047dc", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
 postcard = { version = "1.0.3", features = ["alloc"] }
 serde = { workspace = true }
+incrementalmerkletree = { version = "0.8.2", default-features = false }
+shardtree = "0.6.2"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(coverage_nightly)',
+    'cfg(zcash_unstable, values("nu7"))',
+] }
 
 [features]
 default = ["cypherpunk"]
