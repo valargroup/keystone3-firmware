@@ -6,6 +6,9 @@
 #include "keystore.h"
 #include "screen_manager.h"
 #include "gui_chain.h"
+#ifdef CYPHERPUNK_VERSION
+#include "gui_home_widgets.h"
+#endif
 
 #define MAX_MEMO_LENGTH 1024
 #define ZCASH_OVERVIEW_DEFAULT_HEIGHT 480
@@ -45,9 +48,10 @@ void *GuiGetZcashGUIData(void)
         parseResult = parse_zcash_tx_multi_coins(data, xpub, sfp, zcash_account_index);
 #endif
 #ifdef CYPHERPUNK_VERSION
+        bool isTestNet = GetZcashIsTestNet();
         char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
-        GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
-        parseResult = parse_zcash_tx_cypherpunk(data, ufvk, sfp, zcash_account_index);
+        GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
+        parseResult = parse_zcash_tx_cypherpunk(data, ufvk, sfp, zcash_account_index, isTestNet);
 #endif
         CHECK_CHAIN_BREAK(parseResult);
         g_zcashData = parseResult->data;
@@ -334,9 +338,10 @@ PtrT_TransactionCheckResult GuiGetZcashCheckResult(void)
     return check_zcash_tx_multi_coins(data, xpub, sfp, zcash_account_index, mnemonicType == MNEMONIC_TYPE_SLIP39);
 #endif
 #ifdef CYPHERPUNK_VERSION
+    bool isTestNet = GetZcashIsTestNet();
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
-    GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
-    return check_zcash_tx_cypherpunk(data, ufvk, sfp, zcash_account_index, !IsZcashSupportedForCurrentMnemonic());
+    GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
+    return check_zcash_tx_cypherpunk(data, ufvk, sfp, zcash_account_index, isTestNet, !IsZcashSupportedForCurrentMnemonic());
 #endif
 }
 
@@ -354,12 +359,13 @@ UREncodeResult *GuiSignZcashCypherpunkWithSeed(void *data,
     uint32_t zcashAccountIndex = 0;
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
     bool disabled = !IsZcashSupportedForCurrentMnemonic();
+    bool isTestNet = GetZcashIsTestNet();
     int ret = 0;
 
     do {
         ZcashCypherpunkSignFunc selectedSignFunc = unlimited ? unlimitedSignFunc : signFunc;
         if (disabled) {
-            encodeResult = selectedSignFunc(data, ufvk, sfp, zcashAccountIndex, true, seed, 0);
+            encodeResult = selectedSignFunc(data, ufvk, sfp, zcashAccountIndex, isTestNet, true, seed, 0);
             CHECK_CHAIN_BREAK(encodeResult);
             break;
         }
@@ -372,13 +378,13 @@ UREncodeResult *GuiSignZcashCypherpunkWithSeed(void *data,
         if (ret != 0) {
             break;
         }
-        ret = GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+        ret = GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
         if (ret != 0) {
             break;
         }
 
         int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        encodeResult = selectedSignFunc(data, ufvk, sfp, zcashAccountIndex, false, seed, len);
+        encodeResult = selectedSignFunc(data, ufvk, sfp, zcashAccountIndex, isTestNet, false, seed, len);
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
 

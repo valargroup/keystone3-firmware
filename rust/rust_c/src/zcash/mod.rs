@@ -28,7 +28,7 @@ use ur_registry::zcash::zcash_sign_batch::{
     ZCASH_SIGN_MESSAGE_KIND_PCZT_V1,
 };
 use ur_registry::zcash::zcash_sign_result::{ZcashSignMessageResult, ZcashSignResult};
-use zcash_vendor::zcash_protocol::consensus::MainNetwork;
+use zcash_vendor::zcash_protocol::consensus::Network;
 use zeroize::Zeroize;
 
 // Batch memory is intentionally bounded by message count rather than separate
@@ -37,15 +37,25 @@ use zeroize::Zeroize;
 // substantially larger payload encodings are added.
 const ZCASH_BATCH_MAX_MESSAGES: usize = 35;
 
+fn zcash_network(is_testnet: bool) -> Network {
+    if is_testnet {
+        Network::TestNetwork
+    } else {
+        Network::MainNetwork
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn derive_zcash_ufvk(
     seed: PtrBytes,
     seed_len: u32,
     account_path: PtrString,
+    is_testnet: bool,
 ) -> *mut SimpleResponse<c_char> {
     let seed = extract_array!(seed, u8, seed_len as usize);
     let account_path = unsafe { recover_c_char(account_path) };
-    let ufvk_text = derive_ufvk(&MainNetwork, seed, &account_path);
+    let network = zcash_network(is_testnet);
+    let ufvk_text = derive_ufvk(&network, seed, &account_path);
     let result = match ufvk_text {
         Ok(text) => SimpleResponse::success(convert_c_char(text)).simple_c_ptr(),
         Err(e) => SimpleResponse::from(e).simple_c_ptr(),
@@ -73,9 +83,11 @@ pub unsafe extern "C" fn calculate_zcash_seed_fingerprint(
 #[no_mangle]
 pub unsafe extern "C" fn generate_zcash_default_address(
     ufvk_text: PtrString,
+    is_testnet: bool,
 ) -> *mut SimpleResponse<c_char> {
     let ufvk_text = unsafe { recover_c_char(ufvk_text) };
-    let address = get_address(&MainNetwork, &ufvk_text);
+    let network = zcash_network(is_testnet);
+    let address = get_address(&network, &ufvk_text);
     match address {
         Ok(text) => SimpleResponse::success(convert_c_char(text)).simple_c_ptr(),
         Err(e) => SimpleResponse::from(e).simple_c_ptr(),
@@ -89,6 +101,7 @@ pub unsafe extern "C" fn check_zcash_tx_cypherpunk(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
 ) -> *mut TransactionCheckResult {
     if disabled {
@@ -101,8 +114,9 @@ pub unsafe extern "C" fn check_zcash_tx_cypherpunk(
     let ufvk_text = unsafe { recover_c_char(ufvk) };
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
+    let network = zcash_network(is_testnet);
     match app_zcash::check_pczt_cypherpunk(
-        &MainNetwork,
+        &network,
         &pczt.get_data(),
         &ufvk_text,
         seed_fingerprint,
@@ -133,7 +147,7 @@ pub unsafe extern "C" fn check_zcash_tx_multi_coins(
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
     match app_zcash::check_pczt_multi_coins(
-        &MainNetwork,
+        &Network::MainNetwork,
         &pczt.get_data(),
         &xpub_text,
         seed_fingerprint,
@@ -151,13 +165,15 @@ pub unsafe extern "C" fn parse_zcash_tx_cypherpunk(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
 ) -> Ptr<TransactionParseResult<DisplayPczt>> {
     let pczt = extract_ptr_with_type!(tx, ZcashPczt);
     let ufvk_text = unsafe { recover_c_char(ufvk) };
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
+    let network = zcash_network(is_testnet);
     match app_zcash::parse_pczt_cypherpunk(
-        &MainNetwork,
+        &network,
         &pczt.get_data(),
         &ufvk_text,
         seed_fingerprint,
@@ -181,7 +197,7 @@ pub unsafe extern "C" fn parse_zcash_tx_multi_coins(
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
     match app_zcash::parse_pczt_multi_coins(
-        &MainNetwork,
+        &Network::MainNetwork,
         &pczt.get_data(),
         &xpub_text,
         seed_fingerprint,
@@ -276,16 +292,18 @@ fn check_zcash_batch_message_cypherpunk(
     ufvk_text: &str,
     seed_fingerprint: &[u8; 32],
     account_index: u32,
+    is_testnet: bool,
 ) -> app_zcash::errors::Result<()> {
+    let network = zcash_network(is_testnet);
     app_zcash::check_pczt_cypherpunk(
-        &MainNetwork,
+        &network,
         message.get_payload(),
         ufvk_text,
         seed_fingerprint,
         account_index,
     )?;
     app_zcash::ensure_pczt_has_signable_shielded_action(
-        &MainNetwork,
+        &network,
         message.get_payload(),
         seed_fingerprint,
         account_index,
@@ -298,9 +316,11 @@ fn check_zcash_pczt_message_cypherpunk(
     ufvk_text: &str,
     seed_fingerprint: &[u8; 32],
     account_index: u32,
+    is_testnet: bool,
 ) -> app_zcash::errors::Result<()> {
+    let network = zcash_network(is_testnet);
     app_zcash::check_pczt_cypherpunk(
-        &MainNetwork,
+        &network,
         payload,
         ufvk_text,
         seed_fingerprint,
@@ -315,6 +335,7 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
 ) -> *mut TransactionCheckResult {
     if disabled {
@@ -338,6 +359,7 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
             &ufvk_text,
             seed_fingerprint,
             account_index,
+            is_testnet,
         ) {
             return TransactionCheckResult::from(e).c_ptr();
         }
@@ -353,6 +375,7 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
 ) -> Ptr<TransactionParseResult<DisplayZcashBatch>> {
     if disabled {
@@ -377,11 +400,13 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
             &ufvk_text,
             seed_fingerprint,
             account_index,
+            is_testnet,
         ) {
             return TransactionParseResult::from(e).c_ptr();
         }
+        let network = zcash_network(is_testnet);
         match app_zcash::parse_pczt_cypherpunk(
-            &MainNetwork,
+            &network,
             message.get_payload(),
             &ufvk_text,
             seed_fingerprint,
@@ -401,6 +426,7 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
     seed: PtrBytes,
     seed_len: u32,
@@ -436,6 +462,7 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                             &ufvk_text,
                             &seed_fingerprint,
                             account_index,
+                            is_testnet,
                         ) {
                             seed.zeroize();
                             return UREncodeResult::from(e).c_ptr();
@@ -443,9 +470,10 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
 
                         match app_zcash::sign_pczt(message.get_payload(), seed, account_index) {
                             Ok(payload) => {
+                                let network = zcash_network(is_testnet);
                                 if let Err(e) =
                                     app_zcash::ensure_signable_shielded_actions_are_signed(
-                                        &MainNetwork,
+                                        &network,
                                         message.get_payload(),
                                         &payload,
                                         &seed_fingerprint,
@@ -505,6 +533,7 @@ pub unsafe extern "C" fn sign_zcash_batch_tx_cypherpunk(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
     seed: PtrBytes,
     seed_len: u32,
@@ -514,6 +543,7 @@ pub unsafe extern "C" fn sign_zcash_batch_tx_cypherpunk(
         ufvk,
         seed_fingerprint,
         account_index,
+        is_testnet,
         disabled,
         seed,
         seed_len,
@@ -529,6 +559,7 @@ pub unsafe extern "C" fn sign_zcash_batch_tx_cypherpunk_unlimited(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
     seed: PtrBytes,
     seed_len: u32,
@@ -538,6 +569,7 @@ pub unsafe extern "C" fn sign_zcash_batch_tx_cypherpunk_unlimited(
         ufvk,
         seed_fingerprint,
         account_index,
+        is_testnet,
         disabled,
         seed,
         seed_len,
@@ -602,6 +634,7 @@ unsafe fn sign_zcash_tx_cypherpunk_dynamic(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
     seed: PtrBytes,
     seed_len: u32,
@@ -626,6 +659,7 @@ unsafe fn sign_zcash_tx_cypherpunk_dynamic(
         &ufvk_text,
         expected_seed_fingerprint,
         account_index,
+        is_testnet,
     ) {
         Ok(()) => {
             let seed_fingerprint = calculate_seed_fingerprint(seed);
@@ -638,9 +672,10 @@ unsafe fn sign_zcash_tx_cypherpunk_dynamic(
 
                     match app_zcash::sign_pczt(&pczt_data, seed, account_index) {
                         Ok(signed_pczt) => {
+                            let network = zcash_network(is_testnet);
                             if let Err(e) =
                                 app_zcash::ensure_owned_supported_shielded_actions_are_signed(
-                                    &MainNetwork,
+                                    &network,
                                     &pczt_data,
                                     &signed_pczt,
                                     &seed_fingerprint,
@@ -680,6 +715,7 @@ pub unsafe extern "C" fn sign_zcash_tx_cypherpunk(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
     seed: PtrBytes,
     seed_len: u32,
@@ -689,6 +725,7 @@ pub unsafe extern "C" fn sign_zcash_tx_cypherpunk(
         ufvk,
         seed_fingerprint,
         account_index,
+        is_testnet,
         disabled,
         seed,
         seed_len,
@@ -703,6 +740,7 @@ pub unsafe extern "C" fn sign_zcash_tx_cypherpunk_unlimited(
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
+    is_testnet: bool,
     disabled: bool,
     seed: PtrBytes,
     seed_len: u32,
@@ -712,6 +750,7 @@ pub unsafe extern "C" fn sign_zcash_tx_cypherpunk_unlimited(
         ufvk,
         seed_fingerprint,
         account_index,
+        is_testnet,
         disabled,
         seed,
         seed_len,

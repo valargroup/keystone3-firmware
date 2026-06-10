@@ -601,11 +601,16 @@ bool IsMoneroSupportedForCurrentMnemonic(void)
     return GetMnemonicType() == MNEMONIC_TYPE_BIP39;
 }
 
-static void SetZcashUFVK(uint8_t accountIndex, const char* ufvk)
+static char *GetZcashUFVKCache(bool testNet)
+{
+    return testNet ? g_zcashUFVKcache.testnetUfvkCache : g_zcashUFVKcache.mainnetUfvkCache;
+}
+
+static void SetZcashUFVK(uint8_t accountIndex, bool testNet, const char* ufvk)
 {
     ASSERT(accountIndex <= 2);
     g_zcashUFVKcache.accountIndex = accountIndex;
-    strcpy_s(g_zcashUFVKcache.ufvkCache, ZCASH_UFVK_MAX_LEN, ufvk);
+    strcpy_s(GetZcashUFVKCache(testNet), ZCASH_UFVK_MAX_LEN, ufvk);
 }
 
 static void SetZcashSFP(uint8_t accountIndex, const uint8_t* seedFingerprint)
@@ -618,15 +623,20 @@ static void SetZcashSFP(uint8_t accountIndex, const uint8_t* seedFingerprint)
 
 static void ClearZcashUFVK()
 {
-    memset_s(g_zcashUFVKcache.ufvkCache, ZCASH_UFVK_MAX_LEN, '\0', ZCASH_UFVK_MAX_LEN);
+    memset_s(g_zcashUFVKcache.mainnetUfvkCache, ZCASH_UFVK_MAX_LEN, '\0', ZCASH_UFVK_MAX_LEN);
+    memset_s(g_zcashUFVKcache.testnetUfvkCache, ZCASH_UFVK_MAX_LEN, '\0', ZCASH_UFVK_MAX_LEN);
     memset_s(g_zcashUFVKcache.seedFingerprint, 32, 0, 32);
 }
 
-int32_t GetZcashUFVK(uint8_t accountIndex, char* outUFVK)
+int32_t GetZcashUFVK(uint8_t accountIndex, bool testNet, char* outUFVK)
 {
     ASSERT(accountIndex <= 2);
     if (g_zcashUFVKcache.accountIndex == accountIndex) {
-        strcpy_s(outUFVK, ZCASH_UFVK_MAX_LEN, g_zcashUFVKcache.ufvkCache);
+        char *cachedUfvk = GetZcashUFVKCache(testNet);
+        if (cachedUfvk[0] == '\0') {
+            return ERR_GENERAL_FAIL;
+        }
+        strcpy_s(outUFVK, ZCASH_UFVK_MAX_LEN, cachedUfvk);
         return SUCCESS_CODE;
     }
     return ERR_ZCASH_INVALID_ACCOUNT_INDEX;
@@ -707,28 +717,52 @@ int32_t SetupZcashCache(uint8_t accountIndex, const char* password)
     memcpy_s(iv_bytes, 16, iv_response->data, 16);
     free_simple_response_u8(iv_response);
 
-    char *zcashEncrypted = GetCurrentAccountPublicKey(ZCASH_UFVK_ENCRYPTED_0);
-    if (zcashEncrypted == NULL) {
-        CLEAR_ARRAY(seed);
-        CLEAR_ARRAY(iv_bytes);
-        return ERR_GENERAL_FAIL;
-    }
+    ChainType zcashKeys[] = {
+        ZCASH_UFVK_ENCRYPTED_0,
+        ZCASH_UFVK_TEST_ENCRYPTED_0,
+    };
+    for (uint8_t i = 0; i < NUMBER_OF_ARRAYS(zcashKeys); i++) {
+        bool isTestNet = zcashKeys[i] == ZCASH_UFVK_TEST_ENCRYPTED_0;
+        char *zcashEncrypted = GetCurrentAccountPublicKey(zcashKeys[i]);
+        if (zcashEncrypted == NULL) {
+            if (!isTestNet) {
+                CLEAR_ARRAY(seed);
+                CLEAR_ARRAY(iv_bytes);
+                return ERR_GENERAL_FAIL;
+            }
 
-    SimpleResponse_c_char *response = rust_aes256_cbc_decrypt(zcashEncrypted, password, iv_bytes, 16);
-    CLEAR_ARRAY(iv_bytes);
-    if (response->error_code != 0) {
-        ret = response->error_code;
-        CLEAR_ARRAY(seed);
-        printf("error: %s\r\n", response->error_message);
+            SimpleResponse_c_char *derived = derive_zcash_ufvk(seed, len, GetXPubPath(zcashKeys[i]), true);
+            if (derived->error_code != 0) {
+                ret = derived->error_code;
+                CLEAR_ARRAY(seed);
+                CLEAR_ARRAY(iv_bytes);
+                printf("error: %s\r\n", derived->error_message);
+                free_simple_response_c_char(derived);
+                return ret;
+            }
+
+            SetZcashUFVK(accountIndex, true, derived->data);
+            free_simple_response_c_char(derived);
+            continue;
+        }
+
+        SimpleResponse_c_char *response = rust_aes256_cbc_decrypt(zcashEncrypted, password, iv_bytes, 16);
+        if (response->error_code != 0) {
+            ret = response->error_code;
+            CLEAR_ARRAY(seed);
+            CLEAR_ARRAY(iv_bytes);
+            printf("error: %s\r\n", response->error_message);
+            free_simple_response_c_char(response);
+            return ret;
+        }
+
+        char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
+        strcpy_s(ufvk, ZCASH_UFVK_MAX_LEN, response->data);
         free_simple_response_c_char(response);
-        return ret;
+        SetZcashUFVK(accountIndex, isTestNet, ufvk);
+        CLEAR_ARRAY(ufvk);
     }
-
-    char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
-    strcpy_s(ufvk, ZCASH_UFVK_MAX_LEN, response->data);
-    free_simple_response_c_char(response);
-    SetZcashUFVK(accountIndex, ufvk);
-    CLEAR_ARRAY(ufvk);
+    CLEAR_ARRAY(iv_bytes);
 
     SimpleResponse_u8 *responseSFP = calculate_zcash_seed_fingerprint(seed, len);
     CLEAR_ARRAY(seed);

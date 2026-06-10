@@ -13,6 +13,7 @@ typedef UREncodeResult *(*ZcashCypherpunkSignFunc)(void *data,
         PtrString ufvk,
         PtrBytes seedFingerprint,
         uint32_t accountIndex,
+        bool isTestNet,
         bool disabled,
         PtrBytes seed,
         uint32_t seedLen);
