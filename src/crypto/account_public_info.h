@@ -248,6 +248,7 @@ typedef enum {
 
 #ifdef CYPHERPUNK_VERSION
     ZCASH_UFVK_ENCRYPTED_0,
+    ZCASH_UFVK_TEST_ENCRYPTED_0,
     XPUB_TYPE_MONERO_0,
     XPUB_TYPE_MONERO_PVK_0,
 #endif
@@ -312,4 +313,3 @@ void SetAccountTestReceivePath(const char* chainName, uint32_t index);
 void DeleteAccountMultiReceiveIndex(const char* chainName, char *verifyCode);
 #endif
 #endif
-

@@ -396,6 +396,11 @@ fn spend_authorizing_key_for_action(
     action: &orchard::pczt::Action,
     pool_label: &str,
 ) -> Result<Option<orchard::keys::SpendAuthorizingKey>, ZcashError> {
+    const HARDENED_FLAG: u32 = 1 << 31;
+    const ZIP32_PURPOSE: u32 = 32;
+    const ZCASH_MAINNET_COIN_TYPE: u32 = 133;
+    const ZCASH_TESTNET_COIN_TYPE: u32 = 1;
+
     let fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
     let derivation = match action.spend().zip32_derivation().as_ref() {
@@ -405,10 +410,19 @@ fn spend_authorizing_key_for_action(
 
     match &derivation.derivation_path()[..] {
         [purpose, coin_type, account_index]
-            if purpose == &zip32::ChildIndex::hardened(32)
-                && coin_type == &zip32::ChildIndex::hardened(133) =>
+            if purpose == &zip32::ChildIndex::hardened(ZIP32_PURPOSE) =>
         {
-            let account_index = account_index.index().checked_sub(1 << 31).ok_or_else(|| {
+            let coin_type = coin_type.index().checked_sub(HARDENED_FLAG).ok_or_else(|| {
+                ZcashError::SigningError(format!(
+                    "{pool_label} ZIP 32 coin type is not hardened"
+                ))
+            })?;
+            if coin_type != ZCASH_MAINNET_COIN_TYPE && coin_type != ZCASH_TESTNET_COIN_TYPE {
+                return Err(ZcashError::SigningError(format!(
+                    "{pool_label} ZIP 32 coin type is unsupported"
+                )));
+            }
+            let account_index = account_index.index().checked_sub(HARDENED_FLAG).ok_or_else(|| {
                 ZcashError::SigningError(format!(
                     "{pool_label} ZIP 32 account index is not hardened"
                 ))
@@ -416,13 +430,14 @@ fn spend_authorizing_key_for_action(
             let account_id = zip32::AccountId::try_from(account_index).map_err(|_| {
                 ZcashError::SigningError(format!("{pool_label} ZIP 32 account index is invalid"))
             })?;
-            let osk = orchard::keys::SpendingKey::from_zip32_seed(seed, 133, account_id).map_err(
-                |e| {
-                    ZcashError::SigningError(format!(
-                        "failed to derive {pool_label} spending key: {e:?}"
-                    ))
-                },
-            )?;
+            let osk =
+                orchard::keys::SpendingKey::from_zip32_seed(seed, coin_type, account_id).map_err(
+                    |e| {
+                        ZcashError::SigningError(format!(
+                            "failed to derive {pool_label} spending key: {e:?}"
+                        ))
+                    },
+                )?;
             Ok(Some(orchard::keys::SpendAuthorizingKey::from(&osk)))
         }
         _ => Err(ZcashError::SigningError(format!(

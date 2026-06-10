@@ -2,10 +2,11 @@ use core::str::FromStr;
 
 use alloc::string::{String, ToString};
 use bitcoin::bip32::{ChildNumber, DerivationPath};
+#[cfg(feature = "cypherpunk")]
 use rand_core::{CryptoRng, RngCore};
 use zcash_vendor::{
     zcash_keys::keys::UnifiedSpendingKey,
-    zcash_protocol::consensus,
+    zcash_protocol::consensus::{self, NetworkConstants},
     zip32::{self, fingerprint::SeedFingerprint},
 };
 
@@ -32,16 +33,17 @@ pub fn derive_ufvk<P: consensus::Parameters>(
             "invalid account path: {account_path}"
         )));
     }
-    //should be hardened(32) hardened(133) hardened(account_id)
+    // should be hardened(32) hardened(network coin type) hardened(account_id)
     let purpose = account_path[0];
     let coin_type = account_path[1];
     let account_id = account_path[2];
+    let expected_coin_type = params.network_type().coin_type();
     match (purpose, coin_type, account_id) {
         (
             ChildNumber::Hardened { index: 32 },
-            ChildNumber::Hardened { index: 133 },
+            ChildNumber::Hardened { index: coin_type },
             ChildNumber::Hardened { index: account_id },
-        ) => {
+        ) if coin_type == expected_coin_type => {
             let account_index = zip32::AccountId::try_from(account_id)
                 .map_err(|_e| KeystoreError::DerivationError("invalid account index".into()))?;
             let usk = UnifiedSpendingKey::from_seed(params, seed, account_index)
@@ -79,13 +81,23 @@ pub fn sign_message_orchard<R: RngCore + CryptoRng>(
     rng: R,
 ) -> Result<()> {
     ensure_non_trivial_seed(seed)?;
-    let coin_type = 133;
+    const HARDENED_FLAG: u32 = 1 << 31;
+    const ZCASH_MAINNET_COIN_TYPE: u32 = 133;
+    const ZCASH_TESTNET_COIN_TYPE: u32 = 1;
 
     if path.len() == 3
         && path[0] == zip32::ChildIndex::hardened(32)
-        && path[1] == zip32::ChildIndex::hardened(coin_type)
+        && path[1].index() & HARDENED_FLAG == HARDENED_FLAG
+        && path[2].index() & HARDENED_FLAG == HARDENED_FLAG
     {
-        let account_id = zip32::AccountId::try_from(path[2].index() - (1 << 31)).expect("valid");
+        let coin_type = path[1].index() - HARDENED_FLAG;
+        if coin_type != ZCASH_MAINNET_COIN_TYPE && coin_type != ZCASH_TESTNET_COIN_TYPE {
+            return Err(KeystoreError::ZcashOrchardSign(format!(
+                "invalid orchard account path: {path:?}"
+            )));
+        }
+        let account_id =
+            zip32::AccountId::try_from(path[2].index() - HARDENED_FLAG).expect("valid");
 
         let osk = SpendingKey::from_zip32_seed(seed, coin_type, account_id).unwrap();
 
@@ -106,7 +118,6 @@ pub fn sign_message_orchard<R: RngCore + CryptoRng>(
 #[cfg(feature = "cypherpunk")]
 #[cfg(test)]
 mod orchard_tests {
-    use super::*;
     use zcash_vendor::{
         pasta_curves::Fq,
         zcash_keys::keys::{UnifiedAddressRequest, UnifiedSpendingKey},
@@ -196,6 +207,29 @@ mod orchard_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
+    use zcash_vendor::zcash_protocol::consensus::Network;
+
+    fn test_seed() -> Vec<u8> {
+        hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap()
+    }
+
+    #[test]
+    #[cfg(feature = "cypherpunk")]
+    fn test_derive_ufvk_accepts_network_coin_type() {
+        let mainnet = derive_ufvk(&Network::MainNetwork, &test_seed(), "M/32'/133'/0'").unwrap();
+        let testnet = derive_ufvk(&Network::TestNetwork, &test_seed(), "M/32'/1'/0'").unwrap();
+
+        assert!(mainnet.starts_with("uview"));
+        assert!(testnet.starts_with("uviewtest"));
+    }
+
+    #[test]
+    fn test_derive_ufvk_rejects_mismatched_network_coin_type() {
+        assert!(derive_ufvk(&Network::MainNetwork, &test_seed(), "M/32'/1'/0'").is_err());
+        assert!(derive_ufvk(&Network::TestNetwork, &test_seed(), "M/32'/133'/0'").is_err());
+    }
+
     #[test]
     fn test_reject_trivial_seed() {
         // all-zero seed should be rejected

@@ -4,6 +4,7 @@
 #include "gui_chain.h"
 #include "gui_chain_components.h"
 #include "gui_hintbox.h"
+#include "gui_home_widgets.h"
 #include "gui_keyboard_hintbox.h"
 #include "gui_lock_widgets.h"
 #include "gui_model.h"
@@ -45,6 +46,7 @@ typedef UREncodeResult *(*ZcashBatchSignFn)(void *data,
         PtrString ufvk,
         PtrBytes seedFingerprint,
         uint32_t accountIndex,
+        bool isTestNet,
         bool disabled,
         PtrBytes seed,
         uint32_t seedLen);
@@ -137,6 +139,7 @@ static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited)
     uint32_t zcashAccountIndex = 0;
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
     bool disabled = !IsZcashSupportedForCurrentMnemonic();
+    bool isTestNet = GetZcashIsTestNet();
     int ret = 0;
 
     do {
@@ -144,7 +147,7 @@ static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited)
                                         ? sign_zcash_batch_tx_cypherpunk_unlimited
                                         : sign_zcash_batch_tx_cypherpunk;
         if (disabled) {
-            encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, true, seed, 0);
+            encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, isTestNet, true, seed, 0);
             CHECK_CHAIN_BREAK(encodeResult);
             break;
         }
@@ -157,13 +160,13 @@ static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited)
         if (ret != 0) {
             break;
         }
-        ret = GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+        ret = GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
         if (ret != 0) {
             break;
         }
 
         int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, false, seed, len);
+        encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, isTestNet, false, seed, len);
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
 
@@ -182,19 +185,21 @@ PtrT_TransactionCheckResult GuiGetZcashBatchCheckResult(void)
     uint32_t zcashAccountIndex = 0;
     uint8_t accountNum = 0;
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
+    bool isTestNet = GetZcashIsTestNet();
 
     GetExistAccountNum(&accountNum);
     if (accountNum <= 0) {
-        return check_zcash_batch_tx_cypherpunk(data, ufvk, sfp, zcashAccountIndex, true);
+        return check_zcash_batch_tx_cypherpunk(data, ufvk, sfp, zcashAccountIndex, isTestNet, true);
     }
 
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
-    GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+    GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
     return check_zcash_batch_tx_cypherpunk(
                data,
                ufvk,
                sfp,
                zcashAccountIndex,
+               isTestNet,
                !IsZcashSupportedForCurrentMnemonic());
 }
 #endif
@@ -407,15 +412,17 @@ static void *GuiParseZcashBatchData(void)
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
     uint8_t sfp[32];
     uint32_t zcashAccountIndex = 0;
+    bool isTestNet = GetZcashIsTestNet();
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
 
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
-    GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
+    GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
     g_parseResult = parse_zcash_batch_tx_cypherpunk(
         data,
         ufvk,
         sfp,
         zcashAccountIndex,
+        isTestNet,
         !IsZcashSupportedForCurrentMnemonic());
 
     return g_parseResult;
