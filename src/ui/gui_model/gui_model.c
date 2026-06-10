@@ -694,12 +694,17 @@ static int32_t ModelURGenerateQRCode(const void *indata, uint32_t inDataLen, Bac
 {
     GenerateUR func = (GenerateUR)getUR;
     g_urResult = func();
+    if (g_urResult == NULL) {
+        printf("error message: failed to generate UR\r\n");
+        GuiApiEmitSignal(SIG_BACKGROUND_UR_GENERATE_FAIL, NULL, 0);
+        return SUCCESS_CODE;
+    }
     if (g_urResult->error_code == 0) {
         // printf("%s\r\n", g_urResult->data);
         GuiApiEmitSignal(SIG_BACKGROUND_UR_GENERATE_SUCCESS, g_urResult->data, strnlen_s(g_urResult->data, SIMPLERESPONSE_C_CHAR_MAX_LEN) + 1);
     } else {
         printf("error message: %s\r\n", g_urResult->error_message);
-        //TODO: deal with error
+        GuiApiEmitSignal(SIG_BACKGROUND_UR_GENERATE_FAIL, &g_urResult, sizeof(g_urResult));
     }
     return SUCCESS_CODE;
 }
