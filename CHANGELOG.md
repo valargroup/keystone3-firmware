@@ -6,6 +6,10 @@
 
 1. Added support for Zcash batch PCZT signing
 
+### Bug Fixes
+
+1. Fixed stalled Zcash signing when response QR generation fails
+
 
 
 
