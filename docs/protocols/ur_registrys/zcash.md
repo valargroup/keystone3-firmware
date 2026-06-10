@@ -56,7 +56,7 @@ zcash-pczt {
 ### Zcash Batch Signing
 
 `zcash-sign-batch` wraps multiple signing messages into one Keystone approval.
-Version 1 is supported by cypherpunk firmware and currently supports up to six
+Version 1 is supported by cypherpunk firmware and currently supports up to 25
 mainnet PCZT messages. It requires `atomic` to be `true`; if any message is
 invalid or cannot be signed, Keystone returns an error instead of a partial
 result. Batch PCZT entries must be fully Keystone-owned spends from supported
@@ -88,7 +88,7 @@ zcash-sign-batch = {
     1: uint,                 ; version. Must be 1.
     2: bytes,                ; request id. Echoed by zcash-sign-result.
     3: uint,                 ; network. Must be zcash-mainnet.
-    4: [1*6 zcash-sign-message],
+    4: [1*25 zcash-sign-message],
    ?11: bool,                ; atomic. Defaults to true. Must be true.
 }
 
@@ -106,7 +106,7 @@ zcash-sign-message = {
 zcash-sign-result = {
     1: uint,                 ; version. Matches request version.
     2: bytes,                ; request id from zcash-sign-batch.
-    3: [1*6 zcash-sign-message-result],
+    3: [1*25 zcash-sign-message-result],
 }
 
 zcash-sign-message-result = {

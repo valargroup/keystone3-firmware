@@ -31,7 +31,7 @@ use ur_registry::zcash::zcash_sign_result::{ZcashSignMessageResult, ZcashSignRes
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
-const ZCASH_BATCH_MAX_MESSAGES: usize = 6;
+const ZCASH_BATCH_MAX_MESSAGES: usize = 25;
 
 #[no_mangle]
 pub unsafe extern "C" fn derive_zcash_ufvk(
@@ -787,6 +787,22 @@ mod tests {
             test_zcash_message(b"one", b"pczt-one"),
             test_zcash_message(b"two", b"pczt-two"),
         ]);
+
+        validate_zcash_batch(&batch).unwrap();
+    }
+
+    #[test]
+    fn test_validate_zcash_batch_accepts_max_messages() {
+        let batch = test_zcash_batch(
+            (0..ZCASH_BATCH_MAX_MESSAGES)
+                .map(|index| {
+                    test_zcash_message(
+                        format!("id-{index}").as_bytes(),
+                        format!("pczt-{index}").as_bytes(),
+                    )
+                })
+                .collect(),
+        );
 
         validate_zcash_batch(&batch).unwrap();
     }
