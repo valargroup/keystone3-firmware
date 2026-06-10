@@ -17,6 +17,10 @@
 
 #define QRCODE_CONFIRM_SIGN_PROCESS 66
 #define USB_REQUEST_IDLE 0xFFFF
+#define ZCASH_BATCH_CONTENT_HEIGHT 656
+#define ZCASH_BATCH_SIGN_SLIDER_HEIGHT 114
+#define ZCASH_BATCH_BOTTOM_BTN_HEIGHT 90
+#define ZCASH_BATCH_BOTTOM_BTN_MARGIN 12
 
 static URParseResult *g_urResult = NULL;
 static URParseMultiResult *g_urMultiResult = NULL;
@@ -354,17 +358,17 @@ static void GuiRenderBottomBtn(lv_obj_t *parent, bool showSignSlider)
         return;
     }
 
-    g_bottomBtnContainer = GuiCreateContainerWithParent(parent, 480, 114);
+    g_bottomBtnContainer = GuiCreateContainerWithParent(parent, 480, ZCASH_BATCH_BOTTOM_BTN_HEIGHT);
     lv_obj_align(g_bottomBtnContainer, LV_ALIGN_BOTTOM_MID, 0, 0);
 
     lv_obj_t *leftBtn = GuiCreateTextBtn(g_bottomBtnContainer, _("Previous"));
-    lv_obj_align(leftBtn, LV_ALIGN_BOTTOM_LEFT, 36, -24);
+    lv_obj_align(leftBtn, LV_ALIGN_BOTTOM_LEFT, 36, -ZCASH_BATCH_BOTTOM_BTN_MARGIN);
     lv_obj_set_size(leftBtn, 192, 66);
     lv_obj_set_style_bg_color(leftBtn, DARK_GRAY_COLOR, LV_PART_MAIN);
     lv_obj_add_event_cb(leftBtn, HandleClickPreviousBtn, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *rightBtn = GuiCreateTextBtn(g_bottomBtnContainer, _("Next"));
-    lv_obj_align(rightBtn, LV_ALIGN_BOTTOM_RIGHT, -36, -24);
+    lv_obj_align(rightBtn, LV_ALIGN_BOTTOM_RIGHT, -36, -ZCASH_BATCH_BOTTOM_BTN_MARGIN);
     lv_obj_set_size(rightBtn, 192, 66);
     lv_obj_set_style_bg_color(rightBtn, ORANGE_COLOR, LV_PART_MAIN);
     lv_obj_add_event_cb(rightBtn, HandleClickNextBtn, LV_EVENT_CLICKED, NULL);
@@ -374,12 +378,16 @@ static void GuiRenderCurrentTransaction(bool showSignSlider)
 {
     GUI_DEL_OBJ(g_txContainer)
 
-    g_txContainer = GuiCreateContainerWithParent(g_cont, 408, 542);
+    uint16_t txHeight = showSignSlider
+                        ? ZCASH_BATCH_CONTENT_HEIGHT - ZCASH_BATCH_SIGN_SLIDER_HEIGHT
+                        : ZCASH_BATCH_CONTENT_HEIGHT - ZCASH_BATCH_BOTTOM_BTN_HEIGHT;
+
+    g_txContainer = GuiCreateContainerWithParent(g_cont, 408, txHeight);
     lv_obj_align(g_txContainer, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_add_flag(g_txContainer, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_style(g_txContainer, NULL, LV_PART_SCROLLBAR);
 
-    GuiZcashOverviewWithData(g_txContainer, g_currentTransaction);
+    GuiZcashOverviewWithDataAndHeight(g_txContainer, g_currentTransaction, txHeight);
     GuiRenderBottomBtn(g_cont, showSignSlider);
 }
 
