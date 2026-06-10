@@ -8,6 +8,7 @@
 #include "gui_chain.h"
 
 #define MAX_MEMO_LENGTH 1024
+#define ZCASH_OVERVIEW_DEFAULT_HEIGHT 480
 
 static bool g_isMulti = false;
 static URParseResult *g_urResult = NULL;
@@ -73,16 +74,24 @@ static lv_obj_t* GuiZcashOverviewTo(lv_obj_t *parent, VecFFI_DisplayTo *to, lv_o
 
 void GuiZcashOverview(lv_obj_t *parent, void *totalData)
 {
-    GuiZcashOverviewWithData(parent, g_zcashData);
+    GuiZcashOverviewWithDataAndHeight(parent, g_zcashData, ZCASH_OVERVIEW_DEFAULT_HEIGHT);
 }
 
 void GuiZcashOverviewWithData(lv_obj_t *parent, DisplayPczt *data)
 {
-    lv_obj_set_size(parent, 408, 480);
+    GuiZcashOverviewWithDataAndHeight(parent, data, ZCASH_OVERVIEW_DEFAULT_HEIGHT);
+}
+
+void GuiZcashOverviewWithDataAndHeight(lv_obj_t *parent, DisplayPczt *data, lv_coord_t height)
+{
+    if (height <= 0) {
+        height = ZCASH_OVERVIEW_DEFAULT_HEIGHT;
+    }
+    lv_obj_set_size(parent, 408, height);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t* container = GuiCreateContainerWithParent(parent, 408, 480);
+    lv_obj_t* container = GuiCreateContainerWithParent(parent, 408, height);
     lv_obj_add_flag(container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(container, LV_OBJ_FLAG_CLICKABLE);
 
