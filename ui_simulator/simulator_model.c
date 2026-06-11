@@ -552,7 +552,7 @@ int32_t prepare_qrcode()
 }
 
 #ifdef GET_QR_DATA_FROM_SCREEN
-#define SCREEN_QR_MAX_LOOP_COUNT 512
+#define SCREEN_QR_MAX_LOOP_COUNT 4096
 static struct URParseResult *urResult;
 static UrViewType_t viewType;
 static bool firstQrFlag = true;
