@@ -15,6 +15,12 @@
 #include "screen_manager.h"
 #include "general/eapdu_services/service_resolve_ur.h"
 #include "user_memory.h"
+#ifdef SIMULATOR_TRACK_MEMORY
+#include "simulator_memory.h"
+#define ZCASH_BATCH_HEAP_LOG(context) SimulatorPrintHeapInfo(context)
+#else
+#define ZCASH_BATCH_HEAP_LOG(context) do {} while (0)
+#endif
 
 #define QRCODE_CONFIRM_SIGN_PROCESS 66
 #define USB_REQUEST_IDLE 0xFFFF
@@ -88,6 +94,7 @@ void GuiSetZcashBatchUrData(URParseResult *urResult, URParseMultiResult *urMulti
     g_urResult = urResult;
     g_urMultiResult = urMultiResult;
     g_isMulti = multi;
+    ZCASH_BATCH_HEAP_LOG("zcash batch after QR decode");
 }
 
 UREncodeResult *GuiGetZcashBatchSignQrCodeData(void)
@@ -131,6 +138,7 @@ static void RespondZcashBatchUsbParseError(const char *errorMessage)
 
 static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited)
 {
+    ZCASH_BATCH_HEAP_LOG("zcash batch sign start");
     bool enable = IsPreviousLockScreenEnable();
     SetLockScreen(false);
     UREncodeResult *encodeResult = NULL;
@@ -166,13 +174,16 @@ static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited)
         }
 
         int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
+        ZCASH_BATCH_HEAP_LOG("zcash batch before rust sign");
         encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, isTestNet, false, seed, len);
+        ZCASH_BATCH_HEAP_LOG("zcash batch after rust sign");
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
 
     memset_s(seed, sizeof(seed), 0, sizeof(seed));
     ClearSecretCache();
     SetLockScreen(enable);
+    ZCASH_BATCH_HEAP_LOG("zcash batch after sign cleanup");
 
     return encodeResult;
 }
@@ -189,18 +200,24 @@ PtrT_TransactionCheckResult GuiGetZcashBatchCheckResult(void)
 
     GetExistAccountNum(&accountNum);
     if (accountNum <= 0) {
-        return check_zcash_batch_tx_cypherpunk(data, ufvk, sfp, zcashAccountIndex, isTestNet, true);
+        ZCASH_BATCH_HEAP_LOG("zcash batch before rust check");
+        PtrT_TransactionCheckResult result = check_zcash_batch_tx_cypherpunk(data, ufvk, sfp, zcashAccountIndex, isTestNet, true);
+        ZCASH_BATCH_HEAP_LOG("zcash batch after rust check");
+        return result;
     }
 
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
     GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
-    return check_zcash_batch_tx_cypherpunk(
-               data,
-               ufvk,
-               sfp,
-               zcashAccountIndex,
-               isTestNet,
-               !IsZcashSupportedForCurrentMnemonic());
+    ZCASH_BATCH_HEAP_LOG("zcash batch before rust check");
+    PtrT_TransactionCheckResult result = check_zcash_batch_tx_cypherpunk(
+                                             data,
+                                             ufvk,
+                                             sfp,
+                                             zcashAccountIndex,
+                                             isTestNet,
+                                             !IsZcashSupportedForCurrentMnemonic());
+    ZCASH_BATCH_HEAP_LOG("zcash batch after rust check");
+    return result;
 }
 #endif
 
@@ -417,6 +434,7 @@ static void *GuiParseZcashBatchData(void)
 
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
     GetZcashUFVK(GetCurrentAccountIndex(), isTestNet, ufvk);
+    ZCASH_BATCH_HEAP_LOG("zcash batch before rust parse");
     g_parseResult = parse_zcash_batch_tx_cypherpunk(
         data,
         ufvk,
@@ -424,6 +442,7 @@ static void *GuiParseZcashBatchData(void)
         zcashAccountIndex,
         isTestNet,
         !IsZcashSupportedForCurrentMnemonic());
+    ZCASH_BATCH_HEAP_LOG("zcash batch after rust parse");
 
     return g_parseResult;
 }
@@ -475,7 +494,9 @@ void GuiZcashBatchWidgetsInit(void)
 
 void GuiZcashBatchWidgetsDeInit(void)
 {
+    ZCASH_BATCH_HEAP_LOG("zcash batch before page cleanup");
     GuiDeleteKeyboardWidget(g_keyboardWidget);
     GUI_PAGE_DEL(g_pageWidget);
     ClearPageData();
+    ZCASH_BATCH_HEAP_LOG("zcash batch after page cleanup");
 }

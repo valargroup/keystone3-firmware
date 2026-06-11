@@ -2,6 +2,7 @@ use anyhow::Result;
 use image::DynamicImage;
 use quircs::{Code, Quirc};
 use screenshots::Screen;
+use std::os::raw::c_int;
 use std::thread;
 use std::time::Duration;
 
@@ -14,6 +15,29 @@ use windows::{
     Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, LOGPIXELSX},
     Win32::UI::HiDpi::{SetProcessDpiAwareness, PROCESS_SYSTEM_DPI_AWARE},
 };
+
+extern "C" {
+    fn SimulatorSetRustAllocatorHostMode(enabled: c_int);
+}
+
+struct HostAllocatorScope;
+
+impl HostAllocatorScope {
+    fn new() -> Self {
+        unsafe {
+            SimulatorSetRustAllocatorHostMode(1);
+        }
+        Self
+    }
+}
+
+impl Drop for HostAllocatorScope {
+    fn drop(&mut self) {
+        unsafe {
+            SimulatorSetRustAllocatorHostMode(0);
+        }
+    }
+}
 
 fn get_screen_scaling_factor() -> f64 {
     #[cfg(target_os = "macos")]
@@ -56,6 +80,7 @@ where
 
     let mut capture_and_decode =
         |area: Option<(i32, i32, u32, u32)>| -> Result<(String, Option<(i32, i32, u32, u32)>)> {
+            let _host_allocator = HostAllocatorScope::new();
             let image = match area {
                 Some((x, y, width, height)) => {
                     let scaled_x = (x as f64 / scaling_factor) as i32;

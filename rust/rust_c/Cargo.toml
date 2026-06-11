@@ -64,6 +64,7 @@ crate-type = ["staticlib"]
 [features]
 # feature toggles
 use-allocator = []
+simulator-track-memory = []
 simulator = ["dep:sim_qr_reader", "app_sui/simulator"]
 aptos = ["dep:app_aptos"]
 arweave = ["dep:app_arweave"]

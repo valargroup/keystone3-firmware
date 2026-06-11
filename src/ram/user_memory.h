@@ -46,9 +46,16 @@ void PrintHeapInfo(void);
 #define strcasecmp_s(s, slen, dest, result_p) strcasecmp(s, dest)
 #endif
 
+#ifdef SIMULATOR_TRACK_MEMORY
+#include "simulator_memory.h"
+#define SRAM_MALLOC(size)                   SimulatorSramMalloc(size, __FILE__, __LINE__, __func__)
+#define SRAM_FREE(p)                        SimulatorSramFree(p, __FILE__, __LINE__, __func__)
+#define SRAM_REALLOC(p, size)               SimulatorSramRealloc(p, size, __FILE__, __LINE__, __func__)
+#else
 #define SRAM_MALLOC(size)                   malloc(size)
 #define SRAM_FREE(p)                        free(p)
 #define SRAM_REALLOC(p, size)               realloc(p, size)
+#endif
 #else
 #include "safe_str_lib.h"
 #include "safe_mem_lib.h"
@@ -58,8 +65,13 @@ void PrintHeapInfo(void);
 #endif
 
 #ifdef COMPILE_SIMULATOR
+#ifdef SIMULATOR_TRACK_MEMORY
+#define EXT_MALLOC(size)            SimulatorExtMalloc(size, __FILE__, __LINE__, __func__)
+#define EXT_FREE(p)                 SimulatorExtFree(p, __FILE__, __LINE__, __func__)
+#else
 #define EXT_MALLOC(size)            malloc(size)
 #define EXT_FREE(p)                 free(p)
+#endif
 #else
 #define EXT_MALLOC(size)            ExtMallocTrack(size, __FILE__, __LINE__, __func__)
 #define EXT_FREE(p)                 ExtFreeTrack(p, __FILE__, __LINE__, __func__)

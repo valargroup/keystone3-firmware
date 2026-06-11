@@ -32,6 +32,10 @@ if(BUILD_TYPE STREQUAL "Simulator")
     set(BUILD_ENVIRONMENT "SIMULATOR")
 endif()
 
+if(SIMULATOR_TRACK_MEMORY AND NOT (BUILD_TYPE STREQUAL "Simulator"))
+    message(FATAL_ERROR "SIMULATOR_TRACK_MEMORY is only supported for simulator builds")
+endif()
+
 if(BUILD_PRODUCTION)
     set(BUILD_ENVIRONMENT "PRODUCTION")
 endif()
@@ -52,6 +56,8 @@ endfunction()
 add_definition_with_message(ENABLE_SCREEN_SHOT)
 
 add_definition_with_message(DEBUG_MEMORY)
+
+add_definition_with_message(SIMULATOR_TRACK_MEMORY)
 
 add_definition_with_message(BUILD_PRODUCTION)
 

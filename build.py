@@ -51,6 +51,8 @@ def build_firmware(environment, options, bin_type):
             cmd += ' -DENABLE_SCREEN_SHOT=true'
         if option == "debugmemory":
             cmd += ' -DDEBUG_MEMORY=true'
+        if option == "trackmemory" or option == "simulator-track-memory":
+            cmd += ' -DSIMULATOR_TRACK_MEMORY=true'
         if option == "simulator":
             cmd += ' -DBUILD_TYPE=Simulator'
             cmd += ' -DCMAKE_BUILD_TYPE=Debug'
@@ -148,4 +150,3 @@ if __name__ == '__main__':
     purpose = args.purpose
     if purpose and purpose == "debug":
         ota_maker()
-

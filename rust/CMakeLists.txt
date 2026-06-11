@@ -50,13 +50,21 @@ else()
 endif()
 
 set(FEATURE ${FEATURE_ENVIRONMENT}-${FEATURE_VARIANT})
+set(CARGO_FEATURES ${FEATURE})
+
+if(SIMULATOR_TRACK_MEMORY)
+    if(NOT (BUILD_ENVIRONMENT STREQUAL "SIMULATOR"))
+        message(FATAL_ERROR "SIMULATOR_TRACK_MEMORY is only supported for simulator Rust builds")
+    endif()
+    set(CARGO_FEATURES "${CARGO_FEATURES},simulator-track-memory")
+endif()
 
 set(CBINDGEN_BINDINGS_TARGET ${RUST_C_DIR}/bindings/${FEATURE}/librust_c.h)
 set(COPY_BINDINGS_TARGET cp ${CBINDGEN_BINDINGS_TARGET} ${TARGET_PATH})
 
 # compile rust lib
 set(CARGO_FLAG --release -p rust_c --no-default-features)
-set(CARGO_FLAG ${CARGO_FLAG} --features ${FEATURE})
+set(CARGO_FLAG ${CARGO_FLAG} --features ${CARGO_FEATURES})
 if(CARGO_ARM_TARGET)
     set(CARGO_FLAG ${CARGO_FLAG} --target ${CARGO_ARM_TARGET})
     set(COPY_BUILD_TARGET  cp ${RUST_DIR}/target/${CARGO_ARM_TARGET}/release/${LIB_NAME} ${TARGET_PATH})

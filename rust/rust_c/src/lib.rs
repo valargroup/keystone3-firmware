@@ -11,6 +11,8 @@ mod trng;
 mod allocator;
 #[cfg(feature = "use-allocator")]
 mod my_alloc;
+#[cfg(all(feature = "simulator-track-memory", not(feature = "use-allocator")))]
+mod simulator_allocator;
 
 #[allow(unused)]
 mod common;
