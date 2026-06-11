@@ -31,7 +31,7 @@ use ur_registry::zcash::zcash_sign_result::{ZcashSignMessageResult, ZcashSignRes
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
-const ZCASH_BATCH_MAX_MESSAGES: usize = 25;
+const ZCASH_BATCH_MAX_MESSAGES: usize = 35;
 
 #[no_mangle]
 pub unsafe extern "C" fn derive_zcash_ufvk(
