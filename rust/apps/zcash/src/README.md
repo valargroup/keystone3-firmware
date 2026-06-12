@@ -45,3 +45,9 @@ From Keystone's perspective, we need a QR protocol to encode both the UFVK (Unif
 Protocol definition: [docs](/docs/protocols/ur_registrys/zcash.md)
 
 Protocol implementation: https://github.com/KeystoneHQ/keystone-sdk-rust/tree/master/libs/ur-registry/src/zcash
+
+#### Ironwood Testnet Simulator Workflow
+
+For Ironwood testnet simulator runs, build the cypherpunk simulator with `python3 build.py -t cypherpunk -o simulator` and enable the ZEC testnet wallet state before exporting accounts or scanning PCZTs. The simulator can read QR data from the screen when `GET_QR_DATA_FROM_SCREEN` is defined in `ui_simulator/simulator_model.c`.
+
+This is a simulator workflow only. It does not change production firmware defaults, which should remain mainnet by default. The batch UR `network` field remains `zcash-mainnet` only until the registry protocol defines a testnet value, so firmware must not silently reinterpret that envelope field as testnet.
