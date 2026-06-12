@@ -29,7 +29,6 @@ static SetChainData_t g_chainViewArray[] = {
     {REMAPVIEW_BTC_MESSAGE, (SetChainDataFunc)GuiSetPsbtUrData},
 #ifdef CYPHERPUNK_VERSION
     {REMAPVIEW_ZCASH, (SetChainDataFunc)GuiSetZcashUrData},
-    {REMAPVIEW_ZCASH_BATCH_TX, (SetChainDataFunc)GuiSetZcashBatchUrData},
     {REMAPVIEW_XMR_OUTPUT, (SetChainDataFunc)GuiSetMoneroUrData},
     {REMAPVIEW_XMR_UNSIGNED, (SetChainDataFunc)GuiSetMoneroUrData},
 #endif
