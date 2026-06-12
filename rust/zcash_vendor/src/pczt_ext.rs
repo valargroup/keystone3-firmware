@@ -59,8 +59,6 @@ const ZCASH_SAPLING_SIGS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxAuthSapliHash";
 const ZCASH_TZE_WITNESSES_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxAuthTZE__Hash";
 
 const ZCASH_ORCHARD_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrchardHash";
-#[cfg(zcash_unstable = "nu7")]
-const ZCASH_ORCHARD_V6_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrchV6_Hash";
 const ZCASH_ORCHARD_ACTIONS_COMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActCHash";
 const ZCASH_ORCHARD_ACTIONS_MEMOS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActMHash";
 const ZCASH_ORCHARD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActNHash";
@@ -232,13 +230,6 @@ macro_rules! update_orchard_style_action_digests {
 }
 
 fn digest_orchard(pczt: &Pczt) -> Hash {
-    #[cfg(zcash_unstable = "nu7")]
-    let mut h = if is_v6(pczt) {
-        hasher(ZCASH_ORCHARD_V6_HASH_PERSONALIZATION)
-    } else {
-        hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION)
-    };
-    #[cfg(not(zcash_unstable = "nu7"))]
     let mut h = hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION);
 
     let mut ch = hasher(ZCASH_ORCHARD_ACTIONS_COMPACT_HASH_PERSONALIZATION);
@@ -364,11 +355,6 @@ fn hash_orchard_txid_empty() -> Hash {
 }
 
 #[cfg(zcash_unstable = "nu7")]
-fn hash_orchard_v6_txid_empty() -> Hash {
-    hasher(ZCASH_ORCHARD_V6_HASH_PERSONALIZATION).finalize()
-}
-
-#[cfg(zcash_unstable = "nu7")]
 fn hash_ironwood_txid_empty() -> Hash {
     hasher(ZCASH_IRONWOOD_HASH_PERSONALIZATION).finalize()
 }
@@ -396,7 +382,7 @@ fn shielded_sig_commitment(pczt: &Pczt, lock_time: u32, input_info: Option<Signa
             if has_orchard(pczt) {
                 digest_orchard(pczt)
             } else {
-                hash_orchard_v6_txid_empty()
+                hash_orchard_txid_empty()
             }
             .as_bytes(),
         );

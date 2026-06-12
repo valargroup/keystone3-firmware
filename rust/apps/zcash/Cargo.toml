@@ -20,8 +20,8 @@ zcash_note_encryption = "0.4.1"
 
 [dev-dependencies]
 keystore = { path = "../../keystore" }
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "44e4bf5214fdb64f9c14be89c020512183fd0474", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
-zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "44e4bf5214fdb64f9c14be89c020512183fd0474", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "d91d9720f08f0e7d586e463ae0949d7337394146", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
+zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "d91d9720f08f0e7d586e463ae0949d7337394146", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
 postcard = { version = "1.0.3", features = ["alloc"] }
 serde = { workspace = true }
 incrementalmerkletree = { version = "0.8.2", default-features = false }
