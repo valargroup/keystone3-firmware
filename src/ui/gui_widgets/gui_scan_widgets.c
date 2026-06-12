@@ -149,12 +149,6 @@ void GuiScanResult(bool result, void *param)
 #endif
             return;
         }
-        uint8_t accountNum = 0;
-        GetExistAccountNum(&accountNum);
-        if (accountNum <= 0) {
-            ThrowError(ERR_INVALID_QRCODE);
-            return;
-        }
 #ifdef WEB3_VERSION
         if (g_qrcodeViewType == EthBatchTx) {
             printf("g_qrcodeViewType == EthBatchTx\n");
@@ -165,9 +159,14 @@ void GuiScanResult(bool result, void *param)
             return;
         }
 #endif
+        uint8_t accountNum = 0;
+        GetExistAccountNum(&accountNum);
+        if (accountNum <= 0) {
+            ThrowError(ERR_INVALID_QRCODE);
+            return;
+        }
 #ifdef CYPHERPUNK_VERSION
         if (g_qrcodeViewType == ZcashBatchTx) {
-            printf("g_qrcodeViewType == ZcashBatchTx\n");
             if (!GuiCheckIfTopView(&g_homeView)) {
                 GuiCloseCurrentWorkingView();
             }
