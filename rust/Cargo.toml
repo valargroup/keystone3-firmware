@@ -128,5 +128,5 @@ zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "dc95dc
 zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "dc95dcef33a081b925db551eac8bf6533fff22ed" }
 zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "dc95dcef33a081b925db551eac8bf6533fff22ed" }
 zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "dc95dcef33a081b925db551eac8bf6533fff22ed" }
-# TODO: Replace this git patch with the Keystone-published ur-registry tag once available.
-ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "18b5d4e16b67fd9b9f4510f822f6f47e92b3d359" }
+# Use the SDK fork for Zcash batch registry types until they are available from the published crate.
+ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "b4da6772b9d5448fca098857b18969e180ffc785" }
