@@ -77,11 +77,6 @@ void GuiZcashOverview(lv_obj_t *parent, void *totalData)
     GuiZcashOverviewWithDataAndHeight(parent, g_zcashData, ZCASH_OVERVIEW_DEFAULT_HEIGHT);
 }
 
-void GuiZcashOverviewWithData(lv_obj_t *parent, DisplayPczt *data)
-{
-    GuiZcashOverviewWithDataAndHeight(parent, data, ZCASH_OVERVIEW_DEFAULT_HEIGHT);
-}
-
 void GuiZcashOverviewWithDataAndHeight(lv_obj_t *parent, DisplayPczt *data, lv_coord_t height)
 {
     if (height <= 0) {
