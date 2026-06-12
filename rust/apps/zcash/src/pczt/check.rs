@@ -476,5 +476,4 @@ mod tests {
 
         assert!(result.is_ok());
     }
-    //TODO: add test for happy path
 }
