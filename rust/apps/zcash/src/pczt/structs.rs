@@ -1,82 +1,14 @@
 use alloc::{string::String, vec::Vec};
 use app_utils::impl_public_struct;
 
-#[derive(Debug, Clone, Default)]
-pub struct ParsedPczt {
+impl_public_struct!(ParsedPczt {
     transparent: Option<ParsedTransparent>,
     orchard: Option<ParsedOrchard>,
     ironwood: Option<ParsedOrchard>,
     total_transfer_value: String,
     fee_value: String,
-    has_sapling: bool,
-}
-
-impl ParsedPczt {
-    pub fn new(
-        transparent: Option<ParsedTransparent>,
-        orchard: Option<ParsedOrchard>,
-        total_transfer_value: String,
-        fee_value: String,
-        has_sapling: bool,
-    ) -> Self {
-        Self {
-            transparent,
-            orchard,
-            ironwood: None,
-            total_transfer_value,
-            fee_value,
-            has_sapling,
-        }
-    }
-
-    pub fn get_transparent(&self) -> Option<ParsedTransparent> {
-        self.transparent.clone()
-    }
-
-    pub fn set_transparent(&mut self, transparent: Option<ParsedTransparent>) {
-        self.transparent = transparent;
-    }
-
-    pub fn get_orchard(&self) -> Option<ParsedOrchard> {
-        self.orchard.clone()
-    }
-
-    pub fn set_orchard(&mut self, orchard: Option<ParsedOrchard>) {
-        self.orchard = orchard;
-    }
-
-    pub fn get_ironwood(&self) -> Option<ParsedOrchard> {
-        self.ironwood.clone()
-    }
-
-    pub fn set_ironwood(&mut self, ironwood: Option<ParsedOrchard>) {
-        self.ironwood = ironwood;
-    }
-
-    pub fn get_total_transfer_value(&self) -> String {
-        self.total_transfer_value.clone()
-    }
-
-    pub fn set_total_transfer_value(&mut self, total_transfer_value: String) {
-        self.total_transfer_value = total_transfer_value;
-    }
-
-    pub fn get_fee_value(&self) -> String {
-        self.fee_value.clone()
-    }
-
-    pub fn set_fee_value(&mut self, fee_value: String) {
-        self.fee_value = fee_value;
-    }
-
-    pub fn get_has_sapling(&self) -> bool {
-        self.has_sapling
-    }
-
-    pub fn set_has_sapling(&mut self, has_sapling: bool) {
-        self.has_sapling = has_sapling;
-    }
-}
+    has_sapling: bool
+});
 
 impl_public_struct!(ParsedTransparent {
     from: Vec<ParsedFrom>,
@@ -133,6 +65,7 @@ mod tests {
     #[test]
     fn test_parsed_pczt_creation() {
         let pczt = ParsedPczt::new(
+            None,
             None,
             None,
             "1.0 ZEC".to_string(),
@@ -283,6 +216,7 @@ mod tests {
         let pczt = ParsedPczt::new(
             Some(transparent),
             Some(orchard),
+            None,
             "0.5 ZEC".to_string(),
             "0.1 ZEC".to_string(),
             false,
@@ -296,6 +230,7 @@ mod tests {
     #[test]
     fn test_parsed_pczt_with_sapling() {
         let pczt = ParsedPczt::new(
+            None,
             None,
             None,
             "5.0 ZEC".to_string(),
@@ -471,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_parsed_pczt_empty_values() {
-        let pczt = ParsedPczt::new(None, None, "".to_string(), "".to_string(), false);
+        let pczt = ParsedPczt::new(None, None, None, "".to_string(), "".to_string(), false);
         assert_eq!(pczt.get_total_transfer_value(), "");
         assert_eq!(pczt.get_fee_value(), "");
     }
@@ -576,6 +511,7 @@ mod tests {
         let pczt = ParsedPczt::new(
             Some(transparent),
             Some(orchard),
+            None,
             "6.0 ZEC".to_string(),
             "0.1 ZEC".to_string(),
             true,
@@ -609,6 +545,7 @@ mod tests {
         let pczt = ParsedPczt::new(
             Some(transparent),
             None,
+            None,
             "1.0 ZEC".to_string(),
             "0.0001 ZEC".to_string(),
             false,
@@ -632,6 +569,7 @@ mod tests {
         let pczt = ParsedPczt::new(
             None,
             Some(orchard),
+            None,
             "2.0 ZEC".to_string(),
             "0.0001 ZEC".to_string(),
             false,

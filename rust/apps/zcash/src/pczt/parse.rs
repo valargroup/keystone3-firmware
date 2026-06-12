@@ -249,16 +249,19 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
 
     let has_sapling = !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
 
-    let mut parsed = ParsedPczt::new(
+    #[cfg(zcash_unstable = "nu7")]
+    let parsed_ironwood = parsed_ironwood;
+    #[cfg(not(zcash_unstable = "nu7"))]
+    let parsed_ironwood = None;
+
+    Ok(ParsedPczt::new(
         parsed_transparent,
         parsed_orchard,
+        parsed_ironwood,
         total_transfer_value,
         fee_value,
         has_sapling,
-    );
-    #[cfg(zcash_unstable = "nu7")]
-    parsed.set_ironwood(parsed_ironwood);
-    Ok(parsed)
+    ))
 }
 #[cfg(feature = "multi_coins")]
 pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
@@ -331,6 +334,7 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 
     Ok(ParsedPczt::new(
         parsed_transparent,
+        None,
         None,
         total_transfer_value,
         fee_value,
