@@ -804,6 +804,19 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_zcash_batch_accepts_missing_atomic_as_default() {
+        let batch = ZcashSignBatch::new(
+            ZCASH_SIGN_BATCH_VERSION,
+            b"test-request".to_vec(),
+            ZCASH_SIGN_BATCH_NETWORK_MAINNET,
+            vec![test_zcash_message(b"one", b"pczt-one")],
+            None,
+        );
+
+        validate_zcash_batch(&batch).unwrap();
+    }
+
+    #[test]
     fn test_validate_zcash_batch_accepts_max_messages() {
         let batch = test_zcash_batch(
             (0..ZCASH_BATCH_MAX_MESSAGES)
@@ -861,6 +874,54 @@ mod tests {
             Err(RustCError::UnsupportedTransaction(message))
                 if message.contains("atomic=true")
         ));
+    }
+
+    #[test]
+    fn test_validate_zcash_batch_rejects_empty_request_id_and_messages() {
+        let empty_request_id = ZcashSignBatch::new(
+            ZCASH_SIGN_BATCH_VERSION,
+            vec![],
+            ZCASH_SIGN_BATCH_NETWORK_MAINNET,
+            vec![test_zcash_message(b"one", b"pczt-one")],
+            Some(true),
+        );
+        assert_eq!(
+            validate_zcash_batch(&empty_request_id).unwrap_err(),
+            RustCError::InvalidData("Zcash batch has no request id".to_string())
+        );
+
+        let empty_messages = test_zcash_batch(vec![]);
+        assert_eq!(
+            validate_zcash_batch(&empty_messages).unwrap_err(),
+            RustCError::InvalidData("Zcash batch has no messages".to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_zcash_batch_rejects_invalid_message_fields() {
+        let unsupported_kind = ZcashSignMessage::new(
+            b"one".to_vec(),
+            ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 + 1,
+            b"pczt-one".to_vec(),
+            Some(sha256(b"pczt-one").to_vec()),
+        );
+        assert!(matches!(
+            validate_zcash_batch(&test_zcash_batch(vec![unsupported_kind])),
+            Err(RustCError::UnsupportedTransaction(message))
+                if message.contains("unsupported Zcash batch message kind")
+        ));
+
+        let empty_message_id = test_zcash_message(b"", b"pczt-one");
+        assert_eq!(
+            validate_zcash_batch(&test_zcash_batch(vec![empty_message_id])).unwrap_err(),
+            RustCError::InvalidData("Zcash batch message 0 has no id".to_string())
+        );
+
+        let empty_payload = test_zcash_message(b"one", b"");
+        assert_eq!(
+            validate_zcash_batch(&test_zcash_batch(vec![empty_payload])).unwrap_err(),
+            RustCError::InvalidData("Zcash batch message 0 has no payload".to_string())
+        );
     }
 
     #[test]
