@@ -41,14 +41,6 @@ static lv_obj_t *g_signSlider = NULL;
 static lv_obj_t *g_parseErrorHintBox = NULL;
 static KeyboardWidget_t *g_keyboardWidget = NULL;
 
-typedef UREncodeResult *(*ZcashBatchSignFn)(void *data,
-        PtrString ufvk,
-        PtrBytes seedFingerprint,
-        uint32_t accountIndex,
-        bool disabled,
-        PtrBytes seed,
-        uint32_t seedLen);
-
 static void *GuiParseZcashBatchData(void);
 static void CheckSliderProcessHandler(lv_event_t *e);
 static void GuiRenderCurrentTransaction(bool showSignSlider);
@@ -129,49 +121,11 @@ static void RespondZcashBatchUsbParseError(const char *errorMessage)
 
 static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited)
 {
-    bool enable = IsPreviousLockScreenEnable();
-    SetLockScreen(false);
-    UREncodeResult *encodeResult = NULL;
-    uint8_t seed[SEED_LEN] = {0};
-    uint8_t sfp[32] = {0};
-    uint32_t zcashAccountIndex = 0;
-    char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
-    bool disabled = !IsZcashSupportedForCurrentMnemonic();
-    int ret = 0;
-
-    do {
-        ZcashBatchSignFn signFunc = unlimited
-                                        ? sign_zcash_batch_tx_cypherpunk_unlimited
-                                        : sign_zcash_batch_tx_cypherpunk;
-        if (disabled) {
-            encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, true, seed, 0);
-            CHECK_CHAIN_BREAK(encodeResult);
-            break;
-        }
-
-        ret = GetAccountSeed(GetCurrentAccountIndex(), seed, SecretCacheGetPassword());
-        if (ret != 0) {
-            break;
-        }
-        ret = GetZcashSFP(GetCurrentAccountIndex(), sfp);
-        if (ret != 0) {
-            break;
-        }
-        ret = GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
-        if (ret != 0) {
-            break;
-        }
-
-        int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, false, seed, len);
-        CHECK_CHAIN_BREAK(encodeResult);
-    } while (0);
-
-    memset_s(seed, sizeof(seed), 0, sizeof(seed));
-    ClearSecretCache();
-    SetLockScreen(enable);
-
-    return encodeResult;
+    return GuiSignZcashCypherpunkWithSeed(
+               data,
+               unlimited,
+               sign_zcash_batch_tx_cypherpunk,
+               sign_zcash_batch_tx_cypherpunk_unlimited);
 }
 
 #ifdef CYPHERPUNK_VERSION
