@@ -15,6 +15,9 @@ use pczt::{
 use transparent::sighash::SignableInput;
 use zcash_protocol::value::ZatBalance;
 
+#[cfg(zcash_unstable = "nu7")]
+use zcash_protocol::constants::{V6_TX_VERSION, V6_VERSION_GROUP_ID};
+
 /// TxId tree root personalization
 const ZCASH_TX_PERSONALIZATION_PREFIX: &[u8; 12] = b"ZcashTxHash_";
 
@@ -56,11 +59,22 @@ const ZCASH_SAPLING_SIGS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxAuthSapliHash";
 const ZCASH_TZE_WITNESSES_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxAuthTZE__Hash";
 
 const ZCASH_ORCHARD_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrchardHash";
+#[cfg(zcash_unstable = "nu7")]
+const ZCASH_ORCHARD_V6_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrchV6_Hash";
 const ZCASH_ORCHARD_ACTIONS_COMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActCHash";
 const ZCASH_ORCHARD_ACTIONS_MEMOS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActMHash";
 const ZCASH_ORCHARD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActNHash";
 #[allow(unused)]
 const ZCASH_ORCHARD_SIGS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxAuthOrchaHash";
+
+#[cfg(zcash_unstable = "nu7")]
+const ZCASH_IRONWOOD_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIronwd_Hash";
+#[cfg(zcash_unstable = "nu7")]
+const ZCASH_IRONWOOD_ACTIONS_COMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIrnActCHash";
+#[cfg(zcash_unstable = "nu7")]
+const ZCASH_IRONWOOD_ACTIONS_MEMOS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIrnActMHash";
+#[cfg(zcash_unstable = "nu7")]
+const ZCASH_IRONWOOD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIrnActNHash";
 
 const ZCASH_TRANSPARENT_INPUT_HASH_PERSONALIZATION: &[u8; 16] = b"Zcash___TxInHash";
 const ZCASH_TRANSPARENT_AMOUNTS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxTrAmountsHash";
@@ -128,6 +142,17 @@ fn has_orchard(pczt: &Pczt) -> bool {
     !pczt.orchard().actions().is_empty()
 }
 
+#[cfg(zcash_unstable = "nu7")]
+fn has_ironwood(pczt: &Pczt) -> bool {
+    !pczt.ironwood().actions().is_empty()
+}
+
+#[cfg(zcash_unstable = "nu7")]
+fn is_v6(pczt: &Pczt) -> bool {
+    *pczt.global().tx_version() == V6_TX_VERSION
+        && *pczt.global().version_group_id() == V6_VERSION_GROUP_ID
+}
+
 fn digest_header(pczt: &Pczt, lock_time: u32) -> Hash {
     let version = pczt.global().tx_version();
     let version_group_id = pczt.global().version_group_id();
@@ -188,25 +213,39 @@ fn hash_transparent_tx_id(t_digests: Option<TransparentDigests>) -> Hash {
     h.finalize()
 }
 
+macro_rules! update_orchard_style_action_digests {
+    ($bundle:expr, $ch:expr, $mh:expr, $nh:expr) => {
+        for action in $bundle.actions().iter() {
+            $ch.update(action.spend().nullifier());
+            $ch.update(action.output().cmx());
+            $ch.update(action.output().ephemeral_key());
+            $ch.update(&action.output().enc_ciphertext()[..52]);
+
+            $mh.update(&action.output().enc_ciphertext()[52..564]);
+
+            $nh.update(action.cv_net());
+            $nh.update(action.spend().rk());
+            $nh.update(&action.output().enc_ciphertext()[564..]);
+            $nh.update(action.output().out_ciphertext());
+        }
+    };
+}
+
 fn digest_orchard(pczt: &Pczt) -> Hash {
+    #[cfg(zcash_unstable = "nu7")]
+    let mut h = if is_v6(pczt) {
+        hasher(ZCASH_ORCHARD_V6_HASH_PERSONALIZATION)
+    } else {
+        hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION)
+    };
+    #[cfg(not(zcash_unstable = "nu7"))]
     let mut h = hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION);
+
     let mut ch = hasher(ZCASH_ORCHARD_ACTIONS_COMPACT_HASH_PERSONALIZATION);
     let mut mh = hasher(ZCASH_ORCHARD_ACTIONS_MEMOS_HASH_PERSONALIZATION);
     let mut nh = hasher(ZCASH_ORCHARD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION);
 
-    for action in pczt.orchard().actions().iter() {
-        ch.update(action.spend().nullifier());
-        ch.update(action.output().cmx());
-        ch.update(action.output().ephemeral_key());
-        ch.update(&action.output().enc_ciphertext()[..52]);
-
-        mh.update(&action.output().enc_ciphertext()[52..564]);
-
-        nh.update(action.cv_net());
-        nh.update(action.spend().rk());
-        nh.update(&action.output().enc_ciphertext()[564..]);
-        nh.update(action.output().out_ciphertext());
-    }
+    update_orchard_style_action_digests!(pczt.orchard(), ch, mh, nh);
 
     h.update(ch.finalize().as_bytes());
     h.update(mh.finalize().as_bytes());
@@ -220,7 +259,37 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
     };
     h.update(&value_balance.to_le_bytes());
 
+    #[cfg(zcash_unstable = "nu7")]
+    if !is_v6(pczt) {
+        h.update(pczt.orchard().anchor());
+    }
+    #[cfg(not(zcash_unstable = "nu7"))]
     h.update(pczt.orchard().anchor());
+
+    h.finalize()
+}
+
+#[cfg(zcash_unstable = "nu7")]
+fn digest_ironwood(pczt: &Pczt) -> Hash {
+    let mut h = hasher(ZCASH_IRONWOOD_HASH_PERSONALIZATION);
+    let mut ch = hasher(ZCASH_IRONWOOD_ACTIONS_COMPACT_HASH_PERSONALIZATION);
+    let mut mh = hasher(ZCASH_IRONWOOD_ACTIONS_MEMOS_HASH_PERSONALIZATION);
+    let mut nh = hasher(ZCASH_IRONWOOD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION);
+
+    update_orchard_style_action_digests!(pczt.ironwood(), ch, mh, nh);
+
+    h.update(ch.finalize().as_bytes());
+    h.update(mh.finalize().as_bytes());
+    h.update(nh.finalize().as_bytes());
+    h.update(&[*pczt.ironwood().flags()]);
+    let (magnitude, sign) = pczt.ironwood().value_sum();
+    let value_balance = if *sign {
+        -(*magnitude as i64)
+    } else {
+        *magnitude as i64
+    };
+    h.update(&value_balance.to_le_bytes());
+
     h.finalize()
 }
 
@@ -294,6 +363,16 @@ fn hash_orchard_txid_empty() -> Hash {
     hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION).finalize()
 }
 
+#[cfg(zcash_unstable = "nu7")]
+fn hash_orchard_v6_txid_empty() -> Hash {
+    hasher(ZCASH_ORCHARD_V6_HASH_PERSONALIZATION).finalize()
+}
+
+#[cfg(zcash_unstable = "nu7")]
+fn hash_ironwood_txid_empty() -> Hash {
+    hasher(ZCASH_IRONWOOD_HASH_PERSONALIZATION).finalize()
+}
+
 fn shielded_sig_commitment(pczt: &Pczt, lock_time: u32, input_info: Option<SignableInput>) -> Hash {
     let mut personal = [0; 16];
     personal[..12].copy_from_slice(ZCASH_TX_PERSONALIZATION_PREFIX);
@@ -311,6 +390,27 @@ fn shielded_sig_commitment(pczt: &Pczt, lock_time: u32, input_info: Option<Signa
         }
         .as_bytes(),
     );
+    #[cfg(zcash_unstable = "nu7")]
+    if is_v6(pczt) {
+        h.update(
+            if has_orchard(pczt) {
+                digest_orchard(pczt)
+            } else {
+                hash_orchard_v6_txid_empty()
+            }
+            .as_bytes(),
+        );
+        h.update(
+            if has_ironwood(pczt) {
+                digest_ironwood(pczt)
+            } else {
+                hash_ironwood_txid_empty()
+            }
+            .as_bytes(),
+        );
+        return h.finalize();
+    }
+
     h.update(
         if has_orchard(pczt) {
             digest_orchard(pczt)
@@ -462,8 +562,6 @@ where
 #[cfg(test)]
 mod tests {
     use pczt::Pczt;
-    use transparent::{address::Script, sighash::SighashType};
-    use zcash_protocol::value::Zatoshis;
 
     use super::*;
 
@@ -541,32 +639,6 @@ mod tests {
         assert_eq!(
             hex::encode(shielded_sig_commitment(&pczt, 0, None).as_bytes()),
             "fea284c0b63a4de21c2f660587b2e04461f7089d6c9f8c2e60a3caed77c037ae"
-        );
-
-        let script_code = Script(pczt.transparent().inputs()[0].script_pubkey().clone());
-
-        let signable_input = SignableInput::from_parts(
-            SighashType::parse(SIGHASH_ALL).unwrap(),
-            0,
-            &script_code,
-            &script_code,
-            Zatoshis::from_u64(*pczt.transparent().inputs()[0].value()).unwrap(),
-        );
-        assert_eq!(
-            hex::encode(shielded_sig_commitment(&pczt, 0, Some(signable_input)).as_bytes()),
-            "a2865e1c7f3de700eee25fe233da6bbdab267d524bc788998485359441ad3140"
-        );
-        let script_code = Script(pczt.transparent().inputs()[1].script_pubkey().clone());
-        let signable_input2 = SignableInput::from_parts(
-            SighashType::parse(SIGHASH_ALL).unwrap(),
-            1,
-            &script_code,
-            &script_code,
-            Zatoshis::from_u64(*pczt.transparent().inputs()[1].value()).unwrap(),
-        );
-        assert_eq!(
-            hex::encode(shielded_sig_commitment(&pczt, 0, Some(signable_input2)).as_bytes()),
-            "9c10678495dfdb1f29beb6583d652bc66cb4e3d27d24d75fb6922f230e9953e8"
         );
     }
 

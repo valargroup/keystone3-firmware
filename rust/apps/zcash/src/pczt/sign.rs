@@ -463,6 +463,26 @@ mod tests {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
         let pczt = Pczt::parse(&sample.bytes).unwrap();
 
+        let base_sighash = RoleSigner::new(pczt.clone())
+            .expect("Ironwood PCZT signer should initialize")
+            .shielded_sighash();
+        let updated_anchor = orchard::Anchor::from_bytes([6u8; 32]).unwrap();
+        let updated_anchor_pczt = Updater::new(pczt.clone())
+            .set_v6_ironwood_anchor(updated_anchor)
+            .expect("v6 Ironwood anchor should be replaceable before proving")
+            .finish();
+        assert_ne!(
+            pczt.ironwood().anchor(),
+            updated_anchor_pczt.ironwood().anchor()
+        );
+        assert_eq!(
+            base_sighash,
+            RoleSigner::new(updated_anchor_pczt)
+                .expect("anchor-updated Ironwood PCZT signer should initialize")
+                .shielded_sighash(),
+            "v6 Ironwood spend signatures must not commit to the anchor"
+        );
+
         let signed_pczt_bytes = sign_pczt(pczt, &sample.seed).expect("Ironwood PCZT should sign");
         let parsed = Pczt::parse(&signed_pczt_bytes).expect("signed PCZT must parse");
 
@@ -480,6 +500,20 @@ mod tests {
                 .any(|action| action.spend().spend_auth_sig().is_some()),
             "Ironwood spend authorization signature must be present",
         );
+        for action in parsed.ironwood().actions().iter() {
+            if let Some(sig) = action.spend().spend_auth_sig() {
+                let rk = orchard::primitives::redpallas::VerificationKey::<
+                    orchard::primitives::redpallas::SpendAuth,
+                >::try_from(*action.spend().rk())
+                .expect("Ironwood randomized validating key must parse");
+                let sig: orchard::primitives::redpallas::Signature<
+                    orchard::primitives::redpallas::SpendAuth,
+                > = (*sig).into();
+
+                rk.verify(&base_sighash, &sig)
+                    .expect("Ironwood spend authorization signature must match v6 sighash");
+            }
+        }
         assert!(
             signed_pczt_bytes.len() < sample.bytes.len(),
             "signed response should be redacted",
