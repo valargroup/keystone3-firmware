@@ -731,6 +731,8 @@ int32_t SetupZcashCache(uint8_t accountIndex, const char* password)
                 return ERR_GENERAL_FAIL;
             }
 
+            // Mainnet UFVKs are stored in account public info. Testnet UFVKs may be
+            // absent for upgraded or simulator accounts, so derive them on demand.
             SimpleResponse_c_char *derived = derive_zcash_ufvk(seed, len, GetXPubPath(zcashKeys[i]), true);
             if (derived->error_code != 0) {
                 ret = derived->error_code;
