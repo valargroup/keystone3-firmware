@@ -67,7 +67,7 @@ void *GuiGetZcashGUIData(void)
     return g_parseResult;
 }
 
-static lv_obj_t* GuiZcashOverviewTransparent(lv_obj_t *parent, lv_obj_t *last_view);
+static lv_obj_t* GuiZcashOverviewTransparent(lv_obj_t *parent, lv_obj_t *last_view, DisplayTransparent *transparent);
 static lv_obj_t* GuiZcashOverviewShielded(lv_obj_t *parent, lv_obj_t *last_view, DisplayOrchard *pool, const char *labelText);
 static lv_obj_t* GuiZcashOverviewFrom(lv_obj_t *parent, VecFFI_DisplayFrom *from, lv_obj_t *last_view);
 static lv_obj_t* GuiZcashOverviewTo(lv_obj_t *parent, VecFFI_DisplayTo *to, lv_obj_t *last_view);
@@ -92,32 +92,27 @@ void GuiZcashOverviewWithDataAndHeight(lv_obj_t *parent, DisplayPczt *data, lv_c
 
     lv_obj_t* last_view = NULL;
 
-    DisplayPczt *previousData = g_zcashData;
-    g_zcashData = data;
-
-    if (g_zcashData->has_sapling) {
+    if (data->has_sapling) {
         last_view = CreateTransactionItemView(container, _("Warning"), _("This transaction contains Sapling spends or outputs. Keystone does not support Sapling spend signing and output checking. Please take care of the potential risks."), last_view);
     }
 
-    last_view = CreateTransactionItemView(container, _("Amount"), g_zcashData->total_transfer_value, last_view);
-    last_view = CreateTransactionItemView(container, _("Fee"), g_zcashData->fee_value, last_view);
+    last_view = CreateTransactionItemView(container, _("Amount"), data->total_transfer_value, last_view);
+    last_view = CreateTransactionItemView(container, _("Fee"), data->fee_value, last_view);
 
-    if (g_zcashData->transparent != NULL) {
-        last_view = GuiZcashOverviewTransparent(container, last_view);
+    if (data->transparent != NULL) {
+        last_view = GuiZcashOverviewTransparent(container, last_view, data->transparent);
     }
 
-    if (g_zcashData->orchard != NULL) {
-        last_view = GuiZcashOverviewShielded(container, last_view, g_zcashData->orchard, _("Orchard"));
+    if (data->orchard != NULL) {
+        last_view = GuiZcashOverviewShielded(container, last_view, data->orchard, _("Orchard"));
     }
 
-    if (g_zcashData->ironwood != NULL) {
-        last_view = GuiZcashOverviewShielded(container, last_view, g_zcashData->ironwood, _("Ironwood"));
+    if (data->ironwood != NULL) {
+        last_view = GuiZcashOverviewShielded(container, last_view, data->ironwood, _("Ironwood"));
     }
-
-    g_zcashData = previousData;
 }
 
-static lv_obj_t* GuiZcashOverviewTransparent(lv_obj_t *parent, lv_obj_t *last_view)
+static lv_obj_t* GuiZcashOverviewTransparent(lv_obj_t *parent, lv_obj_t *last_view, DisplayTransparent *transparent)
 {
     lv_obj_t* inner_last_view;
     lv_obj_t* label = GuiCreateIllustrateLabel(parent, _("Transparent"));
@@ -125,13 +120,13 @@ static lv_obj_t* GuiZcashOverviewTransparent(lv_obj_t *parent, lv_obj_t *last_vi
 
     inner_last_view = label;
 
-    if (g_zcashData->transparent->from->size > 0) {
-        lv_obj_t* from_view = GuiZcashOverviewFrom(parent, g_zcashData->transparent->from, inner_last_view);
+    if (transparent->from->size > 0) {
+        lv_obj_t* from_view = GuiZcashOverviewFrom(parent, transparent->from, inner_last_view);
         inner_last_view = from_view;
     }
 
-    if (g_zcashData->transparent->to->size > 0) {
-        lv_obj_t* to_view = GuiZcashOverviewTo(parent, g_zcashData->transparent->to, inner_last_view);
+    if (transparent->to->size > 0) {
+        lv_obj_t* to_view = GuiZcashOverviewTo(parent, transparent->to, inner_last_view);
         inner_last_view = to_view;
     }
 
