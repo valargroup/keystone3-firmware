@@ -390,7 +390,7 @@ fn collect_signable_shielded_actions<P: consensus::Parameters>(
 
         let value = action.spend().value().ok_or_else(|| {
             OrchardError::Custom(ZcashError::InvalidPczt(alloc::format!(
-                "missing {} spend value for batch signing",
+                "missing {} spend value",
                 pool.label(),
             )))
         })?;
