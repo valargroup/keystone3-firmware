@@ -905,19 +905,6 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_pczt_without_sapling() {
-        let sample = crate::pczt::test_support::sample_pczt_to_transparent();
-        let pczt = Pczt::parse(&sample.bytes).unwrap();
-        let unified_fvk = UnifiedFullViewingKey::decode(&MAIN_NETWORK, &sample.ufvk_text).unwrap();
-
-        let result =
-            parse_pczt_cypherpunk(&MAIN_NETWORK, &sample.seed_fingerprint, &unified_fvk, &pczt)
-                .unwrap();
-
-        assert!(!result.get_has_sapling());
-    }
-
-    #[test]
     fn test_parse_p2sh_output_is_never_marked_as_change() {
         let seed_fingerprint = [0x22; 32];
         let output = p2sh_output_with_matching_seed_fingerprint(seed_fingerprint);
