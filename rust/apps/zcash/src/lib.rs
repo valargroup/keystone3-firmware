@@ -127,7 +127,7 @@ fn reject_legacy_check_unsupported_pczt(pczt: &Pczt) -> Result<()> {
     {
         // The legacy multi-coins check path only verifies transparent data.
         // Reject V6/Ironwood PCZTs so check, parse, and sign enforce the same boundary.
-        if *pczt.global().tx_version() >= 6 || !pczt.ironwood().actions().is_empty() {
+        if pczt::pczt_requires_cypherpunk_support(pczt) {
             return Err(ZcashError::InvalidPczt(
                 "V6 or Ironwood PCZTs require cypherpunk checking support".to_string(),
             ));

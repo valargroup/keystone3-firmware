@@ -3,6 +3,14 @@ pub mod parse;
 pub mod sign;
 pub mod structs;
 
+#[cfg(all(
+    zcash_unstable = "nu7",
+    any(feature = "multi_coins", not(feature = "cypherpunk"))
+))]
+pub(crate) fn pczt_requires_cypherpunk_support(pczt: &zcash_vendor::pczt::Pczt) -> bool {
+    *pczt.global().tx_version() >= 6 || !pczt.ironwood().actions().is_empty()
+}
+
 #[cfg(all(test, feature = "cypherpunk"))]
 pub(crate) mod test_support {
     use alloc::{string::String, vec, vec::Vec};

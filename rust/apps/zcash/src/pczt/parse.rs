@@ -348,7 +348,7 @@ fn reject_legacy_parse_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
     {
         // The legacy multi-coins parser only displays transparent and Sapling data.
         // Reject V6/Ironwood PCZTs instead of showing an incomplete transaction review.
-        if *pczt.global().tx_version() >= 6 || !pczt.ironwood().actions().is_empty() {
+        if super::pczt_requires_cypherpunk_support(pczt) {
             return Err(ZcashError::InvalidPczt(
                 "V6 or Ironwood PCZTs require cypherpunk parsing support".to_string(),
             ));

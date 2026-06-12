@@ -130,7 +130,7 @@ fn reject_legacy_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
     {
         // The legacy helper below carries the pre-NU7 transparent sighash implementation.
         // It must not be used for V6/Ironwood PCZTs.
-        if *pczt.global().tx_version() >= 6 || !pczt.ironwood().actions().is_empty() {
+        if super::pczt_requires_cypherpunk_support(pczt) {
             return Err(ZcashError::SigningError(
                 "V6 or Ironwood PCZTs require cypherpunk signing support".to_string(),
             ));
