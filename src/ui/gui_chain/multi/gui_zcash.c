@@ -16,16 +16,6 @@ static URParseMultiResult *g_urMultiResult = NULL;
 static void *g_parseResult = NULL;
 static DisplayPczt *g_zcashData;
 
-#ifdef CYPHERPUNK_VERSION
-typedef UREncodeResult *(*ZcashSignFn)(void *data,
-        PtrString ufvk,
-        PtrBytes seedFingerprint,
-        uint32_t accountIndex,
-        bool disabled,
-        PtrBytes seed,
-        uint32_t seedLen);
-#endif
-
 #define CHECK_FREE_PARSE_RESULT(result)                                                             \
     if (result != NULL)                                                                             \
     {                                                                                               \
@@ -351,7 +341,10 @@ PtrT_TransactionCheckResult GuiGetZcashCheckResult(void)
 }
 
 #ifdef CYPHERPUNK_VERSION
-static UREncodeResult *SignZcashCypherpunkInternal(void *data, bool unlimited)
+UREncodeResult *GuiSignZcashCypherpunkWithSeed(void *data,
+        bool unlimited,
+        ZcashCypherpunkSignFunc signFunc,
+        ZcashCypherpunkSignFunc unlimitedSignFunc)
 {
     bool enable = IsPreviousLockScreenEnable();
     SetLockScreen(false);
@@ -364,11 +357,9 @@ static UREncodeResult *SignZcashCypherpunkInternal(void *data, bool unlimited)
     int ret = 0;
 
     do {
-        ZcashSignFn signFunc = unlimited
-                                   ? sign_zcash_tx_cypherpunk_unlimited
-                                   : sign_zcash_tx_cypherpunk;
+        ZcashCypherpunkSignFunc selectedSignFunc = unlimited ? unlimitedSignFunc : signFunc;
         if (disabled) {
-            encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, true, seed, 0);
+            encodeResult = selectedSignFunc(data, ufvk, sfp, zcashAccountIndex, true, seed, 0);
             CHECK_CHAIN_BREAK(encodeResult);
             break;
         }
@@ -387,7 +378,7 @@ static UREncodeResult *SignZcashCypherpunkInternal(void *data, bool unlimited)
         }
 
         int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        encodeResult = signFunc(data, ufvk, sfp, zcashAccountIndex, false, seed, len);
+        encodeResult = selectedSignFunc(data, ufvk, sfp, zcashAccountIndex, false, seed, len);
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
 
@@ -395,6 +386,15 @@ static UREncodeResult *SignZcashCypherpunkInternal(void *data, bool unlimited)
     ClearSecretCache();
     SetLockScreen(enable);
     return encodeResult;
+}
+
+static UREncodeResult *SignZcashCypherpunkInternal(void *data, bool unlimited)
+{
+    return GuiSignZcashCypherpunkWithSeed(
+               data,
+               unlimited,
+               sign_zcash_tx_cypherpunk,
+               sign_zcash_tx_cypherpunk_unlimited);
 }
 #endif
 
