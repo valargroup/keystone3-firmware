@@ -438,7 +438,7 @@ void GuiZcashBatchWidgetsTransactionParseFail(void)
             RespondZcashBatchUsbParseError(g_parseResult->error_message);
             return;
         }
-        g_parseErrorHintBox = GuiCreateZcashBatchParseErrorWindow(g_parseResult->error_message);
+        g_parseErrorHintBox = GuiCreateZcashBatchParseErrorWindow(NULL);
         return;
     }
     if (IsZcashBatchUsbMode()) {
