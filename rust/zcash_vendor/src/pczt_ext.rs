@@ -520,6 +520,7 @@ where
 pub fn sign_orchard<T>(llsigner: Signer, signer: &T) -> Result<Signer, T::Error>
 where
     T: PcztSigner,
+    T::Error: From<pczt::orchard::BundleParseError>,
     T::Error: From<orchard::pczt::ParseError>,
     T::Error: From<transparent::pczt::ParseError>,
 {
