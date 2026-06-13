@@ -92,6 +92,7 @@ impl From<orchard::pczt::ParseError> for SigningKeyCollectionError {
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
 struct SeedSigner<'a> {
     seed: &'a [u8],
+    account_index: zip32::AccountId,
 }
 
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
@@ -107,7 +108,7 @@ impl LegacyPcztSigner for SeedSigner<'_> {
     where
         F: FnOnce(SignableInput) -> [u8; 32],
     {
-        if let Some(path) = transparent_key_path_for_input(self.seed, input)? {
+        if let Some(path) = transparent_key_path_for_input(self.seed, self.account_index, input)? {
             let sk = get_private_key_by_seed(self.seed, &path).map_err(|e| {
                 ZcashError::SigningError(format!("failed to get private key: {e:?}"))
             })?;
@@ -125,7 +126,7 @@ impl LegacyPcztSigner for SeedSigner<'_> {
 pub fn sign_pczt(
     pczt: Pczt,
     seed: &[u8],
-    _account_index: zip32::AccountId,
+    account_index: zip32::AccountId,
 ) -> crate::Result<Vec<u8>> {
     super::validate_supported_pczt(&pczt)?;
     reject_legacy_unsupported_pczt(&pczt)?;
@@ -133,8 +134,14 @@ pub fn sign_pczt(
     let signer = low_level_signer::Signer::new(pczt);
 
     #[cfg(feature = "multi_coins")]
-    let signer = pczt_ext::sign_transparent(signer, &SeedSigner { seed })
-        .map_err(|e| ZcashError::SigningError(e.to_string()))?;
+    let signer = pczt_ext::sign_transparent(
+        signer,
+        &SeedSigner {
+            seed,
+            account_index,
+        },
+    )
+    .map_err(|e| ZcashError::SigningError(e.to_string()))?;
 
     Ok(stamp_and_redact(signer.finish()).serialize())
 }
@@ -292,40 +299,71 @@ fn redact_orchard_bundle(mut r: OrchardRedactor<'_>) {
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
 fn transparent_key_path_for_input(
     seed: &[u8],
+    account_index: zip32::AccountId,
     input: &transparent::pczt::Input,
 ) -> Result<Option<String>, ZcashError> {
     let fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
 
-    input
-        .bip32_derivation()
-        .iter()
-        .find_map(|(pubkey, path)| {
-            let path_fingerprint = *path.seed_fingerprint();
-            if fingerprint != path_fingerprint {
-                return None;
-            }
+    for (pubkey, path) in input.bip32_derivation().iter() {
+        let path_fingerprint = *path.seed_fingerprint();
+        if fingerprint != path_fingerprint {
+            continue;
+        }
 
-            let path = {
-                let mut ret = "m".to_string();
-                for i in path.derivation_path().iter() {
-                    if i.is_hardened() {
-                        ret.push_str(&format!("/{}'", i.index()));
-                    } else {
-                        ret.push_str(&format!("/{}", i.index()));
-                    }
+        if !legacy_transparent_path_matches_selected_account(path.derivation_path(), account_index)?
+        {
+            return Err(ZcashError::InvalidPczt(
+                "transparent input bip32 derivation path invalid".to_string(),
+            ));
+        }
+
+        let path = {
+            let mut ret = "m".to_string();
+            for i in path.derivation_path().iter() {
+                if i.is_hardened() {
+                    ret.push_str(&format!("/{}'", i.index()));
+                } else {
+                    ret.push_str(&format!("/{}", i.index()));
                 }
-                ret
-            };
-
-            match get_public_key_by_seed(seed, &path) {
-                Ok(my_pubkey) if my_pubkey.serialize().to_vec().eq(pubkey) => Some(Ok(path)),
-                Err(e) => Some(Err(e)),
-                _ => None,
             }
-        })
-        .transpose()
-        .map_err(|e| ZcashError::SigningError(e.to_string()))
+            ret
+        };
+
+        match get_public_key_by_seed(seed, &path) {
+            Ok(my_pubkey) if my_pubkey.serialize().to_vec().eq(pubkey) => return Ok(Some(path)),
+            Err(e) => return Err(ZcashError::SigningError(e.to_string())),
+            _ => {}
+        }
+    }
+
+    Ok(None)
+}
+
+#[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
+fn legacy_transparent_path_matches_selected_account(
+    path: &[zcash_vendor::bip32::ChildNumber],
+    account_index: zip32::AccountId,
+) -> Result<bool, ZcashError> {
+    let unsupported_path =
+        || ZcashError::InvalidPczt("transparent input bip32 derivation path invalid".to_string());
+
+    let [purpose, coin_type, account, ..] = path else {
+        return Err(unsupported_path());
+    };
+
+    if !purpose.is_hardened()
+        || purpose.index() != 44
+        || !coin_type.is_hardened()
+        || coin_type.index() != 133
+        || !account.is_hardened()
+    {
+        return Err(unsupported_path());
+    }
+
+    zip32::AccountId::try_from(account.index())
+        .map(|path_account| path_account == account_index)
+        .map_err(|_| unsupported_path())
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -888,6 +926,38 @@ mod legacy_tests {
         pczt::roles::creator::Creator,
         zcash_protocol::consensus::{BranchId, MainNetwork, NetworkConstants},
     };
+
+    #[test]
+    fn legacy_signing_rejects_unselected_transparent_account() {
+        let sample = crate::pczt::legacy_test_support::legacy_transparent_sample();
+
+        sign_pczt(
+            Pczt::parse(&sample.bytes).unwrap(),
+            &sample.seed,
+            zip32::AccountId::ZERO,
+        )
+        .expect("selected account PCZT should sign");
+
+        let account_one_pczt =
+            crate::pczt::legacy_test_support::legacy_transparent_pczt_with_input_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                sample.input_pubkey,
+                crate::pczt::legacy_test_support::legacy_transparent_path_for_account(1),
+            );
+
+        let result = sign_pczt(
+            Pczt::parse(&account_one_pczt).unwrap(),
+            &sample.seed,
+            zip32::AccountId::ZERO,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ZcashError::SigningError(msg))
+                if msg.contains("transparent input bip32 derivation path invalid")
+        ));
+    }
 
     #[cfg(zcash_unstable = "nu7")]
     #[test]

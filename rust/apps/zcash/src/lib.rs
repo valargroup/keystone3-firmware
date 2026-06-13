@@ -98,11 +98,29 @@ pub fn check_pczt_multi_coins<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<()> {
-    use core::str::FromStr;
-    use zcash_vendor::{bip32, transparent};
-
     let pczt = pczt::parse_pczt(pczt)?;
     reject_legacy_check_unsupported_pczt(&pczt)?;
+    let account_pubkey = transparent_account_pubkey_from_xpub(xpub)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+
+    pczt::check::check_pczt_transparent(
+        params,
+        seed_fingerprint,
+        account_index,
+        &account_pubkey,
+        &pczt,
+        true,
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "multi_coins")]
+fn transparent_account_pubkey_from_xpub(
+    xpub: &str,
+) -> Result<zcash_vendor::transparent::keys::AccountPubKey> {
+    use core::str::FromStr;
+    use zcash_vendor::{bip32, transparent};
 
     let xpub: bip32::ExtendedPublicKey<bitcoin::secp256k1::PublicKey> =
         bip32::ExtendedPublicKey::from_str(xpub)
@@ -117,21 +135,8 @@ pub fn check_pczt_multi_coins<P: consensus::Parameters>(
         bytes
     };
 
-    let account_pubkey = transparent::keys::AccountPubKey::deserialize(&key)
-        .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
-
-    let account_index = zip32::AccountId::try_from(account_index)
-        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
-
-    pczt::check::check_pczt_transparent(
-        params,
-        seed_fingerprint,
-        account_index,
-        &account_pubkey,
-        &pczt,
-        true,
-    )?;
-    Ok(())
+    transparent::keys::AccountPubKey::deserialize(&key)
+        .map_err(|e| ZcashError::InvalidDataError(e.to_string()))
 }
 
 #[cfg(feature = "multi_coins")]
@@ -212,11 +217,22 @@ mod additional_tests {
 pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
     params: &P,
     pczt: &[u8],
+    xpub: &str,
     seed_fingerprint: &[u8; 32],
+    account_index: u32,
 ) -> Result<ParsedPczt> {
     let pczt = pczt::parse_pczt(pczt)?;
+    let account_pubkey = transparent_account_pubkey_from_xpub(xpub)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
 
-    pczt::parse::parse_pczt_multi_coins(params, seed_fingerprint, &pczt)
+    pczt::parse::parse_pczt_multi_coins(
+        params,
+        seed_fingerprint,
+        account_index,
+        &account_pubkey,
+        &pczt,
+    )
 }
 
 /// Signs a Partially Created Zcash Transaction (PCZT) using a seed.
@@ -249,6 +265,71 @@ mod legacy_tests {
         pczt::roles::creator::Creator,
         zcash_protocol::consensus::{BranchId, MainNetwork, NetworkConstants},
     };
+
+    fn assert_invalid_pczt_message<T: core::fmt::Debug>(result: Result<T>, expected: &str) {
+        match result {
+            Err(ZcashError::InvalidPczt(message)) if message == expected => {}
+            other => panic!("unexpected InvalidPczt result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_parse_and_check_validate_selected_transparent_account() {
+        let sample = pczt::legacy_test_support::legacy_transparent_sample();
+
+        let parsed = parse_pczt_multi_coins(
+            &MainNetwork,
+            &sample.bytes,
+            &sample.xpub,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("selected account PCZT should parse");
+        assert!(parsed
+            .get_transparent()
+            .unwrap()
+            .get_from()
+            .first()
+            .unwrap()
+            .get_is_mine());
+        check_pczt_multi_coins(
+            &MainNetwork,
+            &sample.bytes,
+            &sample.xpub,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("selected account PCZT should check");
+
+        let account_one_pczt =
+            pczt::legacy_test_support::legacy_transparent_pczt_with_input_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                sample.input_pubkey,
+                pczt::legacy_test_support::legacy_transparent_path_for_account(1),
+            );
+
+        assert_invalid_pczt_message(
+            parse_pczt_multi_coins(
+                &MainNetwork,
+                &account_one_pczt,
+                &sample.xpub,
+                &sample.seed_fingerprint,
+                0,
+            ),
+            "transparent input bip32 derivation path invalid",
+        );
+        assert_invalid_pczt_message(
+            check_pczt_multi_coins(
+                &MainNetwork,
+                &account_one_pczt,
+                &sample.xpub,
+                &sample.seed_fingerprint,
+                0,
+            ),
+            "transparent input bip32 derivation path invalid",
+        );
+    }
 
     #[cfg(zcash_unstable = "nu7")]
     #[test]
