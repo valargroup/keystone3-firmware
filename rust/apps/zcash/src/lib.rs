@@ -372,6 +372,23 @@ enum ShieldedActionPolicy {
 }
 
 #[cfg(feature = "cypherpunk")]
+fn reject_unsupported_batch_pczt(pczt: &Pczt) -> Result<()> {
+    if !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty() {
+        return Err(ZcashError::InvalidPczt(
+            "Zcash batch PCZT must not contain Sapling spends or outputs".to_string(),
+        ));
+    }
+
+    if !pczt.transparent().inputs().is_empty() {
+        return Err(ZcashError::InvalidPczt(
+            "Zcash batch PCZT must not contain transparent inputs".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cypherpunk")]
 fn collect_signable_shielded_actions<P: consensus::Parameters>(
     params: &P,
     bundle: &zcash_vendor::orchard::pczt::Bundle,
@@ -398,14 +415,14 @@ fn collect_signable_shielded_actions<P: consensus::Parameters>(
             continue;
         }
 
-        let matches_account = pczt::matching_seed_selected_orchard_account(
+        let matches_account = pczt::matching_seed_supported_orchard_account(
             seed_fingerprint,
             action.spend().zip32_derivation().as_ref(),
             params.network_type().coin_type(),
-            account_index,
             pool.label(),
         )
-        .map_err(OrchardError::Custom)?;
+        .map_err(OrchardError::Custom)?
+            == Some(account_index);
         if !matches_account {
             if policy == ShieldedActionPolicy::Batch {
                 return Err(OrchardError::Custom(ZcashError::PcztNoMyInputs));
@@ -457,16 +474,8 @@ fn signable_shielded_actions<P: consensus::Parameters>(
 ) -> Result<Vec<SignableShieldedAction>> {
     use zcash_vendor::pczt::roles::verifier::Verifier;
 
-    if policy == ShieldedActionPolicy::Batch && !pczt.sapling().spends().is_empty() {
-        return Err(ZcashError::InvalidPczt(
-            "Zcash batch PCZT must not contain Sapling spends".to_string(),
-        ));
-    }
-
-    if policy == ShieldedActionPolicy::Batch && !pczt.transparent().inputs().is_empty() {
-        return Err(ZcashError::InvalidPczt(
-            "Zcash batch PCZT must not contain transparent inputs".to_string(),
-        ));
+    if policy == ShieldedActionPolicy::Batch {
+        reject_unsupported_batch_pczt(&pczt)?;
     }
 
     let mut actions = Vec::new();
@@ -631,6 +640,9 @@ mod tests {
     use super::*;
     extern crate std;
 
+    const BATCH_UNSUPPORTED_SAPLING_ERROR: &str =
+        "Zcash batch PCZT must not contain Sapling spends or outputs";
+
     #[derive(Serialize, Deserialize)]
     struct PcztMirror {
         global: GlobalMirror,
@@ -706,6 +718,33 @@ mod tests {
         postcard::to_extend(&pczt, bytes).unwrap()
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
+    fn pczt_with_sapling_output() -> pczt::test_support::SamplePczt {
+        let mut sample = pczt::test_support::sample_orchard_change_pczt();
+        let mut pczt: PcztMirror = postcard::from_bytes(&sample.bytes[8..]).unwrap();
+        pczt.sapling.outputs.push(SaplingOutputMirror {
+            cv: [0; 32],
+            cmu: [0; 32],
+            ephemeral_key: [0; 32],
+            enc_ciphertext: Vec::new(),
+            out_ciphertext: Vec::new(),
+            zkproof: None,
+            recipient: None,
+            value: Some(1),
+            rseed: None,
+            rcv: None,
+            ock: None,
+            zip32_derivation: None,
+            user_address: None,
+            proprietary: BTreeMap::new(),
+        });
+        pczt.sapling.value_sum = -1;
+
+        sample.bytes.truncate(8);
+        sample.bytes = postcard::to_extend(&pczt, sample.bytes).unwrap();
+        sample
+    }
+
     fn assert_invalid_pczt_message<T: core::fmt::Debug>(result: Result<T>, expected: &str) {
         assert_eq!(
             result.unwrap_err(),
@@ -713,6 +752,12 @@ mod tests {
         );
     }
 
+    fn assert_batch_unsupported_sapling_error<T: core::fmt::Debug>(result: Result<T>) {
+        assert_eq!(
+            result.unwrap_err(),
+            ZcashError::InvalidPczt(BATCH_UNSUPPORTED_SAPLING_ERROR.to_string())
+        );
+    }
     #[test]
     fn test_get_address() {
         let address = get_address(&MainNetwork, "uview1s2e0495jzhdarezq4h4xsunfk4jrq7gzg22tjjmkzpd28wgse4ejm6k7yfg8weanaghmwsvc69clwxz9f9z2hwaz4gegmna0plqrf05zkeue0nevnxzm557rwdkjzl4pl4hp4q9ywyszyjca8jl54730aymaprt8t0kxj8ays4fs682kf7prj9p24dnlcgqtnd2vnskkm7u8cwz8n0ce7yrwx967cyp6dhkc2wqprt84q0jmwzwnufyxe3j0758a9zgk9ssrrnywzkwfhu6ap6cgx3jkxs3un53n75s3");
@@ -747,7 +792,7 @@ mod tests {
     #[test]
     fn test_batch_postflight_confirms_orchard_signature() {
         let sample = pczt::test_support::sample_orchard_change_pczt();
-        let signed = sign_pczt(&sample.bytes, &sample.seed, 0).expect("Orchard PCZT should sign");
+        let signed = sign_pczt(&sample.bytes, &sample.seed).expect("Orchard PCZT should sign");
 
         ensure_signable_shielded_actions_are_signed(
             &pczt::test_support::Nu6_3Network,
@@ -776,7 +821,7 @@ mod tests {
                 if message == "signed PCZT is missing an Orchard spend authorization signature"
         ));
 
-        let signed = sign_pczt(&sample.bytes, &sample.seed, 0).expect("Orchard PCZT should sign");
+        let signed = sign_pczt(&sample.bytes, &sample.seed).expect("Orchard PCZT should sign");
         ensure_owned_supported_shielded_actions_are_signed(
             &pczt::test_support::Nu6_3Network,
             &sample.bytes,
@@ -785,6 +830,33 @@ mod tests {
             0,
         )
         .unwrap();
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_preflight_rejects_sapling_outputs() {
+        let sample = pczt_with_sapling_output();
+
+        assert_batch_unsupported_sapling_error(ensure_pczt_has_signable_shielded_action(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.seed_fingerprint,
+            0,
+        ));
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_postflight_rejects_sapling_outputs() {
+        let sample = pczt_with_sapling_output();
+
+        assert_batch_unsupported_sapling_error(ensure_signable_shielded_actions_are_signed(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.bytes,
+            &sample.seed_fingerprint,
+            0,
+        ));
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -936,7 +1008,7 @@ mod tests {
     #[test]
     fn test_batch_postflight_confirms_ironwood_signature() {
         let sample = pczt::test_support::sample_ironwood_pczt();
-        let signed = sign_pczt(&sample.bytes, &sample.seed, 0).expect("Ironwood PCZT should sign");
+        let signed = sign_pczt(&sample.bytes, &sample.seed).expect("Ironwood PCZT should sign");
 
         ensure_signable_shielded_actions_are_signed(
             &pczt::test_support::Nu6_3Network,
