@@ -134,12 +134,22 @@ impl UREncodeResult {
         }
     }
 
-    pub fn encode(data: Vec<u8>, tag: String, max_fragment_length: usize) -> Self {
+    fn encode_with_multipart_policy(
+        data: Vec<u8>,
+        tag: String,
+        max_fragment_length: usize,
+        allow_multipart: bool,
+    ) -> Self {
         let result =
             ur_parse_lib::keystone_ur_encoder::probe_encode(&data, max_fragment_length, tag);
         match result {
             Ok(result) => {
                 if result.is_multi_part {
+                    if !allow_multipart {
+                        return Self::from(RustCError::UnsupportedTransaction(
+                            "encoded UR is too large for a single USB response".to_string(),
+                        ));
+                    }
                     match result.encoder {
                         Some(v) => Self::multi(result.data.to_uppercase(), v),
                         None => Self::from(RustCError::UnexpectedError(
@@ -152,6 +162,15 @@ impl UREncodeResult {
             }
             Err(e) => Self::from(e),
         }
+    }
+
+    pub fn encode(data: Vec<u8>, tag: String, max_fragment_length: usize) -> Self {
+        Self::encode_with_multipart_policy(data, tag, max_fragment_length, true)
+    }
+
+    pub fn encode_full_response(data: Vec<u8>, tag: String) -> Self {
+        let max_fragment_length = data.len().max(1);
+        Self::encode_with_multipart_policy(data, tag, max_fragment_length, false)
     }
 }
 
@@ -695,6 +714,55 @@ impl Free for URParseMultiResult {
 }
 
 impl_response!(URParseMultiResult);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_full_response_returns_complete_ur_when_capped_encoder_would_fragment() {
+        let capped_result = UREncodeResult::encode(
+            vec![0; FRAGMENT_UNLIMITED_LENGTH + 1],
+            "bytes".to_string(),
+            FRAGMENT_UNLIMITED_LENGTH,
+        );
+        assert_eq!(capped_result.error_code, ErrorCodes::Success as u32);
+        assert!(capped_result.is_multi_part);
+        let capped_data = unsafe { recover_c_char(capped_result.data) };
+        assert!(capped_data.contains("/1-"));
+        unsafe {
+            capped_result.free();
+        }
+
+        let full_result = UREncodeResult::encode_full_response(
+            vec![0; FRAGMENT_UNLIMITED_LENGTH + 1],
+            "bytes".to_string(),
+        );
+        assert_eq!(full_result.error_code, ErrorCodes::Success as u32);
+        assert!(!full_result.is_multi_part);
+        assert!(full_result.encoder.is_null());
+        let full_data = unsafe { recover_c_char(full_result.data) };
+        assert!(full_data.starts_with("UR:BYTES/"));
+        assert!(!full_data.contains("/1-"));
+        unsafe {
+            full_result.free();
+        }
+
+        let zcash_result = UREncodeResult::encode_full_response(
+            vec![0; FRAGMENT_UNLIMITED_LENGTH + 1],
+            "zcash-sign-result".to_string(),
+        );
+        assert_eq!(zcash_result.error_code, ErrorCodes::Success as u32);
+        assert!(!zcash_result.is_multi_part);
+        assert!(zcash_result.encoder.is_null());
+        let zcash_data = unsafe { recover_c_char(zcash_result.data) };
+        assert!(zcash_data.starts_with("UR:ZCASH-SIGN-RESULT/"));
+        assert!(!zcash_data.contains("/1-"));
+        unsafe {
+            zcash_result.free();
+        }
+    }
+}
 
 fn get_ur_type(ur: &String) -> Result<QRCodeType, URError> {
     let t = ur_parse_lib::keystone_ur_decoder::get_type(ur)?;
