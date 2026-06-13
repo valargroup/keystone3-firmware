@@ -553,7 +553,13 @@ pub unsafe extern "C" fn sign_zcash_tx(
     seed_len: u32,
     account_index: u32,
 ) -> *mut UREncodeResult {
-    sign_zcash_tx_dynamic(tx, seed, seed_len, account_index, FRAGMENT_MAX_LENGTH_DEFAULT)
+    sign_zcash_tx_dynamic(
+        tx,
+        seed,
+        seed_len,
+        account_index,
+        FRAGMENT_MAX_LENGTH_DEFAULT,
+    )
 }
 
 #[no_mangle]
