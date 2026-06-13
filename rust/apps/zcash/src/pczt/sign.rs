@@ -27,7 +27,7 @@ use zcash_vendor::{
     ripemd::Ripemd160,
     sha2::{Digest, Sha256},
     transparent::{address::TransparentAddress, keys::AccountPrivKey},
-    zcash_protocol::consensus::MainNetwork,
+    zcash_protocol::consensus::{MainNetwork, Parameters},
 };
 
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
@@ -178,8 +178,23 @@ pub fn sign_pczt(
     seed: &[u8],
     account_index: zip32::AccountId,
 ) -> crate::Result<Vec<u8>> {
+    sign_pczt_with_network(&MainNetwork, pczt, seed, account_index)
+}
+
+/// Signs a PCZT using the supplied Zcash network parameters.
+///
+/// Transparent signing depends on the network coin type, so cypherpunk callers
+/// that support testnet must pass the selected network instead of using the
+/// mainnet wrapper.
+#[cfg(feature = "cypherpunk")]
+pub fn sign_pczt_with_network<P: Parameters>(
+    params: &P,
+    pczt: Pczt,
+    seed: &[u8],
+    account_index: zip32::AccountId,
+) -> crate::Result<Vec<u8>> {
     super::validate_supported_pczt(&pczt)?;
-    let transparent_keys = collect_transparent_signing_keys(&pczt, seed, account_index)?;
+    let transparent_keys = collect_transparent_signing_keys(params, &pczt, seed, account_index)?;
     let orchard_keys =
         collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Orchard)?;
     #[cfg(zcash_unstable = "nu7")]
@@ -391,15 +406,15 @@ fn transparent_derivation_path_string(path: &[zcash_vendor::bip32::ChildNumber])
 }
 
 #[cfg(feature = "cypherpunk")]
-fn transparent_key_path_for_selected_account(
+fn transparent_key_path_for_selected_account<P: Parameters>(
+    params: &P,
     seed: &[u8],
     account_index: zip32::AccountId,
     input: &transparent::pczt::Input,
 ) -> Result<Option<String>, ZcashError> {
     let fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
-    let params = MainNetwork;
-    let account = AccountPrivKey::from_seed(&params, seed, account_index).map_err(|e| {
+    let account = AccountPrivKey::from_seed(params, seed, account_index).map_err(|e| {
         ZcashError::SigningError(format!("failed to derive transparent account key: {e:?}"))
     })?;
     let xpub = account.to_account_pubkey();
@@ -410,7 +425,7 @@ fn transparent_key_path_for_selected_account(
         }
 
         let target = xpub
-            .derive_pubkey_at_bip32_path(&params, account_index, derivation.derivation_path())
+            .derive_pubkey_at_bip32_path(params, account_index, derivation.derivation_path())
             .map_err(|_| {
                 ZcashError::InvalidPczt(
                     "transparent input bip32 derivation path invalid".to_string(),
@@ -446,7 +461,8 @@ fn transparent_key_path_for_selected_account(
 }
 
 #[cfg(feature = "cypherpunk")]
-fn collect_transparent_signing_keys(
+fn collect_transparent_signing_keys<P: Parameters>(
+    params: &P,
     pczt: &Pczt,
     seed: &[u8],
     account_index: zip32::AccountId,
@@ -456,7 +472,7 @@ fn collect_transparent_signing_keys(
         .sign_transparent_with(|_pczt, bundle, _tx_modifiable| {
             for (index, input) in bundle.inputs_mut().iter().enumerate() {
                 if let Some(path) =
-                    transparent_key_path_for_selected_account(seed, account_index, input)?
+                    transparent_key_path_for_selected_account(params, seed, account_index, input)?
                 {
                     let sk = get_private_key_by_seed(seed, &path).map_err(|e| {
                         ZcashError::SigningError(format!("failed to get private key: {e:?}"))

@@ -246,7 +246,7 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 /// # Parameters
 /// * `pczt` - The binary representation of the PCZT to sign
 /// * `seed` - The seed to sign the PCZT with
-/// * `account_index` - The account index for shielded spend signatures
+/// * `account_index` - The selected account index for deriving signing keys
 ///
 /// # Returns
 /// * `Result<Vec<u8>>` - The signed PCZT if successful, or an error otherwise
@@ -255,10 +255,44 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 /// * `ZcashError::InvalidPczt` - If the PCZT data is malformed or cannot be parsed
 /// * Other errors from the underlying signing process
 pub fn sign_pczt(pczt: &[u8], seed: &[u8], account_index: u32) -> Result<Vec<u8>> {
+    #[cfg(feature = "cypherpunk")]
+    {
+        sign_pczt_with_network(&consensus::MainNetwork, pczt, seed, account_index)
+    }
+
+    #[cfg(not(feature = "cypherpunk"))]
+    {
+        let pczt = pczt::parse_pczt(pczt)?;
+        let account_index = zip32::AccountId::try_from(account_index)
+            .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+        pczt::sign::sign_pczt(pczt, seed, account_index)
+    }
+}
+
+/// Signs a PCZT using the supplied Zcash network parameters.
+///
+/// Cypherpunk signing must use the selected network so transparent inputs
+/// derive from the same coin type that check and parse already validated.
+///
+/// # Parameters
+/// * `params` - The consensus parameters for the selected Zcash network
+/// * `pczt` - The binary representation of the PCZT to sign
+/// * `seed` - The seed to sign the PCZT with
+/// * `account_index` - The selected account index for deriving signing keys
+///
+/// # Returns
+/// * `Result<Vec<u8>>` - The signed PCZT if successful, or an error otherwise
+#[cfg(feature = "cypherpunk")]
+pub fn sign_pczt_with_network<P: consensus::Parameters>(
+    params: &P,
+    pczt: &[u8],
+    seed: &[u8],
+    account_index: u32,
+) -> Result<Vec<u8>> {
     let pczt = pczt::parse_pczt(pczt)?;
     let account_index = zip32::AccountId::try_from(account_index)
         .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
-    pczt::sign::sign_pczt(pczt, seed, account_index)
+    pczt::sign::sign_pczt_with_network(params, pczt, seed, account_index)
 }
 
 #[cfg(all(test, feature = "multi_coins", not(feature = "cypherpunk")))]
@@ -683,7 +717,7 @@ mod tests {
         transparent::{bundle as transparent, keys::IncomingViewingKey},
         zcash_address::unified::Encoding,
         zcash_protocol::{
-            consensus::{BranchId, NetworkConstants},
+            consensus::{BranchId, Network, NetworkConstants},
             constants,
             memo::MemoBytes,
             value::Zatoshis,
@@ -1107,6 +1141,15 @@ mod tests {
             0,
         )
         .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
+    fn test_sign_pczt_with_network_signs_testnet_transparent_input() {
+        let sample = pczt::test_support::sample_testnet_pczt_to_transparent();
+
+        sign_pczt_with_network(&Network::TestNetwork, &sample.bytes, &sample.seed, 0)
+            .expect("testnet transparent input should sign with testnet key derivation");
     }
 
     #[test]

@@ -473,6 +473,7 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                         return UREncodeResult::from(RustCError::MasterFingerprintMismatch).c_ptr();
                     }
 
+                    let network = zcash_network(is_testnet);
                     let mut results = Vec::new();
                     for message in batch.get_messages() {
                         if let Err(e) = check_zcash_batch_message_cypherpunk(
@@ -486,9 +487,13 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                             return UREncodeResult::from(e).c_ptr();
                         }
 
-                        match app_zcash::sign_pczt(message.get_payload(), seed, account_index) {
+                        match app_zcash::sign_pczt_with_network(
+                            &network,
+                            message.get_payload(),
+                            seed,
+                            account_index,
+                        ) {
                             Ok(payload) => {
-                                let network = zcash_network(is_testnet);
                                 if let Err(e) =
                                     app_zcash::ensure_signable_shielded_actions_are_signed(
                                         &network,
@@ -688,9 +693,14 @@ unsafe fn sign_zcash_tx_cypherpunk_dynamic(
                         return UREncodeResult::from(RustCError::MasterFingerprintMismatch).c_ptr();
                     }
 
-                    match app_zcash::sign_pczt(&pczt_data, seed, account_index) {
+                    let network = zcash_network(is_testnet);
+                    match app_zcash::sign_pczt_with_network(
+                        &network,
+                        &pczt_data,
+                        seed,
+                        account_index,
+                    ) {
                         Ok(signed_pczt) => {
-                            let network = zcash_network(is_testnet);
                             if let Err(e) =
                                 app_zcash::ensure_owned_supported_shielded_actions_are_signed(
                                     &network,

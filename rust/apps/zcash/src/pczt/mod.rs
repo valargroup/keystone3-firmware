@@ -334,7 +334,7 @@ pub(crate) mod test_support {
         transparent::{bundle as transparent, keys::IncomingViewingKey},
         zcash_keys::keys::UnifiedFullViewingKey,
         zcash_protocol::{
-            consensus::{BranchId, MainNetwork, Parameters},
+            consensus::{BranchId, MainNetwork, Network, Parameters},
             memo::{Memo, MemoBytes},
             value::Zatoshis,
         },
@@ -518,10 +518,13 @@ pub(crate) mod test_support {
     }
 
     #[cfg(feature = "legacy_pczt_fixtures")]
-    pub(crate) fn sample_pczt_to_transparent() -> SamplePczt {
-        let params = Nu7Network;
+    fn sample_pczt_to_transparent_for_network<P: Parameters>(
+        params: P,
+        transparent_coin_type: u32,
+        ufvk_path: &str,
+    ) -> SamplePczt {
         let seed = [7u8; 32];
-        let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
+        let ufvk_text = derive_ufvk(&params, &seed, ufvk_path).unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
         let orchard_fvk = ufvk.orchard().unwrap().clone();
 
@@ -551,9 +554,7 @@ pub(crate) mod test_support {
             .derive_external_ivk()
             .unwrap()
             .default_address();
-        let transparent_recipient = recipient
-            .to_zcash_address(MainNetwork.network_type())
-            .encode();
+        let transparent_recipient = recipient.to_zcash_address(params.network_type()).encode();
         let change = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
 
         let coin = transparent::TxOut::new(
@@ -592,8 +593,25 @@ pub(crate) mod test_support {
         let PcztResult { pczt_parts, .. } = builder
             .build_for_pczt(OsRng, &zip317::FeeRule::standard())
             .unwrap();
+        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        let input_pubkey = input_pubkey.serialize();
         let pczt = Updater::new(Creator::build_from_parts(pczt_parts).unwrap())
             .update_transparent_with(|mut bundle| {
+                let derivation = zcash_vendor::transparent::pczt::Bip32Derivation::parse(
+                    seed_fingerprint,
+                    vec![
+                        44 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                        transparent_coin_type | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                        zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                        0,
+                        0,
+                    ],
+                )
+                .unwrap();
+                bundle.update_input_with(0, |mut input| {
+                    input.set_bip32_derivation(input_pubkey, derivation);
+                    Ok(())
+                })?;
                 bundle.update_output_with(0, |mut output| {
                     output.set_user_address(transparent_recipient.clone());
                     Ok(())
@@ -606,9 +624,19 @@ pub(crate) mod test_support {
             bytes: pczt.serialize(),
             seed: seed.to_vec(),
             ufvk_text,
-            seed_fingerprint: calculate_seed_fingerprint(&seed).unwrap(),
+            seed_fingerprint,
             transparent_recipient,
         }
+    }
+
+    #[cfg(feature = "legacy_pczt_fixtures")]
+    pub(crate) fn sample_pczt_to_transparent() -> SamplePczt {
+        sample_pczt_to_transparent_for_network(MainNetwork, 133, "m/32'/133'/0'")
+    }
+
+    #[cfg(feature = "legacy_pczt_fixtures")]
+    pub(crate) fn sample_testnet_pczt_to_transparent() -> SamplePczt {
+        sample_pczt_to_transparent_for_network(Network::TestNetwork, 1, "m/32'/1'/0'")
     }
 
     #[cfg(feature = "legacy_pczt_fixtures")]
