@@ -1066,15 +1066,14 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(
+        assert_invalid_pczt_message(
             ensure_pczt_has_signable_shielded_action(
                 &MainNetwork,
                 &sample.bytes,
                 &sample.seed_fingerprint,
                 1,
-            )
-            .unwrap_err(),
-            ZcashError::PcztNoMyInputs
+            ),
+            "unsupported Orchard spend ZIP 32 account index",
         );
     }
 
@@ -1096,13 +1095,11 @@ mod tests {
     #[test]
     fn test_single_postflight_allows_transparent_inputs() {
         let sample = pczt::test_support::sample_pczt_to_transparent();
-        let signed =
-            sign_pczt(&sample.bytes, &sample.seed, 0).expect("transparent PCZT should sign");
 
         ensure_owned_supported_shielded_actions_are_signed(
             &MainNetwork,
             &sample.bytes,
-            &signed,
+            &sample.bytes,
             &sample.seed_fingerprint,
             0,
         )
@@ -1475,15 +1472,14 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(
+        assert_invalid_pczt_message(
             ensure_pczt_has_signable_shielded_action(
                 &pczt::test_support::Nu7Network,
                 &sample.bytes,
                 &sample.seed_fingerprint,
                 1,
-            )
-            .unwrap_err(),
-            ZcashError::PcztNoMyInputs
+            ),
+            "unsupported Ironwood spend ZIP 32 account index",
         );
     }
 
