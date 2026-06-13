@@ -63,6 +63,12 @@ result. Batch PCZT entries must be fully Keystone-owned spends from supported
 shielded pools, currently Orchard or Ironwood. Transparent inputs and Sapling
 spends or outputs are rejected.
 
+The 35-message limit is the current batch memory budget for `pczt-v1`. A full
+35-message batch using the supported PCZT message shape was measured at about
+35% RAM on target hardware, so this version does not define separate byte caps
+for request ids, message ids, or payloads. Revisit the limit if new message
+kinds or substantially larger payload encodings are added.
+
 Message kinds:
 
 ```cddl

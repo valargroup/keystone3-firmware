@@ -31,6 +31,10 @@ use ur_registry::zcash::zcash_sign_result::{ZcashSignMessageResult, ZcashSignRes
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
+// Batch memory is intentionally bounded by message count rather than separate
+// byte caps. With the supported pczt-v1 messages, a full 35-message batch used
+// about 35% of RAM on target hardware. Revisit this if new message kinds or
+// substantially larger payload encodings are added.
 const ZCASH_BATCH_MAX_MESSAGES: usize = 35;
 
 #[no_mangle]
