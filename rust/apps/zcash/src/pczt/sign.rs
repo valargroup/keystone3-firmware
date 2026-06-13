@@ -50,6 +50,7 @@ enum SigningKeyCollectionError {
     TransparentParse(transparent::pczt::ParseError),
     #[cfg(feature = "cypherpunk")]
     OrchardParse(orchard::pczt::ParseError),
+    OrchardBundleParse(zcash_vendor::pczt::orchard::BundleParseError),
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -62,6 +63,9 @@ impl SigningKeyCollectionError {
             }
             #[cfg(feature = "cypherpunk")]
             SigningKeyCollectionError::OrchardParse(e) => {
+                ZcashError::SigningError(format!("failed to parse shielded bundle: {e:?}"))
+            }
+            SigningKeyCollectionError::OrchardBundleParse(e) => {
                 ZcashError::SigningError(format!("failed to parse shielded bundle: {e:?}"))
             }
         }
@@ -86,6 +90,13 @@ impl From<transparent::pczt::ParseError> for SigningKeyCollectionError {
 impl From<orchard::pczt::ParseError> for SigningKeyCollectionError {
     fn from(e: orchard::pczt::ParseError) -> Self {
         SigningKeyCollectionError::OrchardParse(e)
+    }
+}
+
+#[cfg(feature = "cypherpunk")]
+impl From<zcash_vendor::pczt::orchard::BundleParseError> for SigningKeyCollectionError {
+    fn from(e: zcash_vendor::pczt::orchard::BundleParseError) -> Self {
+        SigningKeyCollectionError::OrchardBundleParse(e)
     }
 }
 

@@ -134,7 +134,7 @@ pub fn decode_output_enc_ciphertext(
             ZcashError::InvalidPczt("Missing rseed field for Orchard action".into())
         })?;
 
-        let note = orchard::Note::from_parts_with_version(
+        let note = orchard::Note::from_parts(
             recipient,
             value,
             rho,
