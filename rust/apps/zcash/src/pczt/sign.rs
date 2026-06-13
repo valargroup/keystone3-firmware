@@ -646,6 +646,14 @@ mod tests {
         }
     }
 
+    #[cfg(zcash_unstable = "nu7")]
+    fn unsupported_orchard_spend_paths_for_signing() -> Vec<Vec<u32>> {
+        crate::pczt::test_support::unsupported_orchard_spend_paths()
+            .into_iter()
+            .filter(|path| path.get(1) != Some(&zip32::ChildIndex::hardened(1).index()))
+            .collect()
+    }
+
     #[test]
     fn test_sign_pczt_invalid_seed_fingerprint() {
         let sample = signable_sample_pczt();
@@ -769,7 +777,7 @@ mod tests {
     #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_sign_pczt_orchard_spend_rejects_unsupported_zip32_path() {
         let sample = crate::pczt::test_support::sample_orchard_spend_pczt();
-        for path in crate::pczt::test_support::unsupported_orchard_spend_paths() {
+        for path in unsupported_orchard_spend_paths_for_signing() {
             let pczt = crate::pczt::test_support::orchard_pczt_with_spend_derivation(
                 &sample.bytes,
                 sample.seed_fingerprint,
@@ -791,7 +799,7 @@ mod tests {
     #[test]
     fn test_sign_pczt_ironwood_spend_rejects_unsupported_zip32_path() {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
-        for path in crate::pczt::test_support::unsupported_orchard_spend_paths() {
+        for path in unsupported_orchard_spend_paths_for_signing() {
             let pczt = crate::pczt::test_support::ironwood_pczt_with_spend_derivation(
                 &sample.bytes,
                 sample.seed_fingerprint,
