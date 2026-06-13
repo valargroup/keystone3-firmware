@@ -401,6 +401,7 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
     seed: PtrBytes,
     seed_len: u32,
     max_fragment_length: usize,
+    allow_multipart: bool,
 ) -> *mut UREncodeResult {
     if disabled {
         return UREncodeResult::from(RustCError::UnsupportedTransaction(
@@ -472,12 +473,15 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                         results,
                     );
                     match TryInto::<Vec<u8>>::try_into(result) {
-                        Ok(bytes) => UREncodeResult::encode(
-                            bytes,
-                            ZcashSignResult::get_registry_type().get_type(),
-                            max_fragment_length,
-                        )
-                        .c_ptr(),
+                        Ok(bytes) => {
+                            let registry_type = ZcashSignResult::get_registry_type().get_type();
+                            let encode_result = if allow_multipart {
+                                UREncodeResult::encode(bytes, registry_type, max_fragment_length)
+                            } else {
+                                UREncodeResult::encode_full_response(bytes, registry_type)
+                            };
+                            encode_result.c_ptr()
+                        }
                         Err(e) => UREncodeResult::from(e).c_ptr(),
                     }
                 }
@@ -510,6 +514,7 @@ pub unsafe extern "C" fn sign_zcash_batch_tx_cypherpunk(
         seed,
         seed_len,
         FRAGMENT_MAX_LENGTH_DEFAULT,
+        true,
     )
 }
 
@@ -533,6 +538,7 @@ pub unsafe extern "C" fn sign_zcash_batch_tx_cypherpunk_unlimited(
         seed,
         seed_len,
         FRAGMENT_UNLIMITED_LENGTH,
+        false,
     )
 }
 

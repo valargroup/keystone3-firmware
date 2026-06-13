@@ -159,7 +159,12 @@ void GuiZcashBatchWidgetsVerifyPasswordSuccess(void)
     if (IsZcashBatchUsbMode()) {
         UREncodeResult *urResult = GuiGetZcashBatchSignUrDataUnlimited();
         if (urResult != NULL && urResult->error_code == 0) {
-            HandleURResultViaUSBFunc(urResult->data, strlen(urResult->data), GetCurrentUSParsingRequestID(), RSP_SUCCESS_CODE);
+            if (urResult->is_multi_part) {
+                const char *errorMessage = "Signing result is too large for USB transport";
+                HandleURResultViaUSBFunc(errorMessage, strlen(errorMessage), GetCurrentUSParsingRequestID(), PRS_PARSING_ERROR);
+            } else {
+                HandleURResultViaUSBFunc(urResult->data, strlen(urResult->data), GetCurrentUSParsingRequestID(), RSP_SUCCESS_CODE);
+            }
         } else {
             const char *errorMessage = (urResult != NULL && urResult->error_message != NULL) ? urResult->error_message : "Signing failed";
             HandleURResultViaUSBFunc(errorMessage, strlen(errorMessage), GetCurrentUSParsingRequestID(), PRS_PARSING_ERROR);
