@@ -41,6 +41,7 @@ pub fn generate_sync_ur(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use alloc::vec;
 
     #[test]
