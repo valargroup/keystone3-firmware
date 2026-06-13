@@ -409,6 +409,23 @@ enum ShieldedActionPolicy {
 }
 
 #[cfg(feature = "cypherpunk")]
+fn reject_unsupported_batch_pczt(pczt: &Pczt) -> Result<()> {
+    if !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty() {
+        return Err(ZcashError::InvalidPczt(
+            "Zcash batch PCZT must not contain Sapling spends or outputs".to_string(),
+        ));
+    }
+
+    if !pczt.transparent().inputs().is_empty() {
+        return Err(ZcashError::InvalidPczt(
+            "Zcash batch PCZT must not contain transparent inputs".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cypherpunk")]
 fn collect_signable_shielded_actions<P: consensus::Parameters>(
     params: &P,
     bundle: &zcash_vendor::orchard::pczt::Bundle,
@@ -494,16 +511,8 @@ fn signable_shielded_actions<P: consensus::Parameters>(
 ) -> Result<Vec<SignableShieldedAction>> {
     use zcash_vendor::pczt::roles::verifier::Verifier;
 
-    if policy == ShieldedActionPolicy::Batch && !pczt.sapling().spends().is_empty() {
-        return Err(ZcashError::InvalidPczt(
-            "Zcash batch PCZT must not contain Sapling spends".to_string(),
-        ));
-    }
-
-    if policy == ShieldedActionPolicy::Batch && !pczt.transparent().inputs().is_empty() {
-        return Err(ZcashError::InvalidPczt(
-            "Zcash batch PCZT must not contain transparent inputs".to_string(),
-        ));
+    if policy == ShieldedActionPolicy::Batch {
+        reject_unsupported_batch_pczt(&pczt)?;
     }
 
     let mut actions = Vec::new();
@@ -692,6 +701,8 @@ mod tests {
     const UNSUPPORTED_SAPLING_ERROR: &str = "Sapling spends and outputs are not supported";
     #[cfg(feature = "legacy_pczt_fixtures")]
     const INVALID_PCZT_DATA_ERROR: &str = "invalid pczt data";
+    const BATCH_UNSUPPORTED_SAPLING_ERROR: &str =
+        "Zcash batch PCZT must not contain Sapling spends or outputs";
 
     #[derive(Serialize, Deserialize)]
     struct PcztMirror {
@@ -994,6 +1005,13 @@ mod tests {
         }
     }
 
+    fn assert_batch_unsupported_sapling_error<T: core::fmt::Debug>(result: Result<T>) {
+        assert_eq!(
+            result.unwrap_err(),
+            ZcashError::InvalidPczt(BATCH_UNSUPPORTED_SAPLING_ERROR.to_string())
+        );
+    }
+
     #[test]
     fn test_get_address() {
         let address = get_address(&MainNetwork, "uview1s2e0495jzhdarezq4h4xsunfk4jrq7gzg22tjjmkzpd28wgse4ejm6k7yfg8weanaghmwsvc69clwxz9f9z2hwaz4gegmna0plqrf05zkeue0nevnxzm557rwdkjzl4pl4hp4q9ywyszyjca8jl54730aymaprt8t0kxj8ays4fs682kf7prj9p24dnlcgqtnd2vnskkm7u8cwz8n0ce7yrwx967cyp6dhkc2wqprt84q0jmwzwnufyxe3j0758a9zgk9ssrrnywzkwfhu6ap6cgx3jkxs3un53n75s3");
@@ -1131,6 +1149,31 @@ mod tests {
             ),
             Err(ZcashError::InvalidPczt(message))
                 if message == "Zcash batch PCZT must not contain transparent inputs"
+        ));
+    }
+
+    #[test]
+    fn test_batch_preflight_rejects_sapling_outputs() {
+        let sample = pczt::test_support::sample_orchard_spend_to_sapling_pczt();
+
+        assert_batch_unsupported_sapling_error(ensure_pczt_has_signable_shielded_action(
+            &MainNetwork,
+            &sample.bytes,
+            &sample.seed_fingerprint,
+            0,
+        ));
+    }
+
+    #[test]
+    fn test_batch_postflight_rejects_sapling_outputs() {
+        let sample = pczt::test_support::sample_orchard_spend_to_sapling_pczt();
+
+        assert_batch_unsupported_sapling_error(ensure_signable_shielded_actions_are_signed(
+            &MainNetwork,
+            &sample.bytes,
+            &sample.bytes,
+            &sample.seed_fingerprint,
+            0,
         ));
     }
 

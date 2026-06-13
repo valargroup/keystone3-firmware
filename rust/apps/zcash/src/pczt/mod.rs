@@ -613,6 +613,16 @@ pub(crate) mod test_support {
 
     #[cfg(feature = "legacy_pczt_fixtures")]
     pub(crate) fn sample_orchard_spend_pczt() -> SamplePczt {
+        sample_orchard_spend_pczt_with_sapling_output(false)
+    }
+
+    #[cfg(feature = "legacy_pczt_fixtures")]
+    pub(crate) fn sample_orchard_spend_to_sapling_pczt() -> SamplePczt {
+        sample_orchard_spend_pczt_with_sapling_output(true)
+    }
+
+    #[cfg(feature = "legacy_pczt_fixtures")]
+    fn sample_orchard_spend_pczt_with_sapling_output(include_sapling_output: bool) -> SamplePczt {
         let params = MainNetwork;
         let seed = [7u8; 32];
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
@@ -663,8 +673,13 @@ pub(crate) mod test_support {
             &params,
             PRE_NU7_ORCHARD_SAMPLE_HEIGHT.into(),
             BuildConfig::Standard {
-                sapling_anchor: None,
+                sapling_anchor: if include_sapling_output {
+                    Some(sapling::Anchor::empty_tree())
+                } else {
+                    None
+                },
                 orchard_anchor: Some(anchor),
+                #[cfg(zcash_unstable = "nu7")]
                 ironwood_anchor: None,
             },
         );
@@ -675,10 +690,28 @@ pub(crate) mod test_support {
             .add_orchard_output::<zip317::FeeRule>(
                 Some(orchard_ovk),
                 recipient,
-                Zatoshis::const_from_u64(990_000),
+                Zatoshis::const_from_u64(if include_sapling_output {
+                    880_000
+                } else {
+                    990_000
+                }),
                 MemoBytes::empty(),
             )
             .unwrap();
+        if include_sapling_output {
+            let sapling_recipient = sapling::zip32::ExtendedSpendingKey::master(&[9u8; 32])
+                .to_diversifiable_full_viewing_key()
+                .default_address()
+                .1;
+            builder
+                .add_sapling_output::<zip317::FeeRule>(
+                    None,
+                    sapling_recipient,
+                    Zatoshis::const_from_u64(100_000),
+                    MemoBytes::empty(),
+                )
+                .unwrap();
+        }
         let PcztResult {
             pczt_parts,
             orchard_meta,
@@ -712,7 +745,6 @@ pub(crate) mod test_support {
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
-            #[cfg(feature = "legacy_pczt_fixtures")]
             transparent_recipient: String::new(),
         }
     }

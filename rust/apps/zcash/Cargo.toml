@@ -27,6 +27,7 @@ serde_with = { version = "3.11.0", features = [
 [dev-dependencies]
 keystore = { path = "../../keystore" }
 pczt = { git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
+sapling = { package = "sapling-crypto", version = "0.7.0", default-features = false, features = ["test-dependencies"] }
 zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
 incrementalmerkletree = { version = "0.8.2", default-features = false }
 shardtree = "0.6.2"

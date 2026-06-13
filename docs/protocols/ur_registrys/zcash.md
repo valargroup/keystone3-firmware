@@ -61,7 +61,7 @@ mainnet PCZT messages. It requires `atomic` to be `true`; if any message is
 invalid or cannot be signed, Keystone returns an error instead of a partial
 result. Batch PCZT entries must be fully Keystone-owned spends from supported
 shielded pools, currently Orchard or Ironwood. Transparent inputs and Sapling
-spends are rejected.
+spends or outputs are rejected.
 
 Message kinds:
 
