@@ -121,4 +121,4 @@ zeroize = { version = "1.8.2", default-features = false }
 
 [patch.crates-io]
 # Use the SDK fork for Zcash batch registry types until they are available from the published crate.
-ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "b4da6772b9d5448fca098857b18969e180ffc785" }
+ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "9102edaf2b1550d30d937514becae9409cc6c5b3" }
