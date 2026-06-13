@@ -776,15 +776,14 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(
+        assert_invalid_pczt_message(
             ensure_pczt_has_signable_shielded_action(
                 &pczt::test_support::Nu6_3Network,
                 &sample.bytes,
                 &sample.seed_fingerprint,
                 1,
-            )
-            .unwrap_err(),
-            ZcashError::PcztNoMyInputs
+            ),
+            "unsupported Orchard spend ZIP 32 account index",
         );
     }
 
@@ -992,15 +991,14 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(
+        assert_invalid_pczt_message(
             ensure_pczt_has_signable_shielded_action(
                 &pczt::test_support::Nu6_3Network,
                 &sample.bytes,
                 &sample.seed_fingerprint,
                 1,
-            )
-            .unwrap_err(),
-            ZcashError::PcztNoMyInputs
+            ),
+            "unsupported Ironwood spend ZIP 32 account index",
         );
     }
 
