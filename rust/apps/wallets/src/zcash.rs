@@ -1,4 +1,4 @@
-use alloc::string::{String, ToString};
+use alloc::string::String;
 
 use alloc::vec::Vec;
 
@@ -19,7 +19,7 @@ impl_public_struct!(UFVKInfo {
 pub fn generate_sync_ur(
     key_infos: Vec<UFVKInfo>,
     seed_fingerprint: [u8; 32],
-    device_version: Option<&str>,
+    _device_version: Option<&str>,
 ) -> URResult<ZcashAccounts> {
     let keys = key_infos
         .iter()
@@ -31,11 +31,7 @@ pub fn generate_sync_ur(
             ))
         })
         .collect::<URResult<Vec<ZcashUnifiedFullViewingKey>>>()?;
-    let mut accounts = ZcashAccounts::new(seed_fingerprint.to_vec(), keys);
-    if let Some(version) = device_version {
-        accounts.set_device_version(version.to_string());
-    }
-    Ok(accounts)
+    Ok(ZcashAccounts::new(seed_fingerprint.to_vec(), keys))
 }
 
 #[cfg(test)]
@@ -66,5 +62,7 @@ mod tests {
         let accounts = result.unwrap();
         let cbor: Vec<u8> = accounts.try_into().unwrap();
         assert!(!cbor.is_empty());
+        let decoded = ZcashAccounts::try_from(cbor).unwrap();
+        assert_eq!(decoded.get_device_version(), None);
     }
 }
