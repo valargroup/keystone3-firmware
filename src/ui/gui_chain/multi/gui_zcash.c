@@ -86,10 +86,6 @@ void GuiZcashOverviewWithDataAndHeight(lv_obj_t *parent, DisplayPczt *data, lv_c
 
     lv_obj_t* last_view = NULL;
 
-    if (data->network != NULL) {
-        last_view = CreateTransactionItemView(container, _("wallet_profile_network_title"), data->network, last_view);
-    }
-
     last_view = CreateTransactionItemView(container, _("Amount"), data->total_transfer_value, last_view);
     last_view = CreateTransactionItemView(container, _("Fee"), data->fee_value, last_view);
 

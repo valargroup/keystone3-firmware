@@ -52,8 +52,7 @@ Cypherpunk firmware defaults ZEC to mainnet. ZEC testnet support is enabled only
 when the user turns on the ZEC testnet toggle in the menu before exporting the
 UFVK, generating a receive address, or scanning a PCZT. Keystone uses that
 selected network for UFVK caching, address generation, PCZT checking, parsing,
-and signing, and the transaction review screen displays the selected network
-before signing.
+and signing.
 
 Simulator testing uses the same menu toggle. For simulator runs, build the
 cypherpunk simulator with `python3 build.py -t cypherpunk -o simulator`; the
