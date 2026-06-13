@@ -35,6 +35,7 @@ void *GuiGetZcashGUIData(void)
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
     uint8_t sfp[32];
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
+    uint32_t zcash_account_index = 0;
 
     PtrT_TransactionParseResult_DisplayPczt parseResult = NULL;
     do {
@@ -44,7 +45,7 @@ void *GuiGetZcashGUIData(void)
 #ifdef CYPHERPUNK_VERSION
         char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
         GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
-        parseResult = parse_zcash_tx_cypherpunk(data, ufvk, sfp);
+        parseResult = parse_zcash_tx_cypherpunk(data, ufvk, sfp, zcash_account_index);
 #endif
         CHECK_CHAIN_BREAK(parseResult);
         g_zcashData = parseResult->data;
@@ -329,7 +330,8 @@ PtrT_TransactionCheckResult GuiGetZcashCheckResult(void)
 UREncodeResult *GuiGetZcashSignQrCodeData(void)
 {
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
-    return SignInternal(sign_zcash_tx, data);
+    uint32_t zcash_account_index = 0;
+    return SignInternalWithAccount(sign_zcash_tx, data, zcash_account_index);
 }
 
 void FreeZcashMemory(void)

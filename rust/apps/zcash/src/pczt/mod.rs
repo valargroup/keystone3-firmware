@@ -3,6 +3,49 @@ pub mod parse;
 pub mod sign;
 pub mod structs;
 
+/// Returns the supported account declared by a shielded spend derivation that
+/// belongs to this seed. Missing or different seed fingerprints are not ours
+/// and return `None`; matching fingerprints with paths outside
+/// `m/32'/coin_type'/account'` are invalid.
+#[cfg(feature = "cypherpunk")]
+pub(crate) fn matching_seed_supported_orchard_account(
+    seed_fingerprint: &[u8; 32],
+    derivation: Option<&zcash_vendor::orchard::pczt::Zip32Derivation>,
+    coin_type: u32,
+    pool_label: &str,
+) -> Result<Option<zcash_vendor::zip32::AccountId>, crate::errors::ZcashError> {
+    let Some(derivation) = derivation else {
+        return Ok(None);
+    };
+    if derivation.seed_fingerprint() != seed_fingerprint {
+        return Ok(None);
+    }
+
+    let unsupported_path = || {
+        crate::errors::ZcashError::InvalidPczt(alloc::format!(
+            "unsupported {pool_label} spend ZIP 32 derivation path"
+        ))
+    };
+
+    let [purpose, path_coin_type, account_index] = &derivation.derivation_path()[..] else {
+        return Err(unsupported_path());
+    };
+
+    if purpose != &zcash_vendor::zip32::ChildIndex::hardened(32)
+        || path_coin_type != &zcash_vendor::zip32::ChildIndex::hardened(coin_type)
+    {
+        return Err(unsupported_path());
+    }
+
+    let account_index = account_index
+        .index()
+        .checked_sub(1 << 31)
+        .ok_or_else(unsupported_path)?;
+    zcash_vendor::zip32::AccountId::try_from(account_index)
+        .map(Some)
+        .map_err(|_| unsupported_path())
+}
+
 #[cfg(all(
     zcash_unstable = "nu7",
     any(feature = "multi_coins", not(feature = "cypherpunk"))
@@ -159,6 +202,112 @@ pub(crate) mod test_support {
             ufvk_text,
             seed_fingerprint: calculate_seed_fingerprint(&seed).unwrap(),
             transparent_recipient,
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn sample_orchard_spend_pczt() -> SamplePczt {
+        let params = MainNetwork;
+        let seed = [7u8; 32];
+        let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
+        let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
+        let orchard_fvk = ufvk.orchard().unwrap().clone();
+        let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::External);
+        let orchard_ovk = orchard_fvk.to_ovk(orchard::keys::Scope::External);
+        let recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::External);
+
+        let value = orchard::value::NoteValue::from_raw(1_000_000);
+        let note = {
+            let mut orchard_builder = orchard::builder::Builder::new(
+                orchard::builder::BundleProtocol::Orchard,
+                orchard::builder::BundleType::DEFAULT,
+                orchard::Anchor::empty_tree(),
+            );
+            orchard_builder
+                .add_output(None, recipient, value, Memo::Empty.encode().into_bytes())
+                .unwrap();
+            let (bundle, meta) = orchard_builder.build::<i64>(&mut OsRng).unwrap().unwrap();
+            let action = bundle
+                .actions()
+                .get(meta.output_action_index(0).unwrap())
+                .unwrap();
+            let domain = orchard::note_encryption::OrchardDomain::for_action(action);
+            let (note, _, _) =
+                try_note_decryption(&domain, &orchard_ivk.prepare(), action).unwrap();
+            note
+        };
+
+        let (anchor, merkle_path) = {
+            let cmx: orchard::note::ExtractedNoteCommitment = note.commitment().into();
+            let leaf = orchard::tree::MerkleHashOrchard::from_cmx(&cmx);
+            let mut tree = ShardTree::<_, 32, 16>::new(
+                MemoryShardStore::<orchard::tree::MerkleHashOrchard, u32>::empty(),
+                100,
+            );
+            tree.append(leaf, Retention::Marked).unwrap();
+            tree.checkpoint(9_999_999).unwrap();
+            let merkle_path = tree
+                .witness_at_checkpoint_depth(0.into(), 0)
+                .unwrap()
+                .unwrap();
+            let anchor = merkle_path.root(leaf);
+            (anchor.into(), merkle_path.into())
+        };
+
+        let mut builder = Builder::new(
+            &params,
+            10_000_000.into(),
+            BuildConfig::Standard {
+                sapling_anchor: None,
+                orchard_anchor: Some(anchor),
+                ironwood_anchor: None,
+            },
+        );
+        builder
+            .add_orchard_spend::<zip317::FeeRule>(orchard_fvk.clone(), note, merkle_path)
+            .unwrap();
+        builder
+            .add_orchard_output::<zip317::FeeRule>(
+                Some(orchard_ovk),
+                recipient,
+                Zatoshis::const_from_u64(990_000),
+                MemoBytes::empty(),
+            )
+            .unwrap();
+        let PcztResult {
+            pczt_parts,
+            orchard_meta,
+            ..
+        } = builder
+            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .unwrap();
+        let spend_action_index = orchard_meta.spend_action_index(0).unwrap();
+        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        let derivation = orchard::pczt::Zip32Derivation::parse(
+            seed_fingerprint,
+            vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(133).index(),
+                zip32::ChildIndex::hardened(0).index(),
+            ],
+        )
+        .unwrap();
+        let pczt = Updater::new(Creator::build_from_parts(pczt_parts).unwrap())
+            .update_orchard_with(|mut bundle| {
+                bundle.update_action_with(spend_action_index, |mut action| {
+                    action.set_spend_zip32_derivation(derivation);
+                    Ok(())
+                })
+            })
+            .unwrap()
+            .finish();
+
+        SamplePczt {
+            bytes: pczt.serialize(),
+            seed: seed.to_vec(),
+            ufvk_text,
+            seed_fingerprint,
+            transparent_recipient: String::new(),
         }
     }
 

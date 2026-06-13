@@ -195,7 +195,8 @@ static const ViewHandlerEntry *GetViewHandlerEntry(ViewType viewType)
     return NULL;
 }
 
-UREncodeResult *SignInternal(SignFn sign_func, void *data)
+static UREncodeResult *SignInternalCore(SignFn sign_func, SignWithAccountFn sign_with_account_func,
+                                        void *data, uint32_t account_index)
 {
     bool enable = IsPreviousLockScreenEnable();
     SetLockScreen(false);
@@ -210,7 +211,11 @@ UREncodeResult *SignInternal(SignFn sign_func, void *data)
         }
 
         int len = GetMnemonicType() == MNEMONIC_TYPE_BIP39 ? sizeof(seed) : GetCurrentAccountEntropyLen();
-        encodeResult = sign_func(data, seed, len);
+        if (sign_with_account_func != NULL) {
+            encodeResult = sign_with_account_func(data, seed, len, account_index);
+        } else {
+            encodeResult = sign_func(data, seed, len);
+        }
         CHECK_CHAIN_BREAK(encodeResult);
     } while (0);
 
@@ -219,4 +224,15 @@ UREncodeResult *SignInternal(SignFn sign_func, void *data)
     SetLockScreen(enable);
 
     return encodeResult;
+}
+
+UREncodeResult *SignInternal(SignFn sign_func, void *data)
+{
+    return SignInternalCore(sign_func, NULL, data, 0);
+}
+
+UREncodeResult *SignInternalWithAccount(SignWithAccountFn sign_func, void *data,
+                                        uint32_t account_index)
+{
+    return SignInternalCore(NULL, sign_func, data, account_index);
 }

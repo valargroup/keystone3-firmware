@@ -45,6 +45,16 @@ fn validate_sapling_bundle_consistency(pczt: &Pczt) -> Result<(), ZcashError> {
 }
 
 #[cfg(feature = "cypherpunk")]
+fn map_orchard_verifier_error(
+    error: pczt::roles::verifier::OrchardError<ZcashError>,
+) -> ZcashError {
+    match error {
+        pczt::roles::verifier::OrchardError::Custom(error) => error,
+        error => ZcashError::InvalidDataError(alloc::format!("{error:?}")),
+    }
+}
+
+#[cfg(feature = "cypherpunk")]
 pub fn check_pczt_orchard<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
@@ -55,17 +65,31 @@ pub fn check_pczt_orchard<P: consensus::Parameters>(
     validate_sapling_bundle_consistency(pczt)?;
     let verifier = Verifier::new(pczt.clone())
         .with_orchard(|bundle| {
-            check_orchard(params, seed_fingerprint, account_index, ufvk, bundle)
-                .map_err(pczt::roles::verifier::OrchardError::Custom)
+            check_orchard(
+                params,
+                seed_fingerprint,
+                account_index,
+                ufvk,
+                bundle,
+                "Orchard",
+            )
+            .map_err(pczt::roles::verifier::OrchardError::Custom)
         })
-        .map_err(|e| ZcashError::InvalidDataError(alloc::format!("{e:?}")))?;
+        .map_err(map_orchard_verifier_error)?;
     #[cfg(zcash_unstable = "nu7")]
     verifier
         .with_ironwood(|bundle| {
-            check_orchard(params, seed_fingerprint, account_index, ufvk, bundle)
-                .map_err(pczt::roles::verifier::OrchardError::Custom)
+            check_orchard(
+                params,
+                seed_fingerprint,
+                account_index,
+                ufvk,
+                bundle,
+                "Ironwood",
+            )
+            .map_err(pczt::roles::verifier::OrchardError::Custom)
         })
-        .map_err(|e| ZcashError::InvalidDataError(alloc::format!("{e:?}")))?;
+        .map_err(map_orchard_verifier_error)?;
     Ok(())
 }
 
@@ -314,9 +338,17 @@ fn check_orchard<P: consensus::Parameters>(
     account_index: zip32::AccountId,
     ufvk: &UnifiedFullViewingKey,
     bundle: &orchard::pczt::Bundle,
+    pool_label: &str,
 ) -> Result<(), ZcashError> {
     bundle.actions().iter().try_for_each(|action| {
-        check_action(params, seed_fingerprint, account_index, ufvk, action)?;
+        check_action(
+            params,
+            seed_fingerprint,
+            account_index,
+            ufvk,
+            action,
+            pool_label,
+        )?;
         Ok::<_, ZcashError>(())
     })?;
 
@@ -346,6 +378,7 @@ fn check_action<P: consensus::Parameters>(
     account_index: zip32::AccountId,
     ufvk: &UnifiedFullViewingKey,
     action: &orchard::pczt::Action,
+    pool_label: &str,
 ) -> Result<(), ZcashError> {
     // Check `cv_net` first so we know that the `value` fields for both the spend and the
     // output are present and correct.
@@ -356,7 +389,14 @@ fn check_action<P: consensus::Parameters>(
     let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
         "orchard fvk is not present".to_string(),
     ))?;
-    check_action_spend(params, seed_fingerprint, account_index, fvk, action.spend())?;
+    check_action_spend(
+        params,
+        seed_fingerprint,
+        account_index,
+        fvk,
+        action.spend(),
+        pool_label,
+    )?;
     check_action_output(ufvk, action)
 }
 
@@ -368,21 +408,19 @@ fn check_action_spend<P: consensus::Parameters>(
     account_index: zip32::AccountId,
     fvk: &FullViewingKey,
     spend: &orchard::pczt::Spend,
+    pool_label: &str,
 ) -> Result<(), ZcashError> {
+    let matching_account = super::matching_seed_supported_orchard_account(
+        seed_fingerprint,
+        spend.zip32_derivation().as_ref(),
+        params.network_type().coin_type(),
+        pool_label,
+    )?;
+
     // We can only verify the `nullifier` and `rk` fields of a spend if we know its FVK.
     let can_verify_nf_rk = match (spend.value(), spend.fvk(), spend.zip32_derivation()) {
-        // If the spend is marked as matching the accounts's FVK, verify with it.
-        (_, _, Some(zip32_derivation))
-            if zip32_derivation.seed_fingerprint() == seed_fingerprint
-                && zip32_derivation.derivation_path()
-                    == &[
-                        zip32::ChildIndex::hardened(32),
-                        zip32::ChildIndex::hardened(params.network_type().coin_type()),
-                        account_index.into(),
-                    ] =>
-        {
-            Some(Some(fvk))
-        }
+        // If the spend is marked as matching this account's FVK, verify with it.
+        (_, _, _) if matching_account == Some(account_index) => Some(Some(fvk)),
         // Dummy notes use randomly-generated FVKs, so if one is already present then
         // don't validate using the account's FVK.
         (Some(value), Some(_), _) if value.inner() == 0 => Some(None),

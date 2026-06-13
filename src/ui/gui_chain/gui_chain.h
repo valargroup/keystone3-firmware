@@ -153,6 +153,8 @@ typedef struct {
 } SetChainData_t;
 
 typedef UREncodeResult *(*SignFn)(void *data, PtrBytes seed, uint32_t seed_len);
+typedef UREncodeResult *(*SignWithAccountFn)(void *data, PtrBytes seed, uint32_t seed_len,
+                                             uint32_t account_index);
 
 #define CHECK_CHAIN_BREAK(result)                                       \
     if (result->error_code != 0) {                                      \
@@ -191,6 +193,8 @@ GenerateUR GetUrGenerator(ViewType viewType);
 GenerateUR GetSingleUrGenerator(ViewType viewType);
 bool CheckViewTypeIsAllow(uint8_t viewType);
 UREncodeResult *SignInternal(SignFn sign_func, void *data);
+UREncodeResult *SignInternalWithAccount(SignWithAccountFn sign_func, void *data,
+                                        uint32_t account_index);
 #ifndef BTC_ONLY
 bool IsMessageType(uint8_t type);
 bool isTonSignProof(uint8_t type);

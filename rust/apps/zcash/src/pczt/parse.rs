@@ -15,9 +15,10 @@ use zcash_vendor::{
     },
     zcash_keys::keys::UnifiedFullViewingKey,
     zcash_protocol::{
-        consensus::{self},
+        consensus::{self, NetworkConstants},
         value::ZatBalance,
     },
+    zip32,
 };
 
 #[cfg(feature = "cypherpunk")]
@@ -31,6 +32,16 @@ use super::structs::{ParsedFrom, ParsedOrchard, ParsedPczt, ParsedTo, ParsedTran
 use crate::errors::ZcashError;
 
 const ZEC_DIVIDER: u32 = 100_000_000;
+
+#[cfg(feature = "cypherpunk")]
+fn map_orchard_verifier_error(
+    error: pczt::roles::verifier::OrchardError<ZcashError>,
+) -> ZcashError {
+    match error {
+        pczt::roles::verifier::OrchardError::Custom(error) => error,
+        error => ZcashError::InvalidDataError(format!("{error:?}")),
+    }
+}
 
 fn format_zec_value(value: f64) -> String {
     let zec_value = format!("{:.8}", value / ZEC_DIVIDER as f64);
@@ -135,6 +146,7 @@ pub fn decode_output_enc_ciphertext(
 pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
     ufvk: &UnifiedFullViewingKey,
     pczt: &Pczt,
 ) -> Result<ParsedPczt, ZcashError> {
@@ -145,19 +157,33 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
 
     let verifier = Verifier::new(pczt.clone())
         .with_orchard(|bundle| {
-            parsed_orchard = parse_orchard(params, seed_fingerprint, ufvk, bundle)
-                .map_err(pczt::roles::verifier::OrchardError::Custom)?;
+            parsed_orchard = parse_orchard(
+                params,
+                seed_fingerprint,
+                account_index,
+                ufvk,
+                bundle,
+                "Orchard",
+            )
+            .map_err(pczt::roles::verifier::OrchardError::Custom)?;
             Ok(())
         })
-        .map_err(|e| ZcashError::InvalidDataError(alloc::format!("{e:?}")))?;
+        .map_err(map_orchard_verifier_error)?;
     #[cfg(zcash_unstable = "nu7")]
     let verifier = verifier
         .with_ironwood(|bundle| {
-            parsed_ironwood = parse_orchard(params, seed_fingerprint, ufvk, bundle)
-                .map_err(pczt::roles::verifier::OrchardError::Custom)?;
+            parsed_ironwood = parse_orchard(
+                params,
+                seed_fingerprint,
+                account_index,
+                ufvk,
+                bundle,
+                "Ironwood",
+            )
+            .map_err(pczt::roles::verifier::OrchardError::Custom)?;
             Ok(())
         })
-        .map_err(|e| ZcashError::InvalidDataError(alloc::format!("{e:?}")))?;
+        .map_err(map_orchard_verifier_error)?;
     verifier
         .with_transparent(|bundle| {
             parsed_transparent = parse_transparent(params, seed_fingerprint, bundle)
@@ -481,17 +507,26 @@ fn parse_transparent_output(
 fn parse_orchard<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
     ufvk: &UnifiedFullViewingKey,
     orchard: &orchard::pczt::Bundle,
+    pool_label: &str,
 ) -> Result<Option<ParsedOrchard>, ZcashError> {
     let mut parsed_orchard = ParsedOrchard::new(vec![], vec![]);
     orchard.actions().iter().try_for_each(|action| {
         let spend = action.spend();
+        let matching_account = super::matching_seed_supported_orchard_account(
+            seed_fingerprint,
+            spend.zip32_derivation().as_ref(),
+            params.network_type().coin_type(),
+            pool_label,
+        )?;
 
         if let Some(value) = spend.value() {
             //only adds non-dummy spend
             if value.inner() != 0 {
-                let parsed_from = parse_orchard_spend(seed_fingerprint, spend)?;
+                let parsed_from =
+                    parse_orchard_spend(spend, matching_account == Some(account_index))?;
                 parsed_orchard.add_from(parsed_from);
             }
         }
@@ -512,21 +547,14 @@ fn parse_orchard<P: consensus::Parameters>(
 
 #[cfg(feature = "cypherpunk")]
 fn parse_orchard_spend(
-    seed_fingerprint: &[u8; 32],
     spend: &orchard::pczt::Spend,
+    is_mine: bool,
 ) -> Result<ParsedFrom, ZcashError> {
     let value = spend
         .value()
         .ok_or(ZcashError::InvalidPczt("value is not present".to_string()))?
         .inner();
     let zec_value = format_zec_value(value as f64);
-
-    let zip32_derivation = spend.zip32_derivation();
-
-    let is_mine = match zip32_derivation {
-        Some(zip32_derivation) => seed_fingerprint == zip32_derivation.seed_fingerprint(),
-        None => false,
-    };
 
     Ok(ParsedFrom::new(None, zec_value, value, is_mine))
 }
@@ -868,9 +896,14 @@ mod tests {
         let pczt = Pczt::parse(&sample.bytes).unwrap();
         let unified_fvk = UnifiedFullViewingKey::decode(&MAIN_NETWORK, &sample.ufvk_text).unwrap();
 
-        let result =
-            parse_pczt_cypherpunk(&MAIN_NETWORK, &sample.seed_fingerprint, &unified_fvk, &pczt)
-                .unwrap();
+        let result = parse_pczt_cypherpunk(
+            &MAIN_NETWORK,
+            &sample.seed_fingerprint,
+            zip32::AccountId::ZERO,
+            &unified_fvk,
+            &pczt,
+        )
+        .unwrap();
 
         assert!(!result.get_has_sapling());
         assert_eq!(result.get_total_transfer_value(), "0.001 ZEC");

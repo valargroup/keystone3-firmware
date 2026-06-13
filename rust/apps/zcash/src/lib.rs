@@ -146,6 +146,7 @@ fn reject_legacy_check_unsupported_pczt(pczt: &Pczt) -> Result<()> {
 /// * `pczt` - The binary representation of the PCZT to parse
 /// * `ufvk_text` - The string representation of the Unified Full Viewing Key
 /// * `seed_fingerprint` - A 32-byte fingerprint of the seed used to derive keys
+/// * `account_index` - The account index for the keys to display as owned
 ///
 /// # Returns
 /// * `Result<ParsedPczt>` - A structured representation of the PCZT if successful
@@ -160,12 +161,15 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     pczt: &[u8],
     ufvk_text: &str,
     seed_fingerprint: &[u8; 32],
+    account_index: u32,
 ) -> Result<ParsedPczt> {
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
     let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
         .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
     let pczt =
         Pczt::parse(pczt).map_err(|_e| ZcashError::InvalidPczt("invalid pczt data".to_string()))?;
-    pczt::parse::parse_pczt_cypherpunk(params, seed_fingerprint, &ufvk, &pczt)
+    pczt::parse::parse_pczt_cypherpunk(params, seed_fingerprint, account_index, &ufvk, &pczt)
 }
 
 #[cfg(test)]
@@ -211,7 +215,8 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 ///
 /// # Parameters
 /// * `pczt` - The binary representation of the PCZT to sign
-/// * `seed` - The seed to sign the PCZT with   
+/// * `seed` - The seed to sign the PCZT with
+/// * `account_index` - The account index for shielded spend signatures
 ///
 /// # Returns
 /// * `Result<Vec<u8>>` - The signed PCZT if successful, or an error otherwise
@@ -219,10 +224,12 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 /// # Errors
 /// * `ZcashError::InvalidPczt` - If the PCZT data is malformed or cannot be parsed
 /// * Other errors from the underlying signing process
-pub fn sign_pczt(pczt: &[u8], seed: &[u8]) -> Result<Vec<u8>> {
+pub fn sign_pczt(pczt: &[u8], seed: &[u8], account_index: u32) -> Result<Vec<u8>> {
     let pczt =
         Pczt::parse(pczt).map_err(|_e| ZcashError::InvalidPczt("invalid pczt data".to_string()))?;
-    pczt::sign::sign_pczt(pczt, seed)
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    pczt::sign::sign_pczt(pczt, seed, account_index)
 }
 
 #[cfg(all(test, feature = "multi_coins", not(feature = "cypherpunk")))]
@@ -265,9 +272,9 @@ mod legacy_tests {
 #[cfg(feature = "cypherpunk")]
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
 
-    use ::pczt::roles::creator::Creator;
+    use ::pczt::roles::{creator::Creator, updater::Updater};
     use consensus::MainNetwork;
     use keystore::algorithms::zcash::{calculate_seed_fingerprint, derive_ufvk};
     use rand_core::OsRng;
@@ -339,6 +346,82 @@ mod tests {
         );
     }
 
+    #[cfg(zcash_unstable = "nu7")]
+    fn unsupported_orchard_spend_paths() -> Vec<Vec<u32>> {
+        vec![
+            vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(1).index(),
+                zip32::ChildIndex::hardened(0).index(),
+            ],
+            vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(133).index(),
+                zip32::ChildIndex::hardened(0).index(),
+                zip32::ChildIndex::hardened(0).index(),
+            ],
+        ]
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu7")]
+    fn orchard_pczt_with_spend_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_orchard_with(|mut bundle| {
+                for action_index in 0..bundle.bundle().actions().len() {
+                    let derivation =
+                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
+                            .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish()
+            .serialize()
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    fn ironwood_pczt_with_spend_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_ironwood_with(|mut bundle| {
+                for action_index in 0..bundle.bundle().actions().len() {
+                    let derivation =
+                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
+                            .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish()
+            .serialize()
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    fn assert_unsupported_zip32_error<T: core::fmt::Debug>(result: Result<T>, pool_label: &str) {
+        match result {
+            Err(ZcashError::InvalidPczt(message))
+                if message
+                    == alloc::format!("unsupported {pool_label} spend ZIP 32 derivation path") => {}
+            other => panic!("unexpected unsupported ZIP32 result: {other:?}"),
+        }
+    }
+
     #[test]
     fn test_get_address() {
         let address = get_address(&MainNetwork, "uview1s2e0495jzhdarezq4h4xsunfk4jrq7gzg22tjjmkzpd28wgse4ejm6k7yfg8weanaghmwsvc69clwxz9f9z2hwaz4gegmna0plqrf05zkeue0nevnxzm557rwdkjzl4pl4hp4q9ywyszyjca8jl54730aymaprt8t0kxj8ays4fs682kf7prj9p24dnlcgqtnd2vnskkm7u8cwz8n0ce7yrwx967cyp6dhkc2wqprt84q0jmwzwnufyxe3j0758a9zgk9ssrrnywzkwfhu6ap6cgx3jkxs3un53n75s3");
@@ -354,6 +437,7 @@ mod tests {
             &sample.bytes,
             &sample.ufvk_text,
             &seed_fingerprint,
+            0,
         )
         .unwrap();
 
@@ -390,6 +474,7 @@ mod tests {
             &sample.bytes,
             &sample.ufvk_text,
             &seed_fingerprint,
+            0,
         )
         .unwrap();
 
@@ -406,7 +491,7 @@ mod tests {
         )
         .unwrap();
 
-        let signed = sign_pczt(&sample.bytes, &sample.seed).expect("Ironwood PCZT should sign");
+        let signed = sign_pczt(&sample.bytes, &sample.seed, 0).expect("Ironwood PCZT should sign");
         let signed_pczt = Pczt::parse(&signed).expect("signed PCZT must parse");
         assert!(
             signed_pczt
@@ -416,6 +501,100 @@ mod tests {
                 .any(|action| action.spend().spend_auth_sig().is_some()),
             "Ironwood spend authorization signature must be present",
         );
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_parse_and_check_reject_matching_fingerprint_unsupported_orchard_spend_zip32_path() {
+        let sample = pczt::test_support::sample_orchard_spend_pczt();
+        let parsed_pczt = parse_pczt_cypherpunk(
+            &MainNetwork,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .unwrap();
+        assert!(parsed_pczt
+            .get_orchard()
+            .unwrap()
+            .get_from()
+            .first()
+            .unwrap()
+            .get_is_mine());
+
+        for path in unsupported_orchard_spend_paths() {
+            let pczt =
+                orchard_pczt_with_spend_derivation(&sample.bytes, sample.seed_fingerprint, path);
+
+            assert_unsupported_zip32_error(
+                parse_pczt_cypherpunk(
+                    &MainNetwork,
+                    &pczt,
+                    &sample.ufvk_text,
+                    &sample.seed_fingerprint,
+                    0,
+                ),
+                "Orchard",
+            );
+            assert_unsupported_zip32_error(
+                check_pczt_cypherpunk(
+                    &MainNetwork,
+                    &pczt,
+                    &sample.ufvk_text,
+                    &sample.seed_fingerprint,
+                    0,
+                ),
+                "Orchard",
+            );
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_parse_and_check_reject_matching_fingerprint_unsupported_ironwood_spend_zip32_path() {
+        let sample = pczt::test_support::sample_ironwood_pczt();
+        let parsed_pczt = parse_pczt_cypherpunk(
+            &pczt::test_support::Nu7Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .unwrap();
+        assert!(parsed_pczt
+            .get_ironwood()
+            .unwrap()
+            .get_from()
+            .first()
+            .unwrap()
+            .get_is_mine());
+
+        for path in unsupported_orchard_spend_paths() {
+            let pczt =
+                ironwood_pczt_with_spend_derivation(&sample.bytes, sample.seed_fingerprint, path);
+
+            assert_unsupported_zip32_error(
+                parse_pczt_cypherpunk(
+                    &pczt::test_support::Nu7Network,
+                    &pczt,
+                    &sample.ufvk_text,
+                    &sample.seed_fingerprint,
+                    0,
+                ),
+                "Ironwood",
+            );
+            assert_unsupported_zip32_error(
+                check_pczt_cypherpunk(
+                    &pczt::test_support::Nu7Network,
+                    &pczt,
+                    &sample.ufvk_text,
+                    &sample.seed_fingerprint,
+                    0,
+                ),
+                "Ironwood",
+            );
+        }
     }
 
     #[test]
@@ -492,7 +671,7 @@ mod tests {
         let pczt_bytes = pczt.serialize();
         let seed_fingerprint = calculate_seed_fingerprint(&victim_seed).unwrap();
 
-        let result = parse_pczt_cypherpunk(&params, &pczt_bytes, &ufvk_text, &seed_fingerprint);
+        let result = parse_pczt_cypherpunk(&params, &pczt_bytes, &ufvk_text, &seed_fingerprint, 0);
         match result {
             Err(ZcashError::InvalidPczt(_)) => {}
             Err(ZcashError::InvalidDataError(msg))
@@ -593,6 +772,7 @@ mod tests {
             invalid_pczt,
             &ufvk.to_string(),
             &seed_fingerprint,
+            0,
         );
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ZcashError::InvalidPczt(_)));
@@ -603,7 +783,7 @@ mod tests {
         let invalid_pczt = b"invalid_pczt_data";
         let seed = hex::decode("d561f5aba9db8b100a9a84197322e522f952171a388ad74eaab1ab9db815be3335c3099a0a2bb0fee57e630db5ed7251412b6bd4b905cf518627411fee3f32dd").unwrap();
 
-        let result = sign_pczt(invalid_pczt, &seed);
+        let result = sign_pczt(invalid_pczt, &seed, 0);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ZcashError::InvalidPczt(_)));
     }
