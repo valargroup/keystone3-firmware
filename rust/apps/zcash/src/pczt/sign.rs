@@ -5,10 +5,9 @@ use alloc::{
 };
 
 use bitcoin::secp256k1;
-use keystore::algorithms::{
-    secp256k1::{get_private_key_by_seed, get_public_key_by_seed},
-    zcash::calculate_seed_fingerprint,
-};
+#[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
+use keystore::algorithms::secp256k1::get_public_key_by_seed;
+use keystore::algorithms::{secp256k1::get_private_key_by_seed, zcash::calculate_seed_fingerprint};
 use zcash_vendor::{
     pczt::{
         roles::{
@@ -22,7 +21,14 @@ use zcash_vendor::{
 };
 
 #[cfg(feature = "cypherpunk")]
-use zcash_vendor::{orchard, pczt::roles::signer::Signer as RoleSigner};
+use zcash_vendor::{
+    orchard,
+    pczt::roles::signer::Signer as RoleSigner,
+    ripemd::Ripemd160,
+    sha2::{Digest, Sha256},
+    transparent::{address::TransparentAddress, keys::AccountPrivKey},
+    zcash_protocol::consensus::MainNetwork,
+};
 
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
 use zcash_vendor::{
@@ -149,7 +155,7 @@ pub fn sign_pczt(
     seed: &[u8],
     account_index: zip32::AccountId,
 ) -> crate::Result<Vec<u8>> {
-    let transparent_keys = collect_transparent_signing_keys(&pczt, seed)?;
+    let transparent_keys = collect_transparent_signing_keys(&pczt, seed, account_index)?;
     let orchard_keys =
         collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Orchard)?;
     #[cfg(zcash_unstable = "nu7")]
@@ -270,6 +276,7 @@ fn redact_orchard_bundle(mut r: OrchardRedactor<'_>) {
     r.clear_bsk();
 }
 
+#[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
 fn transparent_key_path_for_input(
     seed: &[u8],
     input: &transparent::pczt::Input,
@@ -309,15 +316,86 @@ fn transparent_key_path_for_input(
 }
 
 #[cfg(feature = "cypherpunk")]
+fn transparent_derivation_path_string(path: &[zcash_vendor::bip32::ChildNumber]) -> String {
+    let mut ret = "m".to_string();
+    for i in path.iter() {
+        if i.is_hardened() {
+            ret.push_str(&format!("/{}'", i.index()));
+        } else {
+            ret.push_str(&format!("/{}", i.index()));
+        }
+    }
+    ret
+}
+
+#[cfg(feature = "cypherpunk")]
+fn transparent_key_path_for_selected_account(
+    seed: &[u8],
+    account_index: zip32::AccountId,
+    input: &transparent::pczt::Input,
+) -> Result<Option<String>, ZcashError> {
+    let fingerprint =
+        calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
+    let params = MainNetwork;
+    let account = AccountPrivKey::from_seed(&params, seed, account_index).map_err(|e| {
+        ZcashError::SigningError(format!("failed to derive transparent account key: {e:?}"))
+    })?;
+    let xpub = account.to_account_pubkey();
+
+    for (pubkey, derivation) in input.bip32_derivation().iter() {
+        if fingerprint != *derivation.seed_fingerprint() {
+            continue;
+        }
+
+        let target = xpub
+            .derive_pubkey_at_bip32_path(&params, account_index, derivation.derivation_path())
+            .map_err(|_| {
+                ZcashError::InvalidPczt(
+                    "transparent input bip32 derivation path invalid".to_string(),
+                )
+            })?;
+        if &target.serialize() != pubkey {
+            return Err(ZcashError::InvalidPczt(
+                "transparent input script pubkey mismatch".to_string(),
+            ));
+        }
+
+        match TransparentAddress::from_script_from_chain(&input.script_pubkey().clone()) {
+            Some(TransparentAddress::PublicKeyHash(hash)) => {
+                if hash[..] != Ripemd160::digest(Sha256::digest(pubkey))[..] {
+                    return Err(ZcashError::InvalidPczt(
+                        "transparent input script pubkey mismatch".to_string(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(ZcashError::InvalidPczt(
+                    "transparent input script pubkey is not a public key hash".to_string(),
+                ))
+            }
+        }
+
+        return Ok(Some(transparent_derivation_path_string(
+            derivation.derivation_path(),
+        )));
+    }
+
+    Ok(None)
+}
+
+#[cfg(feature = "cypherpunk")]
 fn collect_transparent_signing_keys(
     pczt: &Pczt,
     seed: &[u8],
+    account_index: zip32::AccountId,
 ) -> Result<Vec<(usize, secp256k1::SecretKey)>, ZcashError> {
     let mut keys = Vec::new();
     low_level_signer::Signer::new(pczt.clone())
         .sign_transparent_with(|_pczt, bundle, _tx_modifiable| {
             for (index, input) in bundle.inputs_mut().iter().enumerate() {
-                if let Some(path) = transparent_key_path_for_input(seed, input)? {
+                if let Some(path) =
+                    transparent_key_path_for_selected_account(seed, account_index, input)?
+                {
                     let sk = get_private_key_by_seed(seed, &path).map_err(|e| {
                         ZcashError::SigningError(format!("failed to get private key: {e:?}"))
                     })?;
@@ -400,15 +478,19 @@ fn collect_orchard_bundle_signing_keys(
     bundle: &mut orchard::pczt::Bundle,
 ) -> Result<(), SigningKeyCollectionError> {
     for (index, action) in bundle.actions().iter().enumerate() {
-        if action.spend().dummy_sk().is_some() {
-            continue;
-        }
+        let pool_label = pool.label();
         match action.spend().value().map(|v| v.inner()) {
             Some(0) | None => continue,
+            Some(_) if action.spend().dummy_sk().is_some() => {
+                return Err(ZcashError::InvalidPczt(format!(
+                    "{pool_label} spend dummy_sk is only valid for dummy spends"
+                ))
+                .into());
+            }
             Some(_) => {}
         }
         if let Some(ask) =
-            spend_authorizing_key_for_action(seed, account_index, action, pool.label())?
+            spend_authorizing_key_for_action(seed, account_index, action, pool_label)?
         {
             keys.push((index, ask));
         }
@@ -425,28 +507,33 @@ fn spend_authorizing_key_for_action(
 ) -> Result<Option<orchard::keys::SpendAuthorizingKey>, ZcashError> {
     let fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
-    let account_id = match super::matching_seed_supported_orchard_account(
+    if !super::matching_seed_selected_orchard_account(
         &fingerprint,
         action.spend().zip32_derivation().as_ref(),
         133,
+        account_index,
         pool_label,
     )? {
-        Some(account_id) => account_id,
-        None => return Ok(None),
-    };
-    if account_id != account_index {
         return Ok(None);
     }
 
-    let osk = orchard::keys::SpendingKey::from_zip32_seed(seed, 133, account_id).map_err(|e| {
-        ZcashError::SigningError(format!("failed to derive {pool_label} spending key: {e:?}"))
-    })?;
+    let osk =
+        orchard::keys::SpendingKey::from_zip32_seed(seed, 133, account_index).map_err(|e| {
+            ZcashError::SigningError(format!("failed to derive {pool_label} spending key: {e:?}"))
+        })?;
     Ok(Some(orchard::keys::SpendAuthorizingKey::from(&osk)))
 }
 
 #[cfg(all(test, feature = "cypherpunk"))]
 mod tests {
     use super::*;
+
+    fn assert_invalid_pczt_message<T: core::fmt::Debug>(result: crate::Result<T>, expected: &str) {
+        match result {
+            Err(ZcashError::InvalidPczt(message)) if message == expected => {}
+            other => panic!("unexpected InvalidPczt result: {other:?}"),
+        }
+    }
 
     #[test]
     fn test_sign_pczt_invalid_seed_fingerprint() {
@@ -534,52 +621,157 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
     #[test]
-    fn test_sign_pczt_ironwood_spend_requires_selected_account() {
-        let sample = crate::pczt::test_support::sample_ironwood_pczt();
+    fn test_sign_pczt_transparent_input_requires_selected_account() {
+        use zcash_vendor::transparent::keys::IncomingViewingKey;
+
+        let sample = crate::pczt::test_support::sample_pczt_to_transparent();
+        let account =
+            AccountPrivKey::from_seed(&MainNetwork, &sample.seed, zip32::AccountId::ZERO).unwrap();
+        let (_, address_index) = account
+            .to_account_pubkey()
+            .derive_external_ivk()
+            .unwrap()
+            .default_address();
+        let input_sk = account.derive_external_secret_key(address_index).unwrap();
+        let secp = secp256k1::Secp256k1::signing_only();
+        let pubkey = input_sk.public_key(&secp).serialize();
+
         let account_one_pczt = Updater::new(Pczt::parse(&sample.bytes).unwrap())
-            .update_ironwood_with(|mut bundle| {
-                for action_index in 0..bundle.bundle().actions().len() {
-                    let account_one_derivation = orchard::pczt::Zip32Derivation::parse(
-                        sample.seed_fingerprint,
-                        alloc::vec![
-                            zip32::ChildIndex::hardened(32).index(),
-                            zip32::ChildIndex::hardened(133).index(),
-                            zip32::ChildIndex::hardened(1).index(),
-                        ],
-                    )
-                    .unwrap();
-                    bundle.update_action_with(action_index, |mut action| {
-                        action.set_spend_zip32_derivation(account_one_derivation);
-                        Ok(())
-                    })?;
-                }
-                Ok(())
+            .update_transparent_with(|mut bundle| {
+                let account_one_derivation = transparent::pczt::Bip32Derivation::parse(
+                    sample.seed_fingerprint,
+                    alloc::vec![
+                        44 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                        133 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                        1 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                        0,
+                        0,
+                    ],
+                )
+                .unwrap();
+                bundle.update_input_with(0, |mut input| {
+                    input.set_bip32_derivation(pubkey, account_one_derivation);
+                    Ok(())
+                })
             })
             .unwrap()
             .finish();
-        let account_one_pczt = Redactor::new(account_one_pczt)
-            .redact_ironwood_with(|mut bundle| {
-                bundle.redact_actions(|mut action| action.clear_spend_auth_sig());
-            })
-            .finish();
 
-        let signed_account_zero = sign_pczt(
-            account_one_pczt.clone(),
+        assert_invalid_pczt_message(
+            sign_pczt(account_one_pczt, &sample.seed, zip32::AccountId::ZERO),
+            "transparent input bip32 derivation path invalid",
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_sign_pczt_orchard_spend_rejects_unsupported_zip32_path() {
+        let sample = crate::pczt::test_support::sample_orchard_spend_pczt();
+        for path in crate::pczt::test_support::unsupported_orchard_spend_paths() {
+            let pczt = crate::pczt::test_support::orchard_pczt_with_spend_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                path,
+            );
+
+            assert_invalid_pczt_message(
+                sign_pczt(
+                    Pczt::parse(&pczt).unwrap(),
+                    &sample.seed,
+                    zip32::AccountId::ZERO,
+                ),
+                "unsupported Orchard spend ZIP 32 derivation path",
+            );
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_sign_pczt_ironwood_spend_rejects_unsupported_zip32_path() {
+        let sample = crate::pczt::test_support::sample_ironwood_pczt();
+        for path in crate::pczt::test_support::unsupported_orchard_spend_paths() {
+            let pczt = crate::pczt::test_support::ironwood_pczt_with_spend_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                path,
+            );
+
+            assert_invalid_pczt_message(
+                sign_pczt(
+                    Pczt::parse(&pczt).unwrap(),
+                    &sample.seed,
+                    zip32::AccountId::ZERO,
+                ),
+                "unsupported Ironwood spend ZIP 32 derivation path",
+            );
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_sign_pczt_ironwood_spend_ignores_dummy_zip32_metadata() {
+        let sample = crate::pczt::test_support::sample_ironwood_pczt();
+        let pczt = crate::pczt::test_support::ironwood_pczt_with_dummy_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            crate::pczt::test_support::orchard_spend_path_for_account(1),
+        );
+
+        let signed = sign_pczt(
+            Pczt::parse(&pczt).unwrap(),
             &sample.seed,
             zip32::AccountId::ZERO,
         )
-        .expect("signing a PCZT with no selected-account spends should still return");
-        let parsed_account_zero =
-            Pczt::parse(&signed_account_zero).expect("signed PCZT must parse");
+        .expect("dummy spend ZIP 32 metadata must not block signing real spends");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
         assert!(
-            parsed_account_zero
+            parsed
                 .ironwood()
                 .actions()
                 .iter()
-                .all(|action| action.spend().spend_auth_sig().is_none()),
-            "selected account zero must not sign account one spends",
+                .any(|action| action.spend().spend_auth_sig().is_some()),
+            "Ironwood spend authorization signature must be present",
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_sign_pczt_orchard_spend_rejects_unselected_account() {
+        let sample = crate::pczt::test_support::sample_orchard_spend_pczt();
+        let account_one_pczt = crate::pczt::test_support::orchard_pczt_with_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            crate::pczt::test_support::orchard_spend_path_for_account(1),
+        );
+
+        assert_invalid_pczt_message(
+            sign_pczt(
+                Pczt::parse(&account_one_pczt).unwrap(),
+                &sample.seed,
+                zip32::AccountId::ZERO,
+            ),
+            "unsupported Orchard spend ZIP 32 account index",
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_sign_pczt_ironwood_spend_rejects_unselected_account() {
+        let sample = crate::pczt::test_support::sample_ironwood_pczt();
+        let account_one_pczt = crate::pczt::test_support::ironwood_pczt_with_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            crate::pczt::test_support::orchard_spend_path_for_account(1),
+        );
+
+        assert_invalid_pczt_message(
+            sign_pczt(
+                Pczt::parse(&account_one_pczt).unwrap(),
+                &sample.seed,
+                zip32::AccountId::ZERO,
+            ),
+            "unsupported Ironwood spend ZIP 32 account index",
         );
     }
 

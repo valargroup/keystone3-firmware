@@ -397,7 +397,7 @@ fn check_action<P: consensus::Parameters>(
         action.spend(),
         pool_label,
     )?;
-    check_action_output(ufvk, action)
+    check_action_output(ufvk, action, pool_label)
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -410,30 +410,37 @@ fn check_action_spend<P: consensus::Parameters>(
     spend: &orchard::pczt::Spend,
     pool_label: &str,
 ) -> Result<(), ZcashError> {
-    let matching_account = super::matching_seed_supported_orchard_account(
-        seed_fingerprint,
-        spend.zip32_derivation().as_ref(),
-        params.network_type().coin_type(),
-        pool_label,
-    )?;
-
     // We can only verify the `nullifier` and `rk` fields of a spend if we know its FVK.
     let can_verify_nf_rk = match (spend.value(), spend.fvk(), spend.zip32_derivation()) {
-        // If the spend is marked as matching this account's FVK, verify with it.
-        (_, _, _) if matching_account == Some(account_index) => Some(Some(fvk)),
         // Dummy notes use randomly-generated FVKs, so if one is already present then
         // don't validate using the account's FVK.
         (Some(value), Some(_), _) if value.inner() == 0 => Some(None),
-        // Don't verify `nullifier` or `rk` for any other spends.
+        // If the spend is marked as matching this account's FVK, verify with it.
+        (Some(value), _, _) if value.inner() != 0 => {
+            if super::matching_seed_selected_orchard_account(
+                seed_fingerprint,
+                spend.zip32_derivation().as_ref(),
+                params.network_type().coin_type(),
+                account_index,
+                pool_label,
+            )? {
+                Some(Some(fvk))
+            } else {
+                None
+            }
+        }
+        // Don't verify `nullifier` or `rk` for spends that lack value data.
         _ => None,
     };
 
     if let Some(expected_fvk) = can_verify_nf_rk {
         spend.verify_nullifier(expected_fvk).map_err(|e| {
-            ZcashError::InvalidPczt(alloc::format!("invalid Orchard action nullifier: {e:?}"))
+            ZcashError::InvalidPczt(alloc::format!(
+                "invalid {pool_label} action nullifier: {e:?}"
+            ))
         })?;
         spend.verify_rk(expected_fvk).map_err(|e| {
-            ZcashError::InvalidPczt(alloc::format!("invalid Orchard action rk: {e:?}"))
+            ZcashError::InvalidPczt(alloc::format!("invalid {pool_label} action rk: {e:?}"))
         })?;
     }
 
@@ -454,12 +461,13 @@ fn is_wallet_orchard_address(fvk: &FullViewingKey, address: &Address) -> bool {
 fn check_action_output(
     ufvk: &UnifiedFullViewingKey,
     action: &orchard::pczt::Action,
+    pool_label: &str,
 ) -> Result<(), ZcashError> {
     action
         .output()
         .verify_note_commitment(action.spend())
         .map_err(|e| {
-            ZcashError::InvalidPczt(alloc::format!("invalid Orchard action cmx: {e:?}"))
+            ZcashError::InvalidPczt(alloc::format!("invalid {pool_label} action cmx: {e:?}"))
         })?;
 
     let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
@@ -481,9 +489,9 @@ fn check_action_output(
             super::parse::decode_output_enc_ciphertext(action, vk.as_ref())?
         {
             if is_internal_ovk && !is_wallet_orchard_address(fvk, &address) {
-                return Err(ZcashError::InvalidPczt(
-                    "Orchard output was recoverable with an internal OVK but does not belong to this wallet".into(),
-                ));
+                return Err(ZcashError::InvalidPczt(alloc::format!(
+                    "{pool_label} output was recoverable with an internal OVK but does not belong to this wallet"
+                )));
             }
             break;
         }

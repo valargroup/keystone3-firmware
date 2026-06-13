@@ -46,6 +46,31 @@ pub(crate) fn matching_seed_supported_orchard_account(
         .map_err(|_| unsupported_path())
 }
 
+/// Returns whether a shielded spend belongs to the selected account. Matching
+/// seed fingerprints for any other supported account are invalid because the UI
+/// only reviews and signs the selected account.
+#[cfg(feature = "cypherpunk")]
+pub(crate) fn matching_seed_selected_orchard_account(
+    seed_fingerprint: &[u8; 32],
+    derivation: Option<&zcash_vendor::orchard::pczt::Zip32Derivation>,
+    coin_type: u32,
+    account_index: zcash_vendor::zip32::AccountId,
+    pool_label: &str,
+) -> Result<bool, crate::errors::ZcashError> {
+    match matching_seed_supported_orchard_account(
+        seed_fingerprint,
+        derivation,
+        coin_type,
+        pool_label,
+    )? {
+        Some(matching_account) if matching_account == account_index => Ok(true),
+        Some(_) => Err(crate::errors::ZcashError::InvalidPczt(alloc::format!(
+            "unsupported {pool_label} spend ZIP 32 account index"
+        ))),
+        None => Ok(false),
+    }
+}
+
 #[cfg(all(
     zcash_unstable = "nu7",
     any(feature = "multi_coins", not(feature = "cypherpunk"))
@@ -76,6 +101,7 @@ pub(crate) mod test_support {
     use zcash_vendor::zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade};
     use zcash_vendor::{
         orchard,
+        pczt::Pczt,
         transparent::{bundle as transparent, keys::IncomingViewingKey},
         zcash_keys::keys::UnifiedFullViewingKey,
         zcash_protocol::{
@@ -110,6 +136,152 @@ pub(crate) mod test_support {
                 _ => MainNetwork.activation_height(nu),
             }
         }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn unsupported_orchard_spend_paths() -> Vec<Vec<u32>> {
+        vec![
+            vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(1).index(),
+                zip32::ChildIndex::hardened(0).index(),
+            ],
+            vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(133).index(),
+                zip32::ChildIndex::hardened(0).index(),
+                zip32::ChildIndex::hardened(0).index(),
+            ],
+        ]
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn orchard_spend_path_for_account(account_index: u32) -> Vec<u32> {
+        vec![
+            zip32::ChildIndex::hardened(32).index(),
+            zip32::ChildIndex::hardened(133).index(),
+            zip32::ChildIndex::hardened(account_index).index(),
+        ]
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn orchard_pczt_with_spend_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_orchard_with(|mut bundle| {
+                for action_index in 0..bundle.bundle().actions().len() {
+                    let derivation =
+                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
+                            .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish()
+            .serialize()
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn orchard_pczt_with_dummy_spend_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_orchard_with(|mut bundle| {
+                let dummy_action_indices = bundle
+                    .bundle()
+                    .actions()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, action)| {
+                        matches!(action.spend().value().map(|value| value.inner()), Some(0))
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                assert!(!dummy_action_indices.is_empty());
+
+                for action_index in dummy_action_indices {
+                    let derivation =
+                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
+                            .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish()
+            .serialize()
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn ironwood_pczt_with_spend_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_ironwood_with(|mut bundle| {
+                for action_index in 0..bundle.bundle().actions().len() {
+                    let derivation =
+                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
+                            .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish()
+            .serialize()
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn ironwood_pczt_with_dummy_spend_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_ironwood_with(|mut bundle| {
+                let dummy_action_indices = bundle
+                    .bundle()
+                    .actions()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, action)| {
+                        matches!(action.spend().value().map(|value| value.inner()), Some(0))
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                assert!(!dummy_action_indices.is_empty());
+
+                for action_index in dummy_action_indices {
+                    let derivation =
+                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
+                            .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish()
+            .serialize()
     }
 
     pub(crate) fn sample_pczt_to_transparent() -> SamplePczt {

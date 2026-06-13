@@ -515,22 +515,23 @@ fn parse_orchard<P: consensus::Parameters>(
     let mut parsed_orchard = ParsedOrchard::new(vec![], vec![]);
     orchard.actions().iter().try_for_each(|action| {
         let spend = action.spend();
-        let matching_account = super::matching_seed_supported_orchard_account(
-            seed_fingerprint,
-            spend.zip32_derivation().as_ref(),
-            params.network_type().coin_type(),
-            pool_label,
-        )?;
 
         if let Some(value) = spend.value() {
             //only adds non-dummy spend
             if value.inner() != 0 {
-                let parsed_from =
-                    parse_orchard_spend(spend, matching_account == Some(account_index))?;
+                let spend_belongs_to_selected_account =
+                    super::matching_seed_selected_orchard_account(
+                        seed_fingerprint,
+                        spend.zip32_derivation().as_ref(),
+                        params.network_type().coin_type(),
+                        account_index,
+                        pool_label,
+                    )?;
+                let parsed_from = parse_orchard_spend(spend, spend_belongs_to_selected_account)?;
                 parsed_orchard.add_from(parsed_from);
             }
         }
-        let parsed_to = parse_orchard_output(params, ufvk, action)?;
+        let parsed_to = parse_orchard_output(params, ufvk, action, pool_label)?;
         if !parsed_to.get_is_dummy() {
             parsed_orchard.add_to(parsed_to);
         }
@@ -605,6 +606,7 @@ fn parse_orchard_output<P: consensus::Parameters>(
     params: &P,
     ufvk: &UnifiedFullViewingKey,
     action: &orchard::pczt::Action,
+    pool_label: &str,
 ) -> Result<ParsedTo, ZcashError> {
     let output = action.output();
     let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
@@ -653,9 +655,9 @@ fn parse_orchard_output<P: consensus::Parameters>(
                 let belongs_to_wallet = is_wallet_orchard_address(ufvk, &address)?;
                 let is_internal = is_internal_orchard_address(ufvk, &address)?;
                 if is_internal_ovk && !belongs_to_wallet {
-                    return Err(ZcashError::InvalidPczt(
-                        "Orchard output was recoverable with an internal OVK but does not belong to this wallet".into(),
-                    ));
+                    return Err(ZcashError::InvalidPczt(alloc::format!(
+                        "{pool_label} output was recoverable with an internal OVK but does not belong to this wallet"
+                    )));
                 }
                 let is_dummy = match vk {
                     Some(_) => false,
@@ -683,7 +685,7 @@ fn parse_orchard_output<P: consensus::Parameters>(
                 // `vk.is_none()` as a fallback. We require that non-trivial outputs are
                 // visible to the Keystone device.
                 (None, Some(value)) if value.inner() != 0 => Err(ZcashError::InvalidPczt(
-                    "enc_ciphertext field for Orchard action is undecryptable".into(),
+                    alloc::format!("enc_ciphertext field for {pool_label} action is undecryptable"),
                 )),
                 // We couldn't directly decrypt a zero-valued note. This is okay because
                 // it is checked elsewhere that the direct details in the PCZT are valid,
@@ -729,9 +731,9 @@ fn parse_orchard_output<P: consensus::Parameters>(
             let (address, is_dummy) = match (output.user_address(), value) {
                 (Some(addr), _) => Ok((addr.clone(), false)),
                 (None, 0) => Ok(("Dummy output".into(), true)),
-                (None, _) => Err(ZcashError::InvalidPczt(
-                    "missing user address for Orchard output".into(),
-                )),
+                (None, _) => Err(ZcashError::InvalidPczt(alloc::format!(
+                    "missing user address for {pool_label} output"
+                ))),
             }?;
             Ok(ParsedTo::new(
                 address,

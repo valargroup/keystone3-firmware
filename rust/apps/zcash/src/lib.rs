@@ -272,9 +272,9 @@ mod legacy_tests {
 #[cfg(feature = "cypherpunk")]
 #[cfg(test)]
 mod tests {
-    use alloc::{vec, vec::Vec};
+    use alloc::vec::Vec;
 
-    use ::pczt::roles::{creator::Creator, updater::Updater};
+    use ::pczt::roles::creator::Creator;
     use consensus::MainNetwork;
     use keystore::algorithms::zcash::{calculate_seed_fingerprint, derive_ufvk};
     use rand_core::OsRng;
@@ -347,78 +347,25 @@ mod tests {
     }
 
     #[cfg(zcash_unstable = "nu7")]
-    fn unsupported_orchard_spend_paths() -> Vec<Vec<u32>> {
-        vec![
-            vec![
-                zip32::ChildIndex::hardened(32).index(),
-                zip32::ChildIndex::hardened(1).index(),
-                zip32::ChildIndex::hardened(0).index(),
-            ],
-            vec![
-                zip32::ChildIndex::hardened(32).index(),
-                zip32::ChildIndex::hardened(133).index(),
-                zip32::ChildIndex::hardened(0).index(),
-                zip32::ChildIndex::hardened(0).index(),
-            ],
-        ]
-    }
-
-    #[cfg(zcash_unstable = "nu7")]
-    #[cfg(zcash_unstable = "nu7")]
-    fn orchard_pczt_with_spend_derivation(
-        bytes: &[u8],
-        seed_fingerprint: [u8; 32],
-        path: Vec<u32>,
-    ) -> Vec<u8> {
-        Updater::new(Pczt::parse(bytes).unwrap())
-            .update_orchard_with(|mut bundle| {
-                for action_index in 0..bundle.bundle().actions().len() {
-                    let derivation =
-                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
-                            .unwrap();
-                    bundle.update_action_with(action_index, |mut action| {
-                        action.set_spend_zip32_derivation(derivation);
-                        Ok(())
-                    })?;
-                }
-                Ok(())
-            })
-            .unwrap()
-            .finish()
-            .serialize()
-    }
-
-    #[cfg(zcash_unstable = "nu7")]
-    fn ironwood_pczt_with_spend_derivation(
-        bytes: &[u8],
-        seed_fingerprint: [u8; 32],
-        path: Vec<u32>,
-    ) -> Vec<u8> {
-        Updater::new(Pczt::parse(bytes).unwrap())
-            .update_ironwood_with(|mut bundle| {
-                for action_index in 0..bundle.bundle().actions().len() {
-                    let derivation =
-                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
-                            .unwrap();
-                    bundle.update_action_with(action_index, |mut action| {
-                        action.set_spend_zip32_derivation(derivation);
-                        Ok(())
-                    })?;
-                }
-                Ok(())
-            })
-            .unwrap()
-            .finish()
-            .serialize()
-    }
-
-    #[cfg(zcash_unstable = "nu7")]
     fn assert_unsupported_zip32_error<T: core::fmt::Debug>(result: Result<T>, pool_label: &str) {
         match result {
             Err(ZcashError::InvalidPczt(message))
                 if message
                     == alloc::format!("unsupported {pool_label} spend ZIP 32 derivation path") => {}
             other => panic!("unexpected unsupported ZIP32 result: {other:?}"),
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    fn assert_unsupported_zip32_account_error<T: core::fmt::Debug>(
+        result: Result<T>,
+        pool_label: &str,
+    ) {
+        match result {
+            Err(ZcashError::InvalidPczt(message))
+                if message
+                    == alloc::format!("unsupported {pool_label} spend ZIP 32 account index") => {}
+            other => panic!("unexpected unsupported ZIP32 account result: {other:?}"),
         }
     }
 
@@ -523,9 +470,12 @@ mod tests {
             .unwrap()
             .get_is_mine());
 
-        for path in unsupported_orchard_spend_paths() {
-            let pczt =
-                orchard_pczt_with_spend_derivation(&sample.bytes, sample.seed_fingerprint, path);
+        for path in pczt::test_support::unsupported_orchard_spend_paths() {
+            let pczt = pczt::test_support::orchard_pczt_with_spend_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                path,
+            );
 
             assert_unsupported_zip32_error(
                 parse_pczt_cypherpunk(
@@ -570,9 +520,12 @@ mod tests {
             .unwrap()
             .get_is_mine());
 
-        for path in unsupported_orchard_spend_paths() {
-            let pczt =
-                ironwood_pczt_with_spend_derivation(&sample.bytes, sample.seed_fingerprint, path);
+        for path in pczt::test_support::unsupported_orchard_spend_paths() {
+            let pczt = pczt::test_support::ironwood_pczt_with_spend_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                path,
+            );
 
             assert_unsupported_zip32_error(
                 parse_pczt_cypherpunk(
@@ -594,6 +547,150 @@ mod tests {
                 ),
                 "Ironwood",
             );
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_parse_and_check_reject_matching_fingerprint_unselected_orchard_account() {
+        let sample = pczt::test_support::sample_orchard_spend_pczt();
+        let pczt = pczt::test_support::orchard_pczt_with_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            pczt::test_support::orchard_spend_path_for_account(1),
+        );
+
+        assert_unsupported_zip32_account_error(
+            parse_pczt_cypherpunk(
+                &MainNetwork,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            ),
+            "Orchard",
+        );
+        assert_unsupported_zip32_account_error(
+            check_pczt_cypherpunk(
+                &MainNetwork,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            ),
+            "Orchard",
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_parse_and_check_reject_matching_fingerprint_unselected_ironwood_account() {
+        let sample = pczt::test_support::sample_ironwood_pczt();
+        let pczt = pczt::test_support::ironwood_pczt_with_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            pczt::test_support::orchard_spend_path_for_account(1),
+        );
+
+        assert_unsupported_zip32_account_error(
+            parse_pczt_cypherpunk(
+                &pczt::test_support::Nu7Network,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            ),
+            "Ironwood",
+        );
+        assert_unsupported_zip32_account_error(
+            check_pczt_cypherpunk(
+                &pczt::test_support::Nu7Network,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            ),
+            "Ironwood",
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_parse_and_check_ignore_dummy_orchard_spend_zip32_metadata() {
+        let sample = pczt::test_support::sample_orchard_spend_pczt();
+        let mut paths = pczt::test_support::unsupported_orchard_spend_paths();
+        paths.push(pczt::test_support::orchard_spend_path_for_account(1));
+
+        for path in paths {
+            let pczt = pczt::test_support::orchard_pczt_with_dummy_spend_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                path,
+            );
+
+            let parsed_pczt = parse_pczt_cypherpunk(
+                &MainNetwork,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            )
+            .unwrap();
+            assert!(parsed_pczt
+                .get_orchard()
+                .unwrap()
+                .get_from()
+                .first()
+                .unwrap()
+                .get_is_mine());
+            check_pczt_cypherpunk(
+                &MainNetwork,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            )
+            .unwrap();
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_parse_and_check_ignore_dummy_ironwood_spend_zip32_metadata() {
+        let sample = pczt::test_support::sample_ironwood_pczt();
+        let mut paths = pczt::test_support::unsupported_orchard_spend_paths();
+        paths.push(pczt::test_support::orchard_spend_path_for_account(1));
+
+        for path in paths {
+            let pczt = pczt::test_support::ironwood_pczt_with_dummy_spend_derivation(
+                &sample.bytes,
+                sample.seed_fingerprint,
+                path,
+            );
+
+            let parsed_pczt = parse_pczt_cypherpunk(
+                &pczt::test_support::Nu7Network,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            )
+            .unwrap();
+            assert!(parsed_pczt
+                .get_ironwood()
+                .unwrap()
+                .get_from()
+                .first()
+                .unwrap()
+                .get_is_mine());
+            check_pczt_cypherpunk(
+                &pczt::test_support::Nu7Network,
+                &pczt,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                0,
+            )
+            .unwrap();
         }
     }
 
