@@ -309,6 +309,8 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
 pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+    xpub: &AccountPubKey,
     pczt: &Pczt,
 ) -> Result<ParsedPczt, ZcashError> {
     super::validate_supported_pczt(pczt)?;
@@ -321,9 +323,9 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
             parsed_transparent = parse_transparent(
                 params,
                 seed_fingerprint,
-                zip32::AccountId::ZERO,
-                None,
-                false,
+                account_index,
+                Some(xpub),
+                true,
                 bundle,
             )
             .map_err(pczt::roles::verifier::TransparentError::Custom)?;
@@ -840,7 +842,21 @@ mod legacy_tests {
         .with_ironwood_anchor([1; 32])
         .build();
 
-        let result = parse_pczt_multi_coins(&MainNetwork, &[7u8; 32], &pczt);
+        let account = zcash_vendor::transparent::keys::AccountPrivKey::from_seed(
+            &MainNetwork,
+            &[7u8; 32],
+            zip32::AccountId::ZERO,
+        )
+        .unwrap();
+        let xpub = account.to_account_pubkey();
+
+        let result = parse_pczt_multi_coins(
+            &MainNetwork,
+            &[7u8; 32],
+            zip32::AccountId::ZERO,
+            &xpub,
+            &pczt,
+        );
 
         assert!(matches!(
             result,

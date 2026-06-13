@@ -826,3 +826,160 @@ pub(crate) mod test_support {
         }
     }
 }
+
+#[cfg(all(test, feature = "multi_coins", not(feature = "cypherpunk")))]
+pub(crate) mod legacy_test_support {
+    use alloc::{
+        string::{String, ToString},
+        vec,
+        vec::Vec,
+    };
+
+    use ::pczt::roles::{creator::Creator, updater::Updater};
+    use bitcoin::secp256k1::Secp256k1;
+    use keystore::algorithms::{
+        secp256k1::get_extended_public_key_by_seed, zcash::calculate_seed_fingerprint,
+    };
+    use rand_core::OsRng;
+    use zcash_primitives::transaction::{
+        builder::{BuildConfig, Builder, PcztResult},
+        fees::zip317,
+    };
+    use zcash_vendor::{
+        pczt::Pczt,
+        transparent::{
+            bundle as transparent,
+            keys::{AccountPrivKey, IncomingViewingKey},
+        },
+        zcash_protocol::{
+            consensus::{MainNetwork, Parameters},
+            value::Zatoshis,
+        },
+        zip32,
+    };
+
+    pub(crate) struct LegacyTransparentSample {
+        pub(crate) bytes: Vec<u8>,
+        pub(crate) seed: Vec<u8>,
+        pub(crate) seed_fingerprint: [u8; 32],
+        pub(crate) xpub: String,
+        pub(crate) input_pubkey: [u8; 33],
+    }
+
+    pub(crate) fn legacy_transparent_path_for_account(account_index: u32) -> Vec<u32> {
+        vec![
+            44 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+            133 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+            account_index | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+            0,
+            0,
+        ]
+    }
+
+    pub(crate) fn legacy_transparent_pczt_with_input_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        input_pubkey: [u8; 33],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        let derivation =
+            zcash_vendor::transparent::pczt::Bip32Derivation::parse(seed_fingerprint, path)
+                .unwrap();
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_transparent_with(|mut bundle| {
+                bundle.update_input_with(0, |mut input| {
+                    input.set_bip32_derivation(input_pubkey, derivation);
+                    Ok(())
+                })
+            })
+            .unwrap()
+            .finish()
+            .serialize()
+    }
+
+    pub(crate) fn legacy_transparent_sample() -> LegacyTransparentSample {
+        let params = MainNetwork;
+        let seed = [7u8; 32];
+        let account = AccountPrivKey::from_seed(&params, &seed, zip32::AccountId::ZERO).unwrap();
+        let (input_addr, address_index) = account
+            .to_account_pubkey()
+            .derive_external_ivk()
+            .unwrap()
+            .default_address();
+        let input_sk = account.derive_external_secret_key(address_index).unwrap();
+        let secp = Secp256k1::signing_only();
+        let input_pubkey = input_sk.public_key(&secp);
+
+        let recipient_account =
+            AccountPrivKey::from_seed(&params, &[8u8; 32], zip32::AccountId::ZERO).unwrap();
+        let (recipient, _) = recipient_account
+            .to_account_pubkey()
+            .derive_external_ivk()
+            .unwrap()
+            .default_address();
+        let transparent_recipient = recipient
+            .to_zcash_address(MainNetwork.network_type())
+            .encode();
+
+        let coin = transparent::TxOut::new(
+            Zatoshis::const_from_u64(1_000_000),
+            input_addr.script().into(),
+        );
+        let mut builder = Builder::new(
+            &params,
+            10_000_000.into(),
+            BuildConfig::Standard {
+                sapling_anchor: None,
+                orchard_anchor: None,
+                #[cfg(zcash_unstable = "nu7")]
+                ironwood_anchor: None,
+            },
+        );
+        builder
+            .add_transparent_p2pkh_input(
+                input_pubkey,
+                transparent::OutPoint::new([1u8; 32], 1),
+                coin,
+            )
+            .unwrap();
+        builder
+            .add_transparent_output(&recipient, Zatoshis::const_from_u64(990_000))
+            .unwrap();
+
+        let PcztResult { pczt_parts, .. } = builder
+            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .unwrap();
+        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        let input_pubkey = input_pubkey.serialize();
+        let pczt = Updater::new(Creator::build_from_parts(pczt_parts).unwrap())
+            .update_transparent_with(|mut bundle| {
+                let derivation = zcash_vendor::transparent::pczt::Bip32Derivation::parse(
+                    seed_fingerprint,
+                    legacy_transparent_path_for_account(0),
+                )
+                .unwrap();
+                bundle.update_input_with(0, |mut input| {
+                    input.set_bip32_derivation(input_pubkey, derivation);
+                    Ok(())
+                })?;
+                bundle.update_output_with(0, |mut output| {
+                    output.set_user_address(transparent_recipient.clone());
+                    Ok(())
+                })
+            })
+            .unwrap()
+            .finish();
+
+        let xpub = get_extended_public_key_by_seed(&seed, &"M/44'/133'/0'".into())
+            .unwrap()
+            .to_string();
+
+        LegacyTransparentSample {
+            bytes: pczt.serialize(),
+            seed: seed.to_vec(),
+            seed_fingerprint,
+            xpub,
+            input_pubkey,
+        }
+    }
+}

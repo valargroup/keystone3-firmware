@@ -40,7 +40,8 @@ void *GuiGetZcashGUIData(void)
     PtrT_TransactionParseResult_DisplayPczt parseResult = NULL;
     do {
 #ifdef WEB3_VERSION
-        parseResult = parse_zcash_tx_multi_coins(data, sfp);
+        char *xpub = GetCurrentAccountPublicKey(XPUB_TYPE_ZEC_TRANSPARENT_LEGACY);
+        parseResult = parse_zcash_tx_multi_coins(data, xpub, sfp, zcash_account_index);
 #endif
 #ifdef CYPHERPUNK_VERSION
         char ufvk[ZCASH_UFVK_MAX_LEN] = {'\0'};
