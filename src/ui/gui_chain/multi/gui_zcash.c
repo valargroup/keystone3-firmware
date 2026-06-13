@@ -86,6 +86,10 @@ void GuiZcashOverviewWithDataAndHeight(lv_obj_t *parent, DisplayPczt *data, lv_c
 
     lv_obj_t* last_view = NULL;
 
+    if (data->network != NULL) {
+        last_view = CreateTransactionItemView(container, _("wallet_profile_network_title"), data->network, last_view);
+    }
+
     if (data->has_sapling) {
         last_view = CreateTransactionItemView(container, _("Warning"), _("This transaction contains Sapling spends or outputs. Keystone does not support Sapling spend signing and output checking. Please take care of the potential risks."), last_view);
     }

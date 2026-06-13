@@ -45,6 +45,15 @@ fn zcash_network(is_testnet: bool) -> Network {
     }
 }
 
+fn zcash_network_label(is_testnet: bool) -> String {
+    if is_testnet {
+        "Zcash Testnet"
+    } else {
+        "Zcash Mainnet"
+    }
+    .to_string()
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn derive_zcash_ufvk(
     seed: PtrBytes,
@@ -179,7 +188,10 @@ pub unsafe extern "C" fn parse_zcash_tx_cypherpunk(
         seed_fingerprint,
         account_index,
     ) {
-        Ok(pczt) => TransactionParseResult::success(DisplayPczt::from(&pczt).c_ptr()).c_ptr(),
+        Ok(pczt) => TransactionParseResult::success(
+            DisplayPczt::from_pczt_with_network(&pczt, zcash_network_label(is_testnet)).c_ptr(),
+        )
+        .c_ptr(),
         Err(e) => TransactionParseResult::from(e).c_ptr(),
     }
 }
@@ -203,7 +215,10 @@ pub unsafe extern "C" fn parse_zcash_tx_multi_coins(
         seed_fingerprint,
         account_index,
     ) {
-        Ok(pczt) => TransactionParseResult::success(DisplayPczt::from(&pczt).c_ptr()).c_ptr(),
+        Ok(pczt) => TransactionParseResult::success(
+            DisplayPczt::from_pczt_with_network(&pczt, zcash_network_label(false)).c_ptr(),
+        )
+        .c_ptr(),
         Err(e) => TransactionParseResult::from(e).c_ptr(),
     }
 }
@@ -218,7 +233,7 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<(), RustCError> {
     }
     if batch.get_network() != ZCASH_SIGN_BATCH_NETWORK_MAINNET {
         return Err(RustCError::UnsupportedTransaction(
-            "only Zcash mainnet batch signing is supported".to_string(),
+            "unsupported Zcash batch envelope network".to_string(),
         ));
     }
     if batch.get_request_id().is_empty() {
@@ -412,7 +427,10 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
             seed_fingerprint,
             account_index,
         ) {
-            Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
+            Ok(pczt) => display_items.push(DisplayPczt::from_pczt_with_network(
+                &pczt,
+                zcash_network_label(is_testnet),
+            )),
             Err(e) => return TransactionParseResult::from(e).c_ptr(),
         }
     }
@@ -914,7 +932,7 @@ mod tests {
         assert!(matches!(
             validate_zcash_batch(&wrong_network),
             Err(RustCError::UnsupportedTransaction(message))
-                if message.contains("only Zcash mainnet")
+                if message.contains("unsupported Zcash batch envelope network")
         ));
 
         let non_atomic = ZcashSignBatch::new(

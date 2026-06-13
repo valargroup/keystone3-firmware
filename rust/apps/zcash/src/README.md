@@ -46,8 +46,22 @@ Protocol definition: [docs](/docs/protocols/ur_registrys/zcash.md)
 
 Protocol implementation: https://github.com/KeystoneHQ/keystone-sdk-rust/tree/master/libs/ur-registry/src/zcash
 
-#### Ironwood Testnet Simulator Workflow
+#### Zcash Testnet Mode
 
-For Ironwood testnet simulator runs, build the cypherpunk simulator with `python3 build.py -t cypherpunk -o simulator` and enable the ZEC testnet wallet state before exporting accounts or scanning PCZTs. The simulator can read QR data from the screen when `GET_QR_DATA_FROM_SCREEN` is defined in `ui_simulator/simulator_model.c`.
+Cypherpunk firmware defaults ZEC to mainnet. ZEC testnet support is enabled only
+when the user turns on the ZEC testnet toggle in the menu before exporting the
+UFVK, generating a receive address, or scanning a PCZT. Keystone uses that
+selected network for UFVK caching, address generation, PCZT checking, parsing,
+and signing, and the transaction review screen displays the selected network
+before signing.
 
-This is a simulator workflow only. It does not change production firmware defaults, which should remain mainnet by default. The batch UR `network` field remains `zcash-mainnet` only until the registry protocol defines a testnet value, so firmware must not silently reinterpret that envelope field as testnet.
+Simulator testing uses the same menu toggle. For simulator runs, build the
+cypherpunk simulator with `python3 build.py -t cypherpunk -o simulator`; the
+simulator can read QR data from the screen when `GET_QR_DATA_FROM_SCREEN` is
+defined in `ui_simulator/simulator_model.c`.
+
+The batch UR `network` field remains the registry-defined `zcash-mainnet`
+envelope value until the registry protocol defines a testnet value. Firmware
+does not use that envelope field to enable testnet. The device menu toggle is
+the network selector, and the PCZT payload is validated against the selected
+network.

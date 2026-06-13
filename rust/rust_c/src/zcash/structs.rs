@@ -7,7 +7,7 @@ use crate::common::{
     utils::convert_c_char,
 };
 use crate::{free_str_ptr, free_vec, impl_c_ptr, impl_c_ptrs};
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use app_zcash::pczt::structs::{
     ParsedFrom, ParsedOrchard, ParsedPczt, ParsedTo, ParsedTransparent,
 };
@@ -15,6 +15,7 @@ use cstr_core;
 
 #[repr(C)]
 pub struct DisplayPczt {
+    pub network: PtrString,
     pub transparent: Ptr<DisplayTransparent>,
     pub orchard: Ptr<DisplayOrchard>,
     pub ironwood: Ptr<DisplayOrchard>,
@@ -23,9 +24,10 @@ pub struct DisplayPczt {
     pub has_sapling: bool,
 }
 
-impl From<&ParsedPczt> for DisplayPczt {
-    fn from(pczt: &ParsedPczt) -> Self {
+impl DisplayPczt {
+    pub fn from_pczt_with_network(pczt: &ParsedPczt, network: String) -> Self {
         Self {
+            network: convert_c_char(network),
             transparent: pczt
                 .get_transparent()
                 .map(|t| DisplayTransparent::from(&t).c_ptr())
@@ -45,8 +47,15 @@ impl From<&ParsedPczt> for DisplayPczt {
     }
 }
 
+impl From<&ParsedPczt> for DisplayPczt {
+    fn from(pczt: &ParsedPczt) -> Self {
+        Self::from_pczt_with_network(pczt, "Zcash Mainnet".into())
+    }
+}
+
 impl Free for DisplayPczt {
     unsafe fn free(&self) {
+        free_str_ptr!(self.network);
         free_str_ptr!(self.total_transfer_value);
         free_str_ptr!(self.fee_value);
         free_display_ptr(self.transparent);
@@ -214,3 +223,28 @@ impl_c_ptrs!(
     DisplayTo,
     DisplayOrchard
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::utils::recover_c_char;
+    use alloc::string::ToString;
+
+    #[test]
+    fn test_display_pczt_carries_parse_network_label() {
+        let pczt = ParsedPczt::new(
+            None,
+            None,
+            None,
+            "0 ZEC".to_string(),
+            "0 ZEC".to_string(),
+            false,
+        );
+        let display = DisplayPczt::from_pczt_with_network(&pczt, "Zcash Testnet".to_string());
+
+        let network = unsafe { recover_c_char(display.network) };
+        assert_eq!(network, "Zcash Testnet");
+
+        unsafe { display.free() };
+    }
+}
