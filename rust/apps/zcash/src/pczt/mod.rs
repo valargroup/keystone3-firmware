@@ -3,6 +3,237 @@ pub mod parse;
 pub mod sign;
 pub mod structs;
 
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+use serde::Deserialize;
+use serde_with::serde_as;
+use zcash_vendor::{
+    pczt::Pczt,
+    transparent,
+    zcash_protocol::{constants, value::ZatBalance},
+    zip32,
+};
+
+use crate::errors::ZcashError;
+
+const PCZT_MAGIC_BYTES: &[u8] = b"PCZT";
+const PCZT_VERSION_1: u32 = 1;
+const PCZT_VERSION_2: u32 = 2;
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PcztV1 {
+    global: zcash_vendor::pczt::common::Global,
+    transparent: zcash_vendor::pczt::transparent::Bundle,
+    sapling: zcash_vendor::pczt::sapling::Bundle,
+    orchard: PcztV1OrchardBundle,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PcztV1OrchardBundle {
+    actions: Vec<PcztV1OrchardAction>,
+    flags: u8,
+    value_sum: (u64, bool),
+    anchor: [u8; 32],
+    zkproof: Option<Vec<u8>>,
+    bsk: Option<[u8; 32]>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PcztV1OrchardAction {
+    cv_net: [u8; 32],
+    spend: PcztV1OrchardSpend,
+    output: PcztV1OrchardOutput,
+    rcv: Option<[u8; 32]>,
+}
+
+#[serde_as]
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PcztV1OrchardSpend {
+    nullifier: [u8; 32],
+    rk: [u8; 32],
+    #[serde_as(as = "Option<[_; 64]>")]
+    spend_auth_sig: Option<[u8; 64]>,
+    #[serde_as(as = "Option<[_; 43]>")]
+    recipient: Option<[u8; 43]>,
+    value: Option<u64>,
+    rho: Option<[u8; 32]>,
+    rseed: Option<[u8; 32]>,
+    #[serde_as(as = "Option<[_; 96]>")]
+    fvk: Option<[u8; 96]>,
+    witness: Option<(u32, [[u8; 32]; 32])>,
+    alpha: Option<[u8; 32]>,
+    zip32_derivation: Option<PcztV1Zip32Derivation>,
+    dummy_sk: Option<[u8; 32]>,
+    proprietary: BTreeMap<String, Vec<u8>>,
+}
+
+#[serde_as]
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PcztV1OrchardOutput {
+    cmx: [u8; 32],
+    ephemeral_key: [u8; 32],
+    enc_ciphertext: Vec<u8>,
+    out_ciphertext: Vec<u8>,
+    #[serde_as(as = "Option<[_; 43]>")]
+    recipient: Option<[u8; 43]>,
+    value: Option<u64>,
+    rseed: Option<[u8; 32]>,
+    ock: Option<[u8; 32]>,
+    zip32_derivation: Option<PcztV1Zip32Derivation>,
+    user_address: Option<String>,
+    proprietary: BTreeMap<String, Vec<u8>>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PcztV1Zip32Derivation {
+    seed_fingerprint: [u8; 32],
+    derivation_path: Vec<u32>,
+}
+
+#[cfg(zcash_unstable = "nu7")]
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PcztV2WithoutIronwood {
+    global: zcash_vendor::pczt::common::Global,
+    transparent: zcash_vendor::pczt::transparent::Bundle,
+    sapling: zcash_vendor::pczt::sapling::Bundle,
+    orchard: zcash_vendor::pczt::orchard::Bundle,
+}
+
+pub(crate) fn parse_pczt(bytes: &[u8]) -> Result<Pczt, ZcashError> {
+    ensure_strict_pczt_encoding(bytes)?;
+    Pczt::parse(bytes).map_err(|_| ZcashError::InvalidPczt("invalid pczt data".to_string()))
+}
+
+fn ensure_strict_pczt_encoding(bytes: &[u8]) -> Result<(), ZcashError> {
+    if bytes.len() < 8 {
+        return Err(ZcashError::InvalidPczt("invalid pczt data".to_string()));
+    }
+    if &bytes[..4] != PCZT_MAGIC_BYTES {
+        return Err(ZcashError::InvalidPczt("invalid pczt data".to_string()));
+    }
+
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let payload = &bytes[8..];
+    let remaining = match version {
+        PCZT_VERSION_1 => postcard::take_from_bytes::<PcztV1>(payload)
+            .map(|(_, remaining)| remaining)
+            .map_err(|_| ZcashError::InvalidPczt("invalid pczt data".to_string()))?,
+        PCZT_VERSION_2 => match postcard::take_from_bytes::<Pczt>(payload) {
+            Ok((_, remaining)) => remaining,
+            Err(err) => {
+                #[cfg(zcash_unstable = "nu7")]
+                {
+                    postcard::take_from_bytes::<PcztV2WithoutIronwood>(payload)
+                        .map(|(_, remaining)| remaining)
+                        .map_err(|_| {
+                            let _ = err;
+                            ZcashError::InvalidPczt("invalid pczt data".to_string())
+                        })?
+                }
+                #[cfg(not(zcash_unstable = "nu7"))]
+                {
+                    let _ = err;
+                    return Err(ZcashError::InvalidPczt("invalid pczt data".to_string()));
+                }
+            }
+        },
+        _ => return Err(ZcashError::InvalidPczt("invalid pczt data".to_string())),
+    };
+
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(ZcashError::InvalidPczt("invalid pczt data".to_string()))
+    }
+}
+
+pub(crate) fn validate_supported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
+    validate_supported_sapling(pczt)?;
+
+    #[cfg(zcash_unstable = "nu7")]
+    {
+        let has_ironwood = !pczt.ironwood().actions().is_empty();
+        let is_v6 = *pczt.global().tx_version() == constants::V6_TX_VERSION
+            && *pczt.global().version_group_id() == constants::V6_VERSION_GROUP_ID;
+        if has_ironwood && !is_v6 {
+            return Err(ZcashError::InvalidPczt(
+                "Ironwood actions require a v6 PCZT".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_supported_sapling(pczt: &Pczt) -> Result<(), ZcashError> {
+    let value_balance = (*pczt.sapling().value_sum())
+        .try_into()
+        .ok()
+        .and_then(|v| ZatBalance::from_i64(v).ok())
+        .ok_or(ZcashError::InvalidPczt(
+            "sapling value_sum is invalid".to_string(),
+        ))?;
+    let sapling_value_sum: i64 = value_balance.into();
+    let has_sapling_bundle =
+        !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
+
+    if has_sapling_bundle {
+        return Err(ZcashError::InvalidPczt(
+            "Sapling spends and outputs are not supported".to_string(),
+        ));
+    }
+
+    if sapling_value_sum != 0 {
+        return Err(ZcashError::InvalidPczt(
+            "sapling value_sum must be zero when Sapling bundle is empty".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn transparent_derivation_matches_selected_account<
+    P: zcash_vendor::zcash_protocol::consensus::Parameters,
+>(
+    params: &P,
+    seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+    xpub: &transparent::keys::AccountPubKey,
+    pubkey: &[u8; 33],
+    derivation: &transparent::pczt::Bip32Derivation,
+    field_label: &str,
+) -> Result<bool, ZcashError> {
+    if seed_fingerprint != derivation.seed_fingerprint() {
+        return Ok(false);
+    }
+
+    let target = xpub
+        .derive_pubkey_at_bip32_path(params, account_index, derivation.derivation_path())
+        .map_err(|_| {
+            ZcashError::InvalidPczt(format!(
+                "transparent {field_label} bip32 derivation path invalid"
+            ))
+        })?;
+    if &target.serialize() != pubkey {
+        return Err(ZcashError::InvalidPczt(format!(
+            "transparent {field_label} script pubkey mismatch"
+        )));
+    }
+
+    Ok(true)
+}
+
 /// Returns the supported account declared by a shielded spend derivation that
 /// belongs to this seed. Missing or different seed fingerprints are not ours
 /// and return `None`; matching fingerprints with paths outside

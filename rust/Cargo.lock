@@ -478,6 +478,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rust_tools",
  "serde",
+ "serde_with",
  "shardtree",
  "thiserror-core",
  "zcash_note_encryption",

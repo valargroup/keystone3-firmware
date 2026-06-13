@@ -3,21 +3,15 @@ use alloc::{
     string::{String, ToString},
     vec,
 };
+#[cfg(feature = "cypherpunk")]
 use zcash_note_encryption::{try_output_recovery_with_ovk, try_output_recovery_with_pkd_esk};
 use zcash_vendor::{
     pczt::{self, roles::verifier::Verifier, Pczt},
     ripemd::{Digest, Ripemd160},
     sha2::Sha256,
-    transparent::{self, address::TransparentAddress},
-    zcash_address::{
-        unified::{self, Encoding, Receiver},
-        ToAddress, ZcashAddress,
-    },
-    zcash_keys::keys::UnifiedFullViewingKey,
-    zcash_protocol::{
-        consensus::{self, NetworkConstants},
-        value::ZatBalance,
-    },
+    transparent::{self, address::TransparentAddress, keys::AccountPubKey},
+    zcash_address::{ToAddress, ZcashAddress},
+    zcash_protocol::consensus::{self},
     zip32,
 };
 
@@ -27,11 +21,38 @@ use zcash_note_encryption::Domain;
 use zcash_vendor::orchard::{
     self, keys::OutgoingViewingKey, note::Note, note_encryption::OrchardDomain, Address,
 };
+#[cfg(feature = "cypherpunk")]
+use zcash_vendor::{
+    zcash_address::{
+        unified::{self, Encoding, Receiver},
+        ConversionError, TryFromAddress,
+    },
+    zcash_keys::keys::UnifiedFullViewingKey,
+    zcash_protocol::consensus::NetworkConstants,
+};
 
-use super::structs::{ParsedFrom, ParsedOrchard, ParsedPczt, ParsedTo, ParsedTransparent};
+#[cfg(feature = "cypherpunk")]
+use super::structs::ParsedOrchard;
+use super::structs::{ParsedFrom, ParsedPczt, ParsedTo, ParsedTransparent};
 use crate::errors::ZcashError;
 
 const ZEC_DIVIDER: u32 = 100_000_000;
+
+#[cfg(feature = "cypherpunk")]
+struct NetworkCheckedUnifiedAddress;
+
+#[cfg(feature = "cypherpunk")]
+impl TryFromAddress for NetworkCheckedUnifiedAddress {
+    type Error = core::convert::Infallible;
+
+    fn try_from_unified(
+        net: consensus::NetworkType,
+        data: unified::Address,
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        let _ = (net, data);
+        Ok(Self)
+    }
+}
 
 #[cfg(feature = "cypherpunk")]
 fn map_orchard_verifier_error(
@@ -39,6 +60,15 @@ fn map_orchard_verifier_error(
 ) -> ZcashError {
     match error {
         pczt::roles::verifier::OrchardError::Custom(error) => error,
+        error => ZcashError::InvalidDataError(format!("{error:?}")),
+    }
+}
+
+fn map_transparent_verifier_error(
+    error: pczt::roles::verifier::TransparentError<ZcashError>,
+) -> ZcashError {
+    match error {
+        pczt::roles::verifier::TransparentError::Custom(error) => error,
         error => ZcashError::InvalidDataError(format!("{error:?}")),
     }
 }
@@ -124,7 +154,7 @@ pub fn decode_output_enc_ciphertext(
 /// Parses a PCZT (Partially Created Zcash Transaction) into a structured format
 ///
 /// This function analyzes the transaction and extracts information about inputs, outputs,
-/// values, and fees across different Zcash pools (transparent and Orchard).
+/// values, and fees across supported Zcash pools.
 ///
 /// # Parameters
 /// * `params` - Network consensus parameters
@@ -139,7 +169,7 @@ pub fn decode_output_enc_ciphertext(
 /// The function:
 /// 1. Parses Orchard and transparent components of the transaction
 /// 2. Calculates total input, output, and change values
-/// 3. Handles Sapling pool interactions (though full Sapling decoding is not supported)
+/// 3. Rejects unsupported Sapling spends and outputs before display
 /// 4. Computes transfer values and fees
 /// 5. Returns a structured representation of the transaction
 #[cfg(feature = "cypherpunk")]
@@ -150,6 +180,7 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     ufvk: &UnifiedFullViewingKey,
     pczt: &Pczt,
 ) -> Result<ParsedPczt, ZcashError> {
+    super::validate_supported_pczt(pczt)?;
     let mut parsed_orchard = None;
     #[cfg(zcash_unstable = "nu7")]
     let mut parsed_ironwood = None;
@@ -186,11 +217,18 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
         .map_err(map_orchard_verifier_error)?;
     verifier
         .with_transparent(|bundle| {
-            parsed_transparent = parse_transparent(params, seed_fingerprint, bundle)
-                .map_err(pczt::roles::verifier::TransparentError::Custom)?;
+            parsed_transparent = parse_transparent(
+                params,
+                seed_fingerprint,
+                account_index,
+                ufvk.transparent(),
+                true,
+                bundle,
+            )
+            .map_err(pczt::roles::verifier::TransparentError::Custom)?;
             Ok(())
         })
-        .map_err(|e| ZcashError::InvalidDataError(alloc::format!("{e:?}")))?;
+        .map_err(map_transparent_verifier_error)?;
 
     let mut total_input_value = 0;
     let mut total_output_value = 0;
@@ -246,34 +284,12 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
             .fold(0, |acc, to| acc + to.get_amount());
     }
 
-    //treat all sapling output as output value since we don't support sapling decoding yet
-    //sapling value_sum can be trusted
-
-    let value_balance = (*pczt.sapling().value_sum())
-        .try_into()
-        .ok()
-        .and_then(|v| ZatBalance::from_i64(v).ok())
-        .ok_or(ZcashError::InvalidPczt(
-            "sapling value_sum is invalid".to_string(),
-        ))?;
-    let sapling_value_sum: i64 = value_balance.into();
-    if sapling_value_sum < 0 {
-        //value transfered to sapling pool
-        total_output_value = total_output_value.saturating_add(sapling_value_sum.unsigned_abs())
-    } else {
-        //value transfered from sapling pool
-        //this should not happen with Zashi.
-        total_input_value = total_input_value.saturating_add(sapling_value_sum as u64)
-    };
-
     let total_transfer_value = checked_format_zec_difference(
         total_output_value,
         total_change_value,
         "total transfer value",
     )?;
     let fee_value = checked_format_zec_difference(total_input_value, total_output_value, "fee")?;
-
-    let has_sapling = !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
 
     #[cfg(zcash_unstable = "nu7")]
     let parsed_ironwood = parsed_ironwood;
@@ -286,7 +302,7 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
         parsed_ironwood,
         total_transfer_value,
         fee_value,
-        has_sapling,
+        false,
     ))
 }
 #[cfg(feature = "multi_coins")]
@@ -295,17 +311,25 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     pczt: &Pczt,
 ) -> Result<ParsedPczt, ZcashError> {
+    super::validate_supported_pczt(pczt)?;
     reject_legacy_parse_unsupported_pczt(pczt)?;
 
     let mut parsed_transparent = None;
 
     Verifier::new(pczt.clone())
         .with_transparent(|bundle| {
-            parsed_transparent = parse_transparent(params, seed_fingerprint, bundle)
-                .map_err(pczt::roles::verifier::TransparentError::Custom)?;
+            parsed_transparent = parse_transparent(
+                params,
+                seed_fingerprint,
+                zip32::AccountId::ZERO,
+                None,
+                false,
+                bundle,
+            )
+            .map_err(pczt::roles::verifier::TransparentError::Custom)?;
             Ok(())
         })
-        .map_err(|e| ZcashError::InvalidDataError(alloc::format!("{e:?}")))?;
+        .map_err(map_transparent_verifier_error)?;
 
     let mut total_input_value = 0;
     let mut total_output_value = 0;
@@ -329,26 +353,6 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
             .fold(0, |acc, to| acc + to.get_amount());
     }
 
-    //treat all sapling output as output value since we don't support sapling decoding yet
-    //sapling value_sum can be trusted
-
-    let value_balance = (*pczt.sapling().value_sum())
-        .try_into()
-        .ok()
-        .and_then(|v| ZatBalance::from_i64(v).ok())
-        .ok_or(ZcashError::InvalidPczt(
-            "sapling value_sum is invalid".to_string(),
-        ))?;
-    let sapling_value_sum: i64 = value_balance.into();
-    if sapling_value_sum < 0 {
-        //value transfered to sapling pool
-        total_output_value = total_output_value.saturating_add(sapling_value_sum.unsigned_abs())
-    } else {
-        //value transfered from sapling pool
-        //this should not happen with Zashi.
-        total_input_value = total_input_value.saturating_add(sapling_value_sum as u64)
-    };
-
     let total_transfer_value = checked_format_zec_difference(
         total_output_value,
         total_change_value,
@@ -356,15 +360,13 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
     )?;
     let fee_value = checked_format_zec_difference(total_input_value, total_output_value, "fee")?;
 
-    let has_sapling = !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
-
     Ok(ParsedPczt::new(
         parsed_transparent,
         None,
         None,
         total_transfer_value,
         fee_value,
-        has_sapling,
+        false,
     ))
 }
 
@@ -372,8 +374,8 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 fn reject_legacy_parse_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
     #[cfg(zcash_unstable = "nu7")]
     {
-        // The legacy multi-coins parser only displays transparent and Sapling data.
-        // Reject V6/Ironwood PCZTs instead of showing an incomplete transaction review.
+        // The legacy multi-coins parser only displays transparent data. Reject
+        // V6/Ironwood PCZTs instead of showing an incomplete transaction review.
         if super::pczt_requires_cypherpunk_support(pczt) {
             return Err(ZcashError::InvalidPczt(
                 "V6 or Ironwood PCZTs require cypherpunk parsing support".to_string(),
@@ -386,16 +388,33 @@ fn reject_legacy_parse_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
 fn parse_transparent<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+    xpub: Option<&AccountPubKey>,
+    validate_selected_account: bool,
     transparent: &transparent::pczt::Bundle,
 ) -> Result<Option<ParsedTransparent>, ZcashError> {
     let mut parsed_transparent = ParsedTransparent::new(vec![], vec![]);
     transparent.inputs().iter().try_for_each(|input| {
-        let parsed_from = parse_transparent_input(params, seed_fingerprint, input)?;
+        let parsed_from = parse_transparent_input(
+            params,
+            seed_fingerprint,
+            account_index,
+            xpub,
+            validate_selected_account,
+            input,
+        )?;
         parsed_transparent.add_from(parsed_from);
         Ok::<_, ZcashError>(())
     })?;
     transparent.outputs().iter().try_for_each(|output| {
-        let parsed_to = parse_transparent_output(seed_fingerprint, output)?;
+        let parsed_to = parse_transparent_output(
+            params,
+            seed_fingerprint,
+            account_index,
+            xpub,
+            validate_selected_account,
+            output,
+        )?;
         parsed_transparent.add_to(parsed_to);
         Ok::<_, ZcashError>(())
     })?;
@@ -409,6 +428,9 @@ fn parse_transparent<P: consensus::Parameters>(
 fn parse_transparent_input<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+    xpub: Option<&AccountPubKey>,
+    validate_selected_account: bool,
     input: &transparent::pczt::Input,
 ) -> Result<ParsedFrom, ZcashError> {
     let script = input.script_pubkey().clone();
@@ -426,10 +448,26 @@ fn parse_transparent_input<P: consensus::Parameters>(
 
             let is_mine = match pubkey {
                 Some(pubkey) => match input.bip32_derivation().get(pubkey) {
-                    //pubkey validation is checked on transaction checking part
-                    Some(bip32_derivation) => {
-                        seed_fingerprint == bip32_derivation.seed_fingerprint()
-                    }
+                    Some(bip32_derivation) => match xpub {
+                        Some(xpub) => super::transparent_derivation_matches_selected_account(
+                            params,
+                            seed_fingerprint,
+                            account_index,
+                            xpub,
+                            pubkey,
+                            bip32_derivation,
+                            "input",
+                        )?,
+                        None if seed_fingerprint == bip32_derivation.seed_fingerprint() => {
+                            if validate_selected_account {
+                                return Err(ZcashError::InvalidDataError(
+                                    "transparent xpub is not present".to_string(),
+                                ));
+                            }
+                            true
+                        }
+                        None => false,
+                    },
                     None => false,
                 },
                 None => false,
@@ -447,8 +485,12 @@ fn parse_transparent_input<P: consensus::Parameters>(
     }
 }
 
-fn parse_transparent_output(
+fn parse_transparent_output<P: consensus::Parameters>(
+    params: &P,
     seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+    xpub: Option<&AccountPubKey>,
+    validate_selected_account: bool,
     output: &transparent::pczt::Output,
 ) -> Result<ParsedTo, ZcashError> {
     let script = output.script_pubkey().clone();
@@ -467,9 +509,26 @@ fn parse_transparent_output(
             let zec_value = format_zec_value(output.value().into_u64() as f64);
             let is_change = match pubkey {
                 Some(pubkey) => match output.bip32_derivation().get(pubkey) {
-                    Some(bip32_derivation) => {
-                        seed_fingerprint == bip32_derivation.seed_fingerprint()
-                    }
+                    Some(bip32_derivation) => match xpub {
+                        Some(xpub) => super::transparent_derivation_matches_selected_account(
+                            params,
+                            seed_fingerprint,
+                            account_index,
+                            xpub,
+                            pubkey,
+                            bip32_derivation,
+                            "output",
+                        )?,
+                        None if seed_fingerprint == bip32_derivation.seed_fingerprint() => {
+                            if validate_selected_account {
+                                return Err(ZcashError::InvalidDataError(
+                                    "transparent xpub is not present".to_string(),
+                                ));
+                            }
+                            true
+                        }
+                        None => false,
+                    },
                     None => false,
                 },
                 None => false,
@@ -589,9 +648,16 @@ fn is_internal_orchard_address(
 }
 
 #[cfg(feature = "cypherpunk")]
-fn validate_orchard_user_address(user_address: &str, address: &Address) -> Result<(), ZcashError> {
+pub(crate) fn validate_orchard_user_address<P: consensus::Parameters>(
+    params: &P,
+    user_address: &str,
+    address: &Address,
+) -> Result<(), ZcashError> {
     let za = ZcashAddress::try_from_encoded(user_address)
         .map_err(|e| ZcashError::InvalidPczt(format!("user address is invalid: {e:?}")))?;
+    za.clone()
+        .convert_if_network::<NetworkCheckedUnifiedAddress>(params.network_type())
+        .map_err(|e| ZcashError::InvalidPczt(format!("user address network mismatch: {e:?}")))?;
     let receiver = Receiver::Orchard(address.to_raw_address_bytes());
     if !za.matches_receiver(&receiver) {
         return Err(ZcashError::InvalidPczt(
@@ -649,7 +715,7 @@ fn parse_orchard_output<P: consensus::Parameters>(
                 .encode(&params.network_type());
                 let user_address = action.output().user_address();
                 if let Some(user_address) = user_address {
-                    validate_orchard_user_address(user_address, &address)?;
+                    validate_orchard_user_address(params, user_address, &address)?;
                 }
 
                 let belongs_to_wallet = is_wallet_orchard_address(ufvk, &address)?;
@@ -729,7 +795,12 @@ fn parse_orchard_output<P: consensus::Parameters>(
     match parsed_to {
         None => {
             let (address, is_dummy) = match (output.user_address(), value) {
-                (Some(addr), _) => Ok((addr.clone(), false)),
+                (Some(addr), _) => {
+                    if let Some(recipient) = output.recipient() {
+                        validate_orchard_user_address(params, addr, recipient)?;
+                    }
+                    Ok((addr.clone(), false))
+                }
                 (None, 0) => Ok(("Dummy output".into(), true)),
                 (None, _) => Err(ZcashError::InvalidPczt(alloc::format!(
                     "missing user address for {pool_label} output"
@@ -779,6 +850,7 @@ mod legacy_tests {
     }
 }
 
+#[cfg(feature = "cypherpunk")]
 fn decode_memo(memo_bytes: [u8; 512]) -> Result<Option<String>, ZcashError> {
     let first = memo_bytes[0];
 
@@ -935,7 +1007,7 @@ mod tests {
         let fvk = orchard::keys::FullViewingKey::from(&sk);
         let address = fvk.address_at(0u32, orchard::keys::Scope::External);
 
-        let result = validate_orchard_user_address("not-a-zcash-address", &address);
+        let result = validate_orchard_user_address(&MAIN_NETWORK, "not-a-zcash-address", &address);
 
         assert!(matches!(
             result,
@@ -948,7 +1020,15 @@ mod tests {
         let seed_fingerprint = [0x22; 32];
         let output = p2sh_output_with_matching_seed_fingerprint(seed_fingerprint);
 
-        let parsed = parse_transparent_output(&seed_fingerprint, &output).unwrap();
+        let parsed = parse_transparent_output(
+            &MAIN_NETWORK,
+            &seed_fingerprint,
+            zip32::AccountId::ZERO,
+            None,
+            false,
+            &output,
+        )
+        .unwrap();
 
         assert!(!parsed.get_is_change());
     }

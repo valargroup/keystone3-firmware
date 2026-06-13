@@ -44,6 +44,7 @@ use crate::{errors::ZcashError, version::KEYSTONE_FW_VERSION};
 const PROP_KEY_FW_VERSION: &str = "keystone:fw_version";
 
 #[derive(Debug)]
+#[cfg(feature = "cypherpunk")]
 enum SigningKeyCollectionError {
     Zcash(ZcashError),
     TransparentParse(transparent::pczt::ParseError),
@@ -51,6 +52,7 @@ enum SigningKeyCollectionError {
     OrchardParse(orchard::pczt::ParseError),
 }
 
+#[cfg(feature = "cypherpunk")]
 impl SigningKeyCollectionError {
     fn into_zcash(self) -> ZcashError {
         match self {
@@ -66,12 +68,14 @@ impl SigningKeyCollectionError {
     }
 }
 
+#[cfg(feature = "cypherpunk")]
 impl From<ZcashError> for SigningKeyCollectionError {
     fn from(e: ZcashError) -> Self {
         SigningKeyCollectionError::Zcash(e)
     }
 }
 
+#[cfg(feature = "cypherpunk")]
 impl From<transparent::pczt::ParseError> for SigningKeyCollectionError {
     fn from(e: transparent::pczt::ParseError) -> Self {
         SigningKeyCollectionError::TransparentParse(e)
@@ -123,6 +127,7 @@ pub fn sign_pczt(
     seed: &[u8],
     _account_index: zip32::AccountId,
 ) -> crate::Result<Vec<u8>> {
+    super::validate_supported_pczt(&pczt)?;
     reject_legacy_unsupported_pczt(&pczt)?;
 
     let signer = low_level_signer::Signer::new(pczt);
@@ -155,12 +160,20 @@ pub fn sign_pczt(
     seed: &[u8],
     account_index: zip32::AccountId,
 ) -> crate::Result<Vec<u8>> {
+    super::validate_supported_pczt(&pczt)?;
     let transparent_keys = collect_transparent_signing_keys(&pczt, seed, account_index)?;
     let orchard_keys =
         collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Orchard)?;
     #[cfg(zcash_unstable = "nu7")]
     let ironwood_keys =
         collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Ironwood)?;
+
+    let signature_count = transparent_keys.len() + orchard_keys.len();
+    #[cfg(zcash_unstable = "nu7")]
+    let signature_count = signature_count + ironwood_keys.len();
+    if signature_count == 0 {
+        return Err(ZcashError::PcztNoMyInputs);
+    }
 
     let mut signer = RoleSigner::new(pczt)
         .map_err(|e| ZcashError::SigningError(format!("failed to prepare PCZT signer: {e:?}")))?;
@@ -542,19 +555,7 @@ mod tests {
         let mismatched_seed = [9u8; 32];
 
         let result = sign_pczt(pczt, &mismatched_seed, zip32::AccountId::ZERO);
-        assert!(result.is_ok());
-
-        let signed_pczt_bytes = result.unwrap();
-        let parsed = Pczt::parse(&signed_pczt_bytes).expect("signed PCZT must parse");
-
-        assert!(signed_pczt_bytes.len() < sample.bytes.len());
-
-        let stamp = parsed
-            .global()
-            .proprietary()
-            .get(PROP_KEY_FW_VERSION)
-            .expect("firmware version stamp must be present");
-        assert_eq!(stamp, &KEYSTONE_FW_VERSION.encode().to_vec());
+        assert!(matches!(result, Err(ZcashError::PcztNoMyInputs)));
     }
 
     #[cfg(zcash_unstable = "nu7")]
@@ -776,10 +777,40 @@ mod tests {
     }
 
     fn pczt_with_min_version(min_version: &[u8]) -> Pczt {
+        use zcash_vendor::transparent::keys::IncomingViewingKey;
+
         let sample = crate::pczt::test_support::sample_pczt_to_transparent();
+        let account =
+            AccountPrivKey::from_seed(&MainNetwork, &sample.seed, zip32::AccountId::ZERO).unwrap();
+        let (_, address_index) = account
+            .to_account_pubkey()
+            .derive_external_ivk()
+            .unwrap()
+            .default_address();
+        let input_sk = account.derive_external_secret_key(address_index).unwrap();
+        let secp = secp256k1::Secp256k1::signing_only();
+        let pubkey = input_sk.public_key(&secp).serialize();
+        let account_zero_derivation = transparent::pczt::Bip32Derivation::parse(
+            sample.seed_fingerprint,
+            alloc::vec![
+                44 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                133 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                0 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
+                0,
+                0,
+            ],
+        )
+        .unwrap();
         let base = Pczt::parse(&sample.bytes).unwrap();
         let min_version = min_version.to_vec();
         Updater::new(base)
+            .update_transparent_with(|mut bundle| {
+                bundle.update_input_with(0, |mut input| {
+                    input.set_bip32_derivation(pubkey, account_zero_derivation);
+                    Ok(())
+                })
+            })
+            .unwrap()
             .update_global_with(|mut g| {
                 g.set_proprietary("test:min_fw_version".to_string(), min_version);
             })
@@ -787,7 +818,7 @@ mod tests {
     }
 
     fn test_seed() -> Vec<u8> {
-        hex::decode("d561f5aba9db8b100a9a84197322e522f952171a388ad74eaab1ab9db815be3335c3099a0a2bb0fee57e630db5ed7251412b6bd4b905cf518627411fee3f32dd").unwrap()
+        [7u8; 32].to_vec()
     }
 
     #[test]
