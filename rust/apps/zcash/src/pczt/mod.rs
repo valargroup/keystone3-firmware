@@ -343,6 +343,8 @@ pub(crate) mod test_support {
         zip32,
     };
 
+    const PRE_NU7_ORCHARD_SAMPLE_HEIGHT: u32 = 2_000_000;
+
     pub(crate) struct SamplePczt {
         pub(crate) bytes: Vec<u8>,
         pub(crate) seed: Vec<u8>,
@@ -559,7 +561,7 @@ pub(crate) mod test_support {
         );
         let mut builder = Builder::new(
             &params,
-            10_000_000.into(),
+            PRE_NU7_ORCHARD_SAMPLE_HEIGHT.into(),
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: Some(orchard::Anchor::empty_tree()),
@@ -621,9 +623,8 @@ pub(crate) mod test_support {
 
         let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
-            let mut orchard_builder = orchard::builder::Builder::new(
-                orchard::builder::BundleProtocol::Orchard,
-                orchard::builder::BundleType::DEFAULT,
+            let mut orchard_builder = orchard::builder::Builder::new_coinbase(
+                orchard::BundleProtocol::Orchard,
                 orchard::Anchor::empty_tree(),
             );
             orchard_builder
@@ -659,7 +660,7 @@ pub(crate) mod test_support {
 
         let mut builder = Builder::new(
             &params,
-            10_000_000.into(),
+            PRE_NU7_ORCHARD_SAMPLE_HEIGHT.into(),
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: Some(anchor),
@@ -728,8 +729,7 @@ pub(crate) mod test_support {
         let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
             let mut orchard_builder = orchard::builder::Builder::new(
-                orchard::builder::BundleProtocol::Ironwood,
-                orchard::builder::BundleType::DEFAULT,
+                orchard::BundleProtocol::Ironwood,
                 orchard::Anchor::empty_tree(),
             );
             orchard_builder
