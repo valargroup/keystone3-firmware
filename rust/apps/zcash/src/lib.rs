@@ -390,9 +390,12 @@ mod tests {
     use super::*;
     extern crate std;
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     const EMPTY_SAPLING_BUNDLE_ERROR: &str =
         "sapling value_sum must be zero when Sapling bundle is empty";
+    #[cfg(feature = "legacy_pczt_fixtures")]
     const UNSUPPORTED_SAPLING_ERROR: &str = "Sapling spends and outputs are not supported";
+    #[cfg(feature = "legacy_pczt_fixtures")]
     const INVALID_PCZT_DATA_ERROR: &str = "invalid pczt data";
 
     #[derive(Serialize, Deserialize)]
@@ -456,6 +459,7 @@ mod tests {
         derivation_path: Vec<u32>,
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum() -> Vec<u8> {
         let mut bytes = Creator::new(
             BranchId::Nu6.into(),
@@ -476,6 +480,7 @@ mod tests {
         postcard::to_extend(&pczt, bytes).unwrap()
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn pczt_with_sapling_output() -> Vec<u8> {
         let mut bytes = Creator::new(
             BranchId::Nu6.into(),
@@ -523,6 +528,7 @@ mod tests {
         postcard::to_extend(&pczt, bytes).unwrap()
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn transparent_input_with_unselected_account_derivation() -> pczt::test_support::SamplePczt {
         let mut sample = pczt::test_support::sample_pczt_to_transparent();
         let account = zcash_vendor::transparent::keys::AccountPrivKey::from_seed(
@@ -564,6 +570,7 @@ mod tests {
         sample
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn transparent_output_with_unselected_account_derivation() -> pczt::test_support::SamplePczt {
         let mut sample = pczt::test_support::sample_pczt_to_transparent();
         let recipient_account = zcash_vendor::transparent::keys::AccountPrivKey::from_seed(
@@ -607,12 +614,14 @@ mod tests {
         sample
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn pczt_with_trailing_byte() -> pczt::test_support::SamplePczt {
         let mut sample = pczt::test_support::sample_pczt_to_transparent();
         sample.bytes.push(0);
         sample
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn pczt_with_wrong_network_orchard_user_address() -> pczt::test_support::SamplePczt {
         let mut sample = pczt::test_support::sample_pczt_to_transparent();
         let pczt = Pczt::parse(&sample.bytes).unwrap();
@@ -652,14 +661,17 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn assert_empty_sapling_bundle_error<T: core::fmt::Debug>(result: Result<T>) {
         assert_invalid_pczt_message(result, EMPTY_SAPLING_BUNDLE_ERROR);
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn assert_unsupported_sapling_error<T: core::fmt::Debug>(result: Result<T>) {
         assert_invalid_pczt_message(result, UNSUPPORTED_SAPLING_ERROR);
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn assert_invalid_pczt_data<T: core::fmt::Debug>(result: Result<T>) {
         assert_invalid_pczt_message(result, INVALID_PCZT_DATA_ERROR);
     }
@@ -694,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_pczt_orchard_to_transparent() {
         let sample = pczt::test_support::sample_pczt_to_transparent();
         let seed_fingerprint = sample.seed_fingerprint;
@@ -771,7 +783,7 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu7")]
     #[test]
-    #[ignore = "legacy Orchard spend fixture is not valid in the NU7 protocol API test lane"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_check_reject_matching_fingerprint_unsupported_orchard_spend_zip32_path() {
         let sample = pczt::test_support::sample_orchard_spend_pczt();
         let parsed_pczt = parse_pczt_cypherpunk(
@@ -872,7 +884,7 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu7")]
     #[test]
-    #[ignore = "legacy Orchard spend fixture is not valid in the NU7 protocol API test lane"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_check_reject_matching_fingerprint_unselected_orchard_account() {
         let sample = pczt::test_support::sample_orchard_spend_pczt();
         let pczt = pczt::test_support::orchard_pczt_with_spend_derivation(
@@ -937,7 +949,7 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu7")]
     #[test]
-    #[ignore = "legacy Orchard spend fixture is not valid in the NU7 protocol API test lane"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_check_ignore_dummy_orchard_spend_zip32_metadata() {
         let sample = pczt::test_support::sample_orchard_spend_pczt();
         let mut paths = pczt::test_support::unsupported_orchard_spend_paths();
@@ -1017,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_pczt_rejects_orchard_internal_ovk_change_spoofing() {
         let params = MainNetwork;
         let rng = OsRng;
@@ -1115,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy malformed PCZT mirror is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_check_pczt_rejects_empty_sapling_bundle_with_nonzero_value_sum() {
         let seed = [9u8; 32];
         let malformed_pczt = malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum();
@@ -1134,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy malformed PCZT mirror is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_sign_reject_empty_sapling_bundle_with_nonzero_value_sum() {
         let seed = [9u8; 32];
         let malformed_pczt = malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum();
@@ -1152,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy malformed PCZT mirror is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_check_parse_and_sign_reject_sapling_outputs() {
         let seed = [9u8; 32];
         let unsupported_pczt = pczt_with_sapling_output();
@@ -1177,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_check_parse_and_sign_reject_trailing_pczt_bytes() {
         let sample = pczt_with_trailing_byte();
 
@@ -1199,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_rejects_transparent_input_for_unselected_account() {
         let sample = transparent_input_with_unselected_account_derivation();
 
@@ -1215,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_rejects_transparent_output_change_for_unselected_account() {
         let sample = transparent_output_with_unselected_account_derivation();
 
@@ -1231,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_check_reject_wrong_network_orchard_user_address() {
         let sample = pczt_with_wrong_network_orchard_user_address();
 
@@ -1321,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_check_pczt_invalid_ufvk() {
         let sample = pczt::test_support::sample_pczt_to_transparent();
         let seed_fingerprint = [0u8; 32];

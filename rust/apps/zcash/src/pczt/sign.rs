@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy transparent-to-Orchard fixture is not valid after the protocol API update"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_sign_pczt_transparent_input_requires_selected_account() {
         use zcash_vendor::transparent::keys::IncomingViewingKey;
 
@@ -735,7 +735,7 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu7")]
     #[test]
-    #[ignore = "legacy Orchard spend fixture is not valid in the NU7 protocol API test lane"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_sign_pczt_orchard_spend_rejects_unsupported_zip32_path() {
         let sample = crate::pczt::test_support::sample_orchard_spend_pczt();
         for path in crate::pczt::test_support::unsupported_orchard_spend_paths() {
@@ -828,7 +828,7 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu7")]
     #[test]
-    #[ignore = "legacy Orchard spend fixture is not valid in the NU7 protocol API test lane"]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_sign_pczt_orchard_spend_rejects_unselected_account() {
         let sample = crate::pczt::test_support::sample_orchard_spend_pczt();
         let account_one_pczt = crate::pczt::test_support::orchard_pczt_with_spend_derivation(

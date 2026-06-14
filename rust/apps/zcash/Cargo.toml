@@ -41,3 +41,4 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 default = ["cypherpunk"]
 multi_coins = ["zcash_vendor/multi_coins", "keystore/multi_coins"]
 cypherpunk = ["zcash_vendor/cypherpunk", "keystore/cypherpunk"]
+legacy_pczt_fixtures = []
