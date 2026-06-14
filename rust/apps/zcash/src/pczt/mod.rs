@@ -325,8 +325,9 @@ pub(crate) mod test_support {
     #[cfg(zcash_unstable = "nu7")]
     use zcash_note_encryption::try_note_decryption;
     use zcash_primitives::transaction::{
-        builder::{BuildConfig, Builder, PcztResult},
+        builder::{BuildConfig, Builder, PcztParts, PcztResult},
         fees::zip317,
+        TxVersion,
     };
     #[cfg(zcash_unstable = "nu7")]
     use zcash_vendor::zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade};
@@ -336,7 +337,7 @@ pub(crate) mod test_support {
         transparent::{bundle as transparent, keys::IncomingViewingKey},
         zcash_keys::keys::UnifiedFullViewingKey,
         zcash_protocol::{
-            consensus::{MainNetwork, Parameters},
+            consensus::{BranchId, MainNetwork, Parameters},
             memo::{Memo, MemoBytes},
             value::Zatoshis,
         },
@@ -518,7 +519,7 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn sample_pczt_to_transparent() -> SamplePczt {
-        let params = MainNetwork;
+        let params = Nu7Network;
         let seed = [7u8; 32];
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
@@ -813,6 +814,120 @@ pub(crate) mod test_support {
                     action.set_spend_zip32_derivation(derivation);
                     Ok(())
                 })
+            })
+            .unwrap()
+            .finish();
+
+        SamplePczt {
+            bytes: pczt.serialize(),
+            seed: seed.to_vec(),
+            ufvk_text,
+            seed_fingerprint,
+            transparent_recipient: String::new(),
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    pub(crate) fn sample_orchard_change_pczt() -> SamplePczt {
+        let params = MainNetwork;
+        let seed = [7u8; 32];
+        let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
+        let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
+        let orchard_fvk = ufvk.orchard().unwrap().clone();
+        let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::External);
+        let recipient_scope = orchard::keys::Scope::External;
+        let recipient = orchard_fvk.address_at(0u32, recipient_scope);
+        let orchard_ovk = orchard_fvk.to_ovk(recipient_scope);
+
+        let value = orchard::value::NoteValue::from_raw(1_000_000);
+        let note = {
+            let mut orchard_builder = orchard::builder::Builder::new_coinbase(
+                orchard::BundleProtocol::Orchard,
+                orchard::Anchor::empty_tree(),
+            );
+            orchard_builder
+                .add_output(None, recipient, value, Memo::Empty.encode().into_bytes())
+                .unwrap();
+            let (bundle, meta) = orchard_builder.build::<i64>(&mut OsRng).unwrap().unwrap();
+            let action = bundle
+                .actions()
+                .get(meta.output_action_index(0).unwrap())
+                .unwrap();
+            let domain = orchard::note_encryption::OrchardDomain::for_action(action);
+            let (note, _, _) =
+                try_note_decryption(&domain, &orchard_ivk.prepare(), action).unwrap();
+            note
+        };
+
+        let (anchor, merkle_path) = {
+            let cmx: orchard::note::ExtractedNoteCommitment = note.commitment().into();
+            let leaf = orchard::tree::MerkleHashOrchard::from_cmx(&cmx);
+            let mut tree = ShardTree::<_, 32, 16>::new(
+                MemoryShardStore::<orchard::tree::MerkleHashOrchard, u32>::empty(),
+                100,
+            );
+            tree.append(leaf, Retention::Marked).unwrap();
+            tree.checkpoint(9_999_999).unwrap();
+            let merkle_path = tree
+                .witness_at_checkpoint_depth(0.into(), 0)
+                .unwrap()
+                .unwrap();
+            let anchor = merkle_path.root(leaf);
+            (anchor.into(), merkle_path.into())
+        };
+
+        let mut builder = orchard::builder::Builder::new(orchard::BundleProtocol::Orchard, anchor);
+        builder
+            .add_spend(orchard_fvk.clone(), note, merkle_path)
+            .unwrap();
+        builder
+            .add_change_output(
+                orchard_fvk,
+                Some(orchard_ovk),
+                recipient,
+                orchard::value::NoteValue::from_raw(990_000),
+                Memo::Empty.encode().into_bytes(),
+            )
+            .unwrap();
+        let (orchard_bundle, _) = builder.build_for_pczt(&mut OsRng).unwrap();
+        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        let pczt = Creator::build_from_parts(PcztParts {
+            params,
+            version: TxVersion::V6,
+            consensus_branch_id: BranchId::Nu7,
+            lock_time: 0,
+            expiry_height: BlockHeight::from_u32(10_000_000),
+            transparent: None,
+            sapling: None,
+            orchard: Some(orchard_bundle),
+            ironwood: None,
+        })
+        .unwrap();
+        let pczt = Updater::new(pczt)
+            .update_orchard_with(|mut bundle| {
+                let signing_action_indices = bundle
+                    .bundle()
+                    .actions()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, action)| {
+                        action.spend().dummy_sk().is_none().then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(signing_action_indices.len(), 2);
+
+                for action_index in signing_action_indices {
+                    let derivation = orchard::pczt::Zip32Derivation::parse(
+                        seed_fingerprint,
+                        orchard_spend_path_for_account(0),
+                    )
+                    .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
             })
             .unwrap()
             .finish();
