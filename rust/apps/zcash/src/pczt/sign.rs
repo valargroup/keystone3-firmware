@@ -541,15 +541,22 @@ fn collect_orchard_bundle_signing_keys(
 ) -> Result<(), SigningKeyCollectionError> {
     for (index, action) in bundle.actions().iter().enumerate() {
         let pool_label = pool.label();
-        match action.spend().value().map(|v| v.inner()) {
-            Some(0) | None => continue,
-            Some(_) if action.spend().dummy_sk().is_some() => {
-                return Err(ZcashError::InvalidPczt(format!(
-                    "{pool_label} spend dummy_sk is only valid for dummy spends"
-                ))
-                .into());
+        if action.spend().spend_auth_sig().is_some() {
+            continue;
+        }
+        if action.spend().dummy_sk().is_some() {
+            match action.spend().value().map(|value| value.inner()) {
+                Some(0) | None => continue,
+                Some(_) => {
+                    return Err(ZcashError::InvalidPczt(format!(
+                        "{pool_label} spend dummy_sk is only valid for dummy spends"
+                    ))
+                    .into());
+                }
             }
-            Some(_) => {}
+        }
+        if action.spend().value().is_none() {
+            continue;
         }
         if let Some(ask) =
             spend_authorizing_key_for_action(seed, account_index, action, pool_label)?
@@ -795,6 +802,27 @@ mod tests {
                 .iter()
                 .any(|action| action.spend().spend_auth_sig().is_some()),
             "Ironwood spend authorization signature must be present",
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu7")]
+    #[test]
+    fn test_sign_pczt_orchard_change_output_spend() {
+        let sample = crate::pczt::test_support::sample_orchard_change_pczt();
+        let pczt = Pczt::parse(&sample.bytes).unwrap();
+
+        let signed = sign_pczt(pczt, &sample.seed, zip32::AccountId::ZERO)
+            .expect("Orchard change output spend should sign");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
+        let signed_actions = parsed
+            .orchard()
+            .actions()
+            .iter()
+            .filter(|action| action.spend().spend_auth_sig().is_some())
+            .count();
+        assert_eq!(
+            signed_actions, 2,
+            "real spend and wallet controlled zero value spend must be signed",
         );
     }
 
