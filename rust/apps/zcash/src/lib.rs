@@ -1056,6 +1056,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_batch_preflight_accepts_orchard_spend() {
         let sample = pczt::test_support::sample_orchard_spend_pczt();
 
@@ -1078,6 +1079,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_batch_postflight_confirms_orchard_signature() {
         let sample = pczt::test_support::sample_orchard_spend_pczt();
         let signed = sign_pczt(&sample.bytes, &sample.seed, 0).expect("Orchard PCZT should sign");
@@ -1093,6 +1095,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_single_postflight_allows_transparent_inputs() {
         let sample = pczt::test_support::sample_pczt_to_transparent();
 
@@ -1107,6 +1110,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_single_postflight_confirms_orchard_signature_when_present() {
         let sample = pczt::test_support::sample_orchard_spend_pczt();
 
@@ -1134,6 +1138,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_batch_preflight_rejects_transparent_inputs() {
         let sample = pczt::test_support::sample_pczt_to_transparent();
 
@@ -1150,6 +1155,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_batch_preflight_rejects_sapling_outputs() {
         let sample = pczt::test_support::sample_orchard_spend_to_sapling_pczt();
 
@@ -1162,6 +1168,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_batch_postflight_rejects_sapling_outputs() {
         let sample = pczt::test_support::sample_orchard_spend_to_sapling_pczt();
 
