@@ -344,6 +344,7 @@ pub(crate) mod test_support {
         zip32,
     };
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     const PRE_NU7_ORCHARD_SAMPLE_HEIGHT: u32 = 2_000_000;
 
     pub(crate) struct SamplePczt {
@@ -351,6 +352,7 @@ pub(crate) mod test_support {
         pub(crate) seed: Vec<u8>,
         pub(crate) ufvk_text: String,
         pub(crate) seed_fingerprint: [u8; 32],
+        #[cfg(feature = "legacy_pczt_fixtures")]
         pub(crate) transparent_recipient: String,
     }
 
@@ -398,7 +400,7 @@ pub(crate) mod test_support {
         ]
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     pub(crate) fn orchard_pczt_with_spend_derivation(
         bytes: &[u8],
         seed_fingerprint: [u8; 32],
@@ -422,7 +424,7 @@ pub(crate) mod test_support {
             .serialize()
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     pub(crate) fn orchard_pczt_with_dummy_spend_derivation(
         bytes: &[u8],
         seed_fingerprint: [u8; 32],
@@ -518,6 +520,7 @@ pub(crate) mod test_support {
             .serialize()
     }
 
+    #[cfg(feature = "legacy_pczt_fixtures")]
     pub(crate) fn sample_pczt_to_transparent() -> SamplePczt {
         let params = Nu7Network;
         let seed = [7u8; 32];
@@ -611,7 +614,7 @@ pub(crate) mod test_support {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(feature = "legacy_pczt_fixtures")]
     pub(crate) fn sample_orchard_spend_pczt() -> SamplePczt {
         let params = MainNetwork;
         let seed = [7u8; 32];
@@ -712,6 +715,7 @@ pub(crate) mod test_support {
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
+            #[cfg(feature = "legacy_pczt_fixtures")]
             transparent_recipient: String::new(),
         }
     }
@@ -823,6 +827,7 @@ pub(crate) mod test_support {
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
+            #[cfg(feature = "legacy_pczt_fixtures")]
             transparent_recipient: String::new(),
         }
     }
@@ -937,6 +942,7 @@ pub(crate) mod test_support {
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
+            #[cfg(feature = "legacy_pczt_fixtures")]
             transparent_recipient: String::new(),
         }
     }
