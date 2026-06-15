@@ -374,7 +374,6 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
             message.get_payload(),
             &ufvk_text,
             seed_fingerprint,
-            account_index,
         ) {
             Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
             Err(e) => return TransactionParseResult::from(e).c_ptr(),
@@ -430,7 +429,7 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                             return UREncodeResult::from(e).c_ptr();
                         }
 
-                        match app_zcash::sign_pczt(message.get_payload(), seed, account_index) {
+                        match app_zcash::sign_pczt(message.get_payload(), seed) {
                             Ok(payload) => {
                                 if let Err(e) =
                                     app_zcash::ensure_signable_shielded_actions_are_signed(
@@ -617,7 +616,7 @@ unsafe fn sign_zcash_tx_cypherpunk_dynamic(
                         return UREncodeResult::from(RustCError::MasterFingerprintMismatch).c_ptr();
                     }
 
-                    match app_zcash::sign_pczt(&pczt_data, seed, account_index) {
+                    match app_zcash::sign_pczt(&pczt_data, seed) {
                         Ok(signed_pczt) => {
                             if let Err(e) =
                                 app_zcash::ensure_owned_supported_shielded_actions_are_signed(
