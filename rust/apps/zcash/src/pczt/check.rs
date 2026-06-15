@@ -42,6 +42,8 @@ pub fn check_pczt_orchard<P: consensus::Parameters>(
     pczt: &Pczt,
 ) -> Result<bool, ZcashError> {
     super::validate_supported_pczt(pczt)?;
+    #[cfg(zcash_unstable = "nu7")]
+    let should_process_ironwood = super::pczt_should_process_ironwood(pczt);
     let mut has_my_spend = false;
     let verifier = Verifier::new(pczt.clone())
         .with_orchard(|bundle| {
@@ -58,20 +60,22 @@ pub fn check_pczt_orchard<P: consensus::Parameters>(
         })
         .map_err(map_orchard_verifier_error)?;
     #[cfg(zcash_unstable = "nu7")]
-    verifier
-        .with_ironwood(|bundle| {
-            has_my_spend |= check_orchard(
-                params,
-                seed_fingerprint,
-                account_index,
-                ufvk,
-                bundle,
-                "Ironwood",
-            )
-            .map_err(pczt::roles::verifier::OrchardError::Custom)?;
-            Ok(())
-        })
-        .map_err(map_orchard_verifier_error)?;
+    if should_process_ironwood {
+        verifier
+            .with_ironwood(|bundle| {
+                has_my_spend |= check_orchard(
+                    params,
+                    seed_fingerprint,
+                    account_index,
+                    ufvk,
+                    bundle,
+                    "Ironwood",
+                )
+                .map_err(pczt::roles::verifier::OrchardError::Custom)?;
+                Ok(())
+            })
+            .map_err(map_orchard_verifier_error)?;
+    }
     Ok(has_my_spend)
 }
 

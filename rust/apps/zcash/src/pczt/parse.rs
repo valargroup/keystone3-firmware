@@ -184,6 +184,8 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     let mut parsed_orchard = None;
     #[cfg(zcash_unstable = "nu7")]
     let mut parsed_ironwood = None;
+    #[cfg(zcash_unstable = "nu7")]
+    let should_process_ironwood = super::pczt_should_process_ironwood(pczt);
     let mut parsed_transparent = None;
 
     let verifier = Verifier::new(pczt.clone())
@@ -201,20 +203,24 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
         })
         .map_err(map_orchard_verifier_error)?;
     #[cfg(zcash_unstable = "nu7")]
-    let verifier = verifier
-        .with_ironwood(|bundle| {
-            parsed_ironwood = parse_orchard(
-                params,
-                seed_fingerprint,
-                account_index,
-                ufvk,
-                bundle,
-                "Ironwood",
-            )
-            .map_err(pczt::roles::verifier::OrchardError::Custom)?;
-            Ok(())
-        })
-        .map_err(map_orchard_verifier_error)?;
+    let verifier = if should_process_ironwood {
+        verifier
+            .with_ironwood(|bundle| {
+                parsed_ironwood = parse_orchard(
+                    params,
+                    seed_fingerprint,
+                    account_index,
+                    ufvk,
+                    bundle,
+                    "Ironwood",
+                )
+                .map_err(pczt::roles::verifier::OrchardError::Custom)?;
+                Ok(())
+            })
+            .map_err(map_orchard_verifier_error)?
+    } else {
+        verifier
+    };
     verifier
         .with_transparent(|bundle| {
             parsed_transparent = parse_transparent(

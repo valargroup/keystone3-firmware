@@ -183,8 +183,11 @@ pub fn sign_pczt(
     let orchard_keys =
         collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Orchard)?;
     #[cfg(zcash_unstable = "nu7")]
-    let ironwood_keys =
-        collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Ironwood)?;
+    let ironwood_keys = if super::pczt_should_process_ironwood(&pczt) {
+        collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Ironwood)?
+    } else {
+        Vec::new()
+    };
 
     let signature_count = transparent_keys.len() + orchard_keys.len();
     #[cfg(zcash_unstable = "nu7")]
@@ -514,6 +517,9 @@ fn collect_orchard_signing_keys(
         }
         #[cfg(zcash_unstable = "nu7")]
         ShieldedPool::Ironwood => {
+            if !super::pczt_should_process_ironwood(pczt) {
+                return Ok(keys);
+            }
             low_level_signer::Signer::new(pczt.clone())
                 .sign_ironwood_with(|_pczt, bundle, _tx_modifiable| {
                     collect_orchard_bundle_signing_keys(

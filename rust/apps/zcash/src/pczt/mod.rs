@@ -163,10 +163,7 @@ pub(crate) fn validate_supported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
 
     #[cfg(zcash_unstable = "nu7")]
     {
-        let has_ironwood = !pczt.ironwood().actions().is_empty();
-        let is_v6 = *pczt.global().tx_version() == constants::V6_TX_VERSION
-            && *pczt.global().version_group_id() == constants::V6_VERSION_GROUP_ID;
-        if has_ironwood && !is_v6 {
+        if pczt_has_ironwood_actions(pczt) && !pczt_is_v6(pczt) {
             return Err(ZcashError::InvalidPczt(
                 "Ironwood actions require a v6 PCZT".to_string(),
             ));
@@ -174,6 +171,22 @@ pub(crate) fn validate_supported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
     }
 
     Ok(())
+}
+
+#[cfg(zcash_unstable = "nu7")]
+pub(crate) fn pczt_has_ironwood_actions(pczt: &Pczt) -> bool {
+    !pczt.ironwood().actions().is_empty()
+}
+
+#[cfg(zcash_unstable = "nu7")]
+pub(crate) fn pczt_is_v6(pczt: &Pczt) -> bool {
+    *pczt.global().tx_version() == constants::V6_TX_VERSION
+        && *pczt.global().version_group_id() == constants::V6_VERSION_GROUP_ID
+}
+
+#[cfg(zcash_unstable = "nu7")]
+pub(crate) fn pczt_should_process_ironwood(pczt: &Pczt) -> bool {
+    pczt_is_v6(pczt) || pczt_has_ironwood_actions(pczt)
 }
 
 fn validate_supported_sapling(pczt: &Pczt) -> Result<(), ZcashError> {

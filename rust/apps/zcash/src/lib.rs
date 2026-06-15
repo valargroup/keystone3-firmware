@@ -742,6 +742,37 @@ mod tests {
         assert_eq!(parsed_pczt.get_fee_value(), "0.00015 ZEC");
     }
 
+    #[test]
+    #[cfg(all(zcash_unstable = "nu7", feature = "legacy_pczt_fixtures"))]
+    fn test_v5_pczt_without_ironwood_actions_remains_supported_under_nu7() {
+        let sample = pczt::test_support::sample_orchard_spend_pczt();
+        let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT must parse");
+        assert_eq!(*pczt.global().tx_version(), constants::V5_TX_VERSION);
+        assert!(pczt.ironwood().actions().is_empty());
+
+        parse_pczt_cypherpunk(
+            &MainNetwork,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("v5 Orchard PCZT should parse under NU7 when Ironwood is empty");
+        check_pczt_cypherpunk(
+            &MainNetwork,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("v5 Orchard PCZT should check under NU7 when Ironwood is empty");
+
+        let signed = sign_pczt(&sample.bytes, &sample.seed, 0)
+            .expect("v5 Orchard PCZT should sign under NU7 when Ironwood is empty");
+        let signed_pczt = Pczt::parse(&signed).expect("signed PCZT must parse");
+        assert!(signed_pczt.ironwood().actions().is_empty());
+    }
+
     #[cfg(zcash_unstable = "nu7")]
     #[test]
     fn test_pczt_ironwood_to_ironwood() {
