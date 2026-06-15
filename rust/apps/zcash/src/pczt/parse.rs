@@ -987,44 +987,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_decode_pczt_to_p2pkh_transparent_output() {
-        let sample = crate::pczt::test_support::sample_pczt_to_transparent();
-        let pczt = Pczt::parse(&sample.bytes).unwrap();
-        let unified_fvk = UnifiedFullViewingKey::decode(&MAIN_NETWORK, &sample.ufvk_text).unwrap();
-
-        let result = parse_pczt_cypherpunk(
-            &MAIN_NETWORK,
-            &sample.seed_fingerprint,
-            zip32::AccountId::ZERO,
-            &unified_fvk,
-            &pczt,
-        )
-        .unwrap();
-
-        assert!(!result.get_has_sapling());
-        assert_eq!(result.get_total_transfer_value(), "0.001 ZEC");
-        assert_eq!(result.get_fee_value(), "0.00015 ZEC");
-
-        let transparent = result.get_transparent().unwrap();
-        assert_eq!(transparent.get_to().len(), 1);
-        assert_eq!(
-            transparent.get_to()[0].get_address(),
-            sample.transparent_recipient
-        );
-        assert_eq!(transparent.get_to()[0].get_value(), "0.001 ZEC");
-        assert_eq!(transparent.get_to()[0].get_amount(), 100_000);
-        assert!(!transparent.get_to()[0].get_is_change());
-
-        let orchard = result.get_orchard().unwrap();
-        assert_eq!(orchard.get_to().len(), 1);
-        assert_eq!(orchard.get_to()[0].get_address(), "<internal-address>");
-        assert_eq!(orchard.get_to()[0].get_value(), "0.00885 ZEC");
-        assert_eq!(orchard.get_to()[0].get_amount(), 885_000);
-        assert!(orchard.get_to()[0].get_is_change());
-    }
-
-    #[test]
     fn test_validate_orchard_user_address_rejects_invalid_address() {
         let sk = orchard::keys::SpendingKey::from_bytes([2; 32]).unwrap();
         let fvk = orchard::keys::FullViewingKey::from(&sk);

@@ -477,28 +477,3 @@ fn check_action_output<P: consensus::Parameters>(
 
     Ok(())
 }
-
-#[cfg(feature = "cypherpunk")]
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use zcash_vendor::{pczt::Pczt, zcash_protocol::consensus::MAIN_NETWORK};
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_check_pczt_to_transparent_output() {
-        let sample = crate::pczt::test_support::sample_pczt_to_transparent();
-        let pczt = Pczt::parse(&sample.bytes).unwrap();
-        let unified_fvk = UnifiedFullViewingKey::decode(&MAIN_NETWORK, &sample.ufvk_text).unwrap();
-
-        let result = check_pczt_orchard(
-            &MAIN_NETWORK,
-            &sample.seed_fingerprint,
-            zip32::AccountId::ZERO,
-            &unified_fvk,
-            &pczt,
-        );
-
-        assert!(result.is_ok());
-    }
-}

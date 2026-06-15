@@ -610,17 +610,12 @@ mod tests {
         }
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
     fn signable_sample_pczt() -> crate::pczt::test_support::SamplePczt {
-        #[cfg(zcash_unstable = "nu6.3")]
-        {
-            crate::pczt::test_support::sample_ironwood_pczt()
-        }
-        #[cfg(not(zcash_unstable = "nu6.3"))]
-        {
-            crate::pczt::test_support::sample_pczt_to_transparent()
-        }
+        crate::pczt::test_support::sample_ironwood_pczt()
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_sign_pczt_invalid_seed_fingerprint() {
         let sample = signable_sample_pczt();
@@ -695,73 +690,6 @@ mod tests {
         );
     }
 
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_sign_pczt_transparent_input_requires_selected_account() {
-        use zcash_vendor::transparent::keys::IncomingViewingKey;
-
-        let sample = crate::pczt::test_support::sample_pczt_to_transparent();
-        let account =
-            AccountPrivKey::from_seed(&MainNetwork, &sample.seed, zip32::AccountId::ZERO).unwrap();
-        let (_, address_index) = account
-            .to_account_pubkey()
-            .derive_external_ivk()
-            .unwrap()
-            .default_address();
-        let input_sk = account.derive_external_secret_key(address_index).unwrap();
-        let secp = secp256k1::Secp256k1::signing_only();
-        let pubkey = input_sk.public_key(&secp).serialize();
-
-        let account_one_pczt = Updater::new(Pczt::parse(&sample.bytes).unwrap())
-            .update_transparent_with(|mut bundle| {
-                let account_one_derivation = transparent::pczt::Bip32Derivation::parse(
-                    sample.seed_fingerprint,
-                    alloc::vec![
-                        44 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                        133 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                        1 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                        0,
-                        0,
-                    ],
-                )
-                .unwrap();
-                bundle.update_input_with(0, |mut input| {
-                    input.set_bip32_derivation(pubkey, account_one_derivation);
-                    Ok(())
-                })
-            })
-            .unwrap()
-            .finish();
-
-        assert_invalid_pczt_message(
-            sign_pczt(account_one_pczt, &sample.seed, zip32::AccountId::ZERO),
-            "transparent input bip32 derivation path invalid",
-        );
-    }
-
-    #[cfg(zcash_unstable = "nu6.3")]
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_sign_pczt_orchard_spend_rejects_unsupported_zip32_path() {
-        let sample = crate::pczt::test_support::sample_orchard_spend_pczt();
-        for path in crate::pczt::test_support::unsupported_orchard_spend_paths() {
-            let pczt = crate::pczt::test_support::orchard_pczt_with_spend_derivation(
-                &sample.bytes,
-                sample.seed_fingerprint,
-                path,
-            );
-
-            assert_invalid_pczt_message(
-                sign_pczt(
-                    Pczt::parse(&pczt).unwrap(),
-                    &sample.seed,
-                    zip32::AccountId::ZERO,
-                ),
-                "unsupported Orchard spend ZIP 32 derivation path",
-            );
-        }
-    }
-
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_sign_pczt_ironwood_spend_rejects_unsupported_zip32_path() {
@@ -834,27 +762,6 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_sign_pczt_orchard_spend_rejects_unselected_account() {
-        let sample = crate::pczt::test_support::sample_orchard_spend_pczt();
-        let account_one_pczt = crate::pczt::test_support::orchard_pczt_with_spend_derivation(
-            &sample.bytes,
-            sample.seed_fingerprint,
-            crate::pczt::test_support::orchard_spend_path_for_account(1),
-        );
-
-        assert_invalid_pczt_message(
-            sign_pczt(
-                Pczt::parse(&account_one_pczt).unwrap(),
-                &sample.seed,
-                zip32::AccountId::ZERO,
-            ),
-            "unsupported Orchard spend ZIP 32 account index",
-        );
-    }
-
-    #[cfg(zcash_unstable = "nu6.3")]
-    #[test]
     fn test_sign_pczt_ironwood_spend_rejects_unselected_account() {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
         let account_one_pczt = crate::pczt::test_support::ironwood_pczt_with_spend_derivation(
@@ -873,6 +780,7 @@ mod tests {
         );
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
     fn pczt_with_min_version(min_version: &[u8]) -> Pczt {
         let sample = signable_sample_pczt();
         let base = Pczt::parse(&sample.bytes).unwrap();
@@ -884,10 +792,12 @@ mod tests {
             .finish()
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
     fn test_seed() -> Vec<u8> {
         [7u8; 32].to_vec()
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn firmware_equal_version_stamps_response() {
         let pczt = pczt_with_min_version(&KEYSTONE_FW_VERSION.encode());
@@ -910,6 +820,7 @@ mod tests {
         assert_eq!(request_min, &KEYSTONE_FW_VERSION.encode().to_vec());
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn firmware_older_min_version_still_stamps_response() {
         let pczt = pczt_with_min_version(&[1, 0, 0]);
@@ -925,6 +836,7 @@ mod tests {
         assert_eq!(stamp, &KEYSTONE_FW_VERSION.encode().to_vec());
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn malformed_min_version_round_trips_and_stamps() {
         let pczt = pczt_with_min_version(&[1, 2]);

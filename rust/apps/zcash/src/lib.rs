@@ -363,40 +363,15 @@ mod legacy_tests {
 #[cfg(feature = "cypherpunk")]
 #[cfg(test)]
 mod tests {
-    use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
+    use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
-    use ::pczt::roles::{creator::Creator, updater::Updater};
     use consensus::MainNetwork;
     use keystore::algorithms::zcash::{calculate_seed_fingerprint, derive_ufvk};
-    use rand_core::OsRng;
     use serde::{Deserialize, Serialize};
-    use zcash_primitives::transaction::{
-        builder::{BuildConfig, Builder, PcztResult},
-        fees::zip317,
-    };
-    use zcash_vendor::{
-        orchard,
-        transparent::{bundle as transparent, keys::IncomingViewingKey},
-        zcash_address::unified::Encoding,
-        zcash_protocol::{
-            consensus::{BranchId, NetworkConstants},
-            constants,
-            memo::MemoBytes,
-            value::Zatoshis,
-        },
-        zip32,
-    };
+    use zcash_vendor::zcash_protocol::constants;
 
     use super::*;
     extern crate std;
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    const EMPTY_SAPLING_BUNDLE_ERROR: &str =
-        "sapling value_sum must be zero when Sapling bundle is empty";
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    const UNSUPPORTED_SAPLING_ERROR: &str = "Sapling spends and outputs are not supported";
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    const INVALID_PCZT_DATA_ERROR: &str = "invalid pczt data";
 
     #[derive(Serialize, Deserialize)]
     struct PcztMirror {
@@ -459,61 +434,6 @@ mod tests {
         derivation_path: Vec<u32>,
     }
 
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum() -> Vec<u8> {
-        let mut bytes = Creator::new(
-            BranchId::Nu6.into(),
-            10,
-            MainNetwork.coin_type(),
-            [0; 32],
-            [0; 32],
-        )
-        .build()
-        .serialize();
-        let mut pczt: PcztMirror = postcard::from_bytes(&bytes[8..]).unwrap();
-        assert!(pczt.sapling.spends.is_empty());
-        assert!(pczt.sapling.outputs.is_empty());
-
-        pczt.sapling.value_sum = 1;
-
-        bytes.truncate(8);
-        postcard::to_extend(&pczt, bytes).unwrap()
-    }
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn pczt_with_sapling_output() -> Vec<u8> {
-        let mut bytes = Creator::new(
-            BranchId::Nu6.into(),
-            10,
-            MainNetwork.coin_type(),
-            [0; 32],
-            [0; 32],
-        )
-        .build()
-        .serialize();
-        let mut pczt: PcztMirror = postcard::from_bytes(&bytes[8..]).unwrap();
-        pczt.sapling.outputs.push(SaplingOutputMirror {
-            cv: [0; 32],
-            cmu: [0; 32],
-            ephemeral_key: [0; 32],
-            enc_ciphertext: vec![],
-            out_ciphertext: vec![],
-            zkproof: None,
-            recipient: None,
-            value: Some(1),
-            rseed: None,
-            rcv: None,
-            ock: None,
-            zip32_derivation: None,
-            user_address: None,
-            proprietary: BTreeMap::new(),
-        });
-        pczt.sapling.value_sum = -1;
-
-        bytes.truncate(8);
-        postcard::to_extend(&pczt, bytes).unwrap()
-    }
-
     #[cfg(zcash_unstable = "nu6.3")]
     fn v5_pczt_with_ironwood_actions() -> Vec<u8> {
         let sample = pczt::test_support::sample_ironwood_pczt();
@@ -528,152 +448,11 @@ mod tests {
         postcard::to_extend(&pczt, bytes).unwrap()
     }
 
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn transparent_input_with_unselected_account_derivation() -> pczt::test_support::SamplePczt {
-        let mut sample = pczt::test_support::sample_pczt_to_transparent();
-        let account = zcash_vendor::transparent::keys::AccountPrivKey::from_seed(
-            &MainNetwork,
-            &sample.seed,
-            zip32::AccountId::ZERO,
-        )
-        .unwrap();
-        let (_, address_index) = account
-            .to_account_pubkey()
-            .derive_external_ivk()
-            .unwrap()
-            .default_address();
-        let input_sk = account.derive_external_secret_key(address_index).unwrap();
-        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
-        let pubkey = input_sk.public_key(&secp).serialize();
-        let account_one_derivation = zcash_vendor::transparent::pczt::Bip32Derivation::parse(
-            sample.seed_fingerprint,
-            vec![
-                44 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                133 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                1 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                0,
-                0,
-            ],
-        )
-        .unwrap();
-
-        sample.bytes = Updater::new(Pczt::parse(&sample.bytes).unwrap())
-            .update_transparent_with(|mut bundle| {
-                bundle.update_input_with(0, |mut input| {
-                    input.set_bip32_derivation(pubkey, account_one_derivation);
-                    Ok(())
-                })
-            })
-            .unwrap()
-            .finish()
-            .serialize();
-        sample
-    }
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn transparent_output_with_unselected_account_derivation() -> pczt::test_support::SamplePczt {
-        let mut sample = pczt::test_support::sample_pczt_to_transparent();
-        let recipient_account = zcash_vendor::transparent::keys::AccountPrivKey::from_seed(
-            &MainNetwork,
-            &[8u8; 32],
-            zip32::AccountId::ZERO,
-        )
-        .unwrap();
-        let (_, address_index) = recipient_account
-            .to_account_pubkey()
-            .derive_external_ivk()
-            .unwrap()
-            .default_address();
-        let recipient_sk = recipient_account
-            .derive_external_secret_key(address_index)
-            .unwrap();
-        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
-        let recipient_pubkey = recipient_sk.public_key(&secp).serialize();
-        let account_one_derivation = zcash_vendor::transparent::pczt::Bip32Derivation::parse(
-            sample.seed_fingerprint,
-            vec![
-                44 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                133 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                1 | zcash_vendor::bip32::ChildNumber::HARDENED_FLAG,
-                0,
-                0,
-            ],
-        )
-        .unwrap();
-
-        sample.bytes = Updater::new(Pczt::parse(&sample.bytes).unwrap())
-            .update_transparent_with(|mut bundle| {
-                bundle.update_output_with(0, |mut output| {
-                    output.set_bip32_derivation(recipient_pubkey, account_one_derivation);
-                    Ok(())
-                })
-            })
-            .unwrap()
-            .finish()
-            .serialize();
-        sample
-    }
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn pczt_with_trailing_byte() -> pczt::test_support::SamplePczt {
-        let mut sample = pczt::test_support::sample_pczt_to_transparent();
-        sample.bytes.push(0);
-        sample
-    }
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn pczt_with_wrong_network_orchard_user_address() -> pczt::test_support::SamplePczt {
-        let mut sample = pczt::test_support::sample_pczt_to_transparent();
-        let pczt = Pczt::parse(&sample.bytes).unwrap();
-        let recipient = pczt
-            .orchard()
-            .actions()
-            .iter()
-            .find_map(|action| action.output().recipient().clone())
-            .expect("sample must contain an Orchard output recipient");
-        let wrong_network_address =
-            zcash_vendor::zcash_address::unified::Address::try_from_items(vec![
-                zcash_vendor::zcash_address::unified::Receiver::Orchard(recipient),
-            ])
-            .unwrap()
-            .encode(&zcash_vendor::zcash_protocol::consensus::NetworkType::Test);
-
-        sample.bytes = Updater::new(pczt)
-            .update_orchard_with(|mut bundle| {
-                for action_index in 0..bundle.bundle().actions().len() {
-                    bundle.update_action_with(action_index, |mut action| {
-                        action.set_output_user_address(wrong_network_address.clone());
-                        Ok(())
-                    })?;
-                }
-                Ok(())
-            })
-            .unwrap()
-            .finish()
-            .serialize();
-        sample
-    }
-
     fn assert_invalid_pczt_message<T: core::fmt::Debug>(result: Result<T>, expected: &str) {
         assert_eq!(
             result.unwrap_err(),
             ZcashError::InvalidPczt(expected.to_string())
         );
-    }
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn assert_empty_sapling_bundle_error<T: core::fmt::Debug>(result: Result<T>) {
-        assert_invalid_pczt_message(result, EMPTY_SAPLING_BUNDLE_ERROR);
-    }
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn assert_unsupported_sapling_error<T: core::fmt::Debug>(result: Result<T>) {
-        assert_invalid_pczt_message(result, UNSUPPORTED_SAPLING_ERROR);
-    }
-
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn assert_invalid_pczt_data<T: core::fmt::Debug>(result: Result<T>) {
-        assert_invalid_pczt_message(result, INVALID_PCZT_DATA_ERROR);
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -703,74 +482,6 @@ mod tests {
     fn test_get_address() {
         let address = get_address(&MainNetwork, "uview1s2e0495jzhdarezq4h4xsunfk4jrq7gzg22tjjmkzpd28wgse4ejm6k7yfg8weanaghmwsvc69clwxz9f9z2hwaz4gegmna0plqrf05zkeue0nevnxzm557rwdkjzl4pl4hp4q9ywyszyjca8jl54730aymaprt8t0kxj8ays4fs682kf7prj9p24dnlcgqtnd2vnskkm7u8cwz8n0ce7yrwx967cyp6dhkc2wqprt84q0jmwzwnufyxe3j0758a9zgk9ssrrnywzkwfhu6ap6cgx3jkxs3un53n75s3");
         assert_eq!(address.unwrap(), "u1tqdskj32l9udfp0rysmca6gpz73fdqc2rmeenyhh0nfrq4vgak284ehkxefw5cf9495rdur0tparuntevp6nnetzjkyzv08m524e4swwk94asas7hm2ad5w5c64zz00hmr7nux0yhaz");
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_pczt_orchard_to_transparent() {
-        let sample = pczt::test_support::sample_pczt_to_transparent();
-        let seed_fingerprint = sample.seed_fingerprint;
-        let parsed_pczt = parse_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &seed_fingerprint,
-            0,
-        )
-        .unwrap();
-
-        assert!(parsed_pczt.get_transparent().is_some());
-        assert!(parsed_pczt.get_orchard().is_some());
-        let transparent = parsed_pczt.get_transparent().unwrap();
-        let orchard = parsed_pczt.get_orchard().unwrap();
-        assert_eq!(transparent.get_to().len(), 1);
-        assert_eq!(
-            transparent.get_to().first().unwrap().get_address(),
-            sample.transparent_recipient
-        );
-        assert_eq!(
-            transparent.get_to().first().unwrap().get_value(),
-            "0.001 ZEC"
-        );
-        assert!(!transparent.get_to().first().unwrap().get_is_change());
-        assert_eq!(
-            orchard.get_to().first().unwrap().get_address(),
-            "<internal-address>"
-        );
-        assert_eq!(orchard.get_to().first().unwrap().get_value(), "0.00885 ZEC");
-        assert!(orchard.get_to().first().unwrap().get_is_change());
-        assert_eq!(parsed_pczt.get_fee_value(), "0.00015 ZEC");
-    }
-
-    #[test]
-    #[cfg(all(zcash_unstable = "nu6.3", feature = "legacy_pczt_fixtures"))]
-    fn test_v5_pczt_without_ironwood_actions_remains_supported_under_nu6_3() {
-        let sample = pczt::test_support::sample_orchard_spend_pczt();
-        let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT must parse");
-        assert_eq!(*pczt.global().tx_version(), constants::V5_TX_VERSION);
-        assert!(pczt.ironwood().actions().is_empty());
-
-        parse_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("v5 Orchard PCZT should parse under NU6.3 when Ironwood is empty");
-        check_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("v5 Orchard PCZT should check under NU6.3 when Ironwood is empty");
-
-        let signed = sign_pczt(&sample.bytes, &sample.seed, 0)
-            .expect("v5 Orchard PCZT should sign under NU6.3 when Ironwood is empty");
-        let signed_pczt = Pczt::parse(&signed).expect("signed PCZT must parse");
-        assert!(signed_pczt.ironwood().actions().is_empty());
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -810,57 +521,6 @@ mod tests {
                 .any(|action| action.spend().spend_auth_sig().is_some()),
             "Ironwood spend authorization signature must be present",
         );
-    }
-
-    #[cfg(zcash_unstable = "nu6.3")]
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_and_check_reject_matching_fingerprint_unsupported_orchard_spend_zip32_path() {
-        let sample = pczt::test_support::sample_orchard_spend_pczt();
-        let parsed_pczt = parse_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .unwrap();
-        assert!(parsed_pczt
-            .get_orchard()
-            .unwrap()
-            .get_from()
-            .first()
-            .unwrap()
-            .get_is_mine());
-
-        for path in pczt::test_support::unsupported_orchard_spend_paths() {
-            let pczt = pczt::test_support::orchard_pczt_with_spend_derivation(
-                &sample.bytes,
-                sample.seed_fingerprint,
-                path,
-            );
-
-            assert_unsupported_zip32_error(
-                parse_pczt_cypherpunk(
-                    &MainNetwork,
-                    &pczt,
-                    &sample.ufvk_text,
-                    &sample.seed_fingerprint,
-                    0,
-                ),
-                "Orchard",
-            );
-            assert_unsupported_zip32_error(
-                check_pczt_cypherpunk(
-                    &MainNetwork,
-                    &pczt,
-                    &sample.ufvk_text,
-                    &sample.seed_fingerprint,
-                    0,
-                ),
-                "Orchard",
-            );
-        }
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -915,39 +575,6 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_and_check_reject_matching_fingerprint_unselected_orchard_account() {
-        let sample = pczt::test_support::sample_orchard_spend_pczt();
-        let pczt = pczt::test_support::orchard_pczt_with_spend_derivation(
-            &sample.bytes,
-            sample.seed_fingerprint,
-            pczt::test_support::orchard_spend_path_for_account(1),
-        );
-
-        assert_unsupported_zip32_account_error(
-            parse_pczt_cypherpunk(
-                &MainNetwork,
-                &pczt,
-                &sample.ufvk_text,
-                &sample.seed_fingerprint,
-                0,
-            ),
-            "Orchard",
-        );
-        assert_unsupported_zip32_account_error(
-            check_pczt_cypherpunk(
-                &MainNetwork,
-                &pczt,
-                &sample.ufvk_text,
-                &sample.seed_fingerprint,
-                0,
-            ),
-            "Orchard",
-        );
-    }
-
-    #[cfg(zcash_unstable = "nu6.3")]
-    #[test]
     fn test_parse_and_check_reject_matching_fingerprint_unselected_ironwood_account() {
         let sample = pczt::test_support::sample_ironwood_pczt();
         let pczt = pczt::test_support::ironwood_pczt_with_spend_derivation(
@@ -976,47 +603,6 @@ mod tests {
             ),
             "Ironwood",
         );
-    }
-
-    #[cfg(zcash_unstable = "nu6.3")]
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_and_check_ignore_dummy_orchard_spend_zip32_metadata() {
-        let sample = pczt::test_support::sample_orchard_spend_pczt();
-        let mut paths = pczt::test_support::unsupported_orchard_spend_paths();
-        paths.push(pczt::test_support::orchard_spend_path_for_account(1));
-
-        for path in paths {
-            let pczt = pczt::test_support::orchard_pczt_with_dummy_spend_derivation(
-                &sample.bytes,
-                sample.seed_fingerprint,
-                path,
-            );
-
-            let parsed_pczt = parse_pczt_cypherpunk(
-                &MainNetwork,
-                &pczt,
-                &sample.ufvk_text,
-                &sample.seed_fingerprint,
-                0,
-            )
-            .unwrap();
-            assert!(parsed_pczt
-                .get_orchard()
-                .unwrap()
-                .get_from()
-                .first()
-                .unwrap()
-                .get_is_mine());
-            check_pczt_cypherpunk(
-                &MainNetwork,
-                &pczt,
-                &sample.ufvk_text,
-                &sample.seed_fingerprint,
-                0,
-            )
-            .unwrap();
-        }
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -1056,249 +642,6 @@ mod tests {
                 0,
             )
             .unwrap();
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_pczt_rejects_orchard_internal_ovk_change_spoofing() {
-        let params = MainNetwork;
-        let rng = OsRng;
-
-        let victim_seed = [7u8; 32];
-        let ufvk_text = derive_ufvk(&params, &victim_seed, "m/32'/133'/0'").unwrap();
-        let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
-        let victim_fvk = ufvk.orchard().unwrap().clone();
-        let victim_account = zcash_vendor::transparent::keys::AccountPrivKey::from_seed(
-            &params,
-            &victim_seed,
-            zip32::AccountId::ZERO,
-        )
-        .unwrap();
-        let (victim_addr, address_index) = victim_account
-            .to_account_pubkey()
-            .derive_external_ivk()
-            .unwrap()
-            .default_address();
-        let victim_sk = victim_account
-            .derive_external_secret_key(address_index)
-            .unwrap();
-        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
-        let victim_pubkey = victim_sk.public_key(&secp);
-
-        let attacker_orchard_sk = orchard::keys::SpendingKey::from_bytes([2; 32]).unwrap();
-        let attacker_fvk = orchard::keys::FullViewingKey::from(&attacker_orchard_sk);
-        let attacker_recipient = attacker_fvk.address_at(0u32, orchard::keys::Scope::External);
-        let victim_change = victim_fvk.address_at(0u32, orchard::keys::Scope::Internal);
-
-        let utxo = transparent::OutPoint::new([1u8; 32], 1);
-        let coin = transparent::TxOut::new(
-            Zatoshis::const_from_u64(1_000_000),
-            victim_addr.script().into(),
-        );
-
-        let mut builder = Builder::new(
-            &params,
-            2_000_000.into(),
-            BuildConfig::Standard {
-                sapling_anchor: None,
-                orchard_anchor: Some(orchard::Anchor::empty_tree()),
-                #[cfg(zcash_unstable = "nu6.3")]
-                ironwood_anchor: None,
-            },
-        );
-        builder
-            .add_transparent_p2pkh_input(victim_pubkey, utxo, coin)
-            .unwrap();
-        builder
-            .add_orchard_output::<zip317::FeeRule>(
-                Some(victim_fvk.to_ovk(orchard::keys::Scope::Internal)),
-                attacker_recipient,
-                Zatoshis::const_from_u64(100_000),
-                MemoBytes::empty(),
-            )
-            .unwrap();
-        builder
-            .add_orchard_output::<zip317::FeeRule>(
-                Some(victim_fvk.to_ovk(orchard::keys::Scope::Internal)),
-                victim_change,
-                Zatoshis::const_from_u64(885_000),
-                MemoBytes::empty(),
-            )
-            .unwrap();
-
-        let PcztResult { pczt_parts, .. } = builder
-            .build_for_pczt(rng, &zip317::FeeRule::standard())
-            .unwrap();
-        let pczt = Creator::build_from_parts(pczt_parts).unwrap();
-        let pczt_bytes = pczt.serialize();
-        let seed_fingerprint = calculate_seed_fingerprint(&victim_seed).unwrap();
-
-        let result = parse_pczt_cypherpunk(&params, &pczt_bytes, &ufvk_text, &seed_fingerprint, 0);
-        match result {
-            Err(ZcashError::InvalidPczt(_)) => {}
-            Err(ZcashError::InvalidDataError(msg))
-                if msg.contains("Orchard output was recoverable with an internal OVK but does not belong to this wallet") => {}
-            Err(e) => panic!("unexpected error: {e:?}"),
-            Ok(parsed) => {
-                let orchard = parsed.get_orchard();
-                panic!("unexpected success: orchard={orchard:?}");
-            }
-        }
-
-        let check_result =
-            check_pczt_cypherpunk(&params, &pczt_bytes, &ufvk_text, &seed_fingerprint, 0);
-        match check_result {
-            Err(ZcashError::InvalidPczt(_)) => {}
-            Err(ZcashError::InvalidDataError(msg))
-                if msg.contains("Orchard output was recoverable with an internal OVK but does not belong to this wallet") => {}
-            Err(e) => panic!("unexpected check error: {e:?}"),
-            Ok(()) => panic!("unexpected check success"),
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_check_pczt_rejects_empty_sapling_bundle_with_nonzero_value_sum() {
-        let seed = [9u8; 32];
-        let malformed_pczt = malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum();
-        let ufvk = derive_ufvk(&MainNetwork, &seed, "m/32'/133'/0'").unwrap();
-        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
-
-        let result = check_pczt_cypherpunk(
-            &MainNetwork,
-            &malformed_pczt,
-            &ufvk.to_string(),
-            &seed_fingerprint,
-            0,
-        );
-
-        assert_empty_sapling_bundle_error(result);
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_and_sign_reject_empty_sapling_bundle_with_nonzero_value_sum() {
-        let seed = [9u8; 32];
-        let malformed_pczt = malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum();
-        let ufvk = derive_ufvk(&MainNetwork, &seed, "m/32'/133'/0'").unwrap();
-        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
-
-        assert_empty_sapling_bundle_error(parse_pczt_cypherpunk(
-            &MainNetwork,
-            &malformed_pczt,
-            &ufvk.to_string(),
-            &seed_fingerprint,
-            0,
-        ));
-        assert_empty_sapling_bundle_error(sign_pczt(&malformed_pczt, &seed, 0));
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_check_parse_and_sign_reject_sapling_outputs() {
-        let seed = [9u8; 32];
-        let unsupported_pczt = pczt_with_sapling_output();
-        let ufvk = derive_ufvk(&MainNetwork, &seed, "m/32'/133'/0'").unwrap();
-        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
-
-        assert_unsupported_sapling_error(check_pczt_cypherpunk(
-            &MainNetwork,
-            &unsupported_pczt,
-            &ufvk.to_string(),
-            &seed_fingerprint,
-            0,
-        ));
-        assert_unsupported_sapling_error(parse_pczt_cypherpunk(
-            &MainNetwork,
-            &unsupported_pczt,
-            &ufvk.to_string(),
-            &seed_fingerprint,
-            0,
-        ));
-        assert_unsupported_sapling_error(sign_pczt(&unsupported_pczt, &seed, 0));
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_check_parse_and_sign_reject_trailing_pczt_bytes() {
-        let sample = pczt_with_trailing_byte();
-
-        assert_invalid_pczt_data(check_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        ));
-        assert_invalid_pczt_data(parse_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        ));
-        assert_invalid_pczt_data(sign_pczt(&sample.bytes, &sample.seed, 0));
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_rejects_transparent_input_for_unselected_account() {
-        let sample = transparent_input_with_unselected_account_derivation();
-
-        let result = parse_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        );
-
-        assert_invalid_pczt_message(result, "transparent input bip32 derivation path invalid");
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_rejects_transparent_output_change_for_unselected_account() {
-        let sample = transparent_output_with_unselected_account_derivation();
-
-        let result = parse_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        );
-
-        assert_invalid_pczt_message(result, "transparent output bip32 derivation path invalid");
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_parse_and_check_reject_wrong_network_orchard_user_address() {
-        let sample = pczt_with_wrong_network_orchard_user_address();
-
-        match parse_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        ) {
-            Err(ZcashError::InvalidPczt(message))
-                if message.contains("user address network mismatch") => {}
-            other => panic!("unexpected wrong-network parse result: {other:?}"),
-        }
-        match check_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        ) {
-            Err(ZcashError::InvalidPczt(message))
-                if message.contains("user address network mismatch") => {}
-            other => panic!("unexpected wrong-network check result: {other:?}"),
         }
     }
 
@@ -1361,26 +704,6 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ZcashError::InvalidPczt(_)));
-    }
-
-    #[test]
-    #[cfg(feature = "legacy_pczt_fixtures")]
-    fn test_check_pczt_invalid_ufvk() {
-        let sample = pczt::test_support::sample_pczt_to_transparent();
-        let seed_fingerprint = [0u8; 32];
-
-        let result = check_pczt_cypherpunk(
-            &MainNetwork,
-            &sample.bytes,
-            "invalid_ufvk",
-            &seed_fingerprint,
-            0,
-        );
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ZcashError::InvalidDataError(_)
-        ));
     }
 
     #[test]
