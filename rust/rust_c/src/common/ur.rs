@@ -626,10 +626,6 @@ unsafe fn free_ur(ur_type: &QRCodeType, data: PtrUR) {
         QRCodeType::CardanoCatalystVotingRegistrationRequest => {
             free_ptr_with_type!(data, CardanoCatalystVotingRegistrationRequest);
         }
-        #[cfg(feature = "zcash")]
-        QRCodeType::ZcashPczt => {
-            free_ptr_with_type!(data, ZcashPczt);
-        }
         #[cfg(feature = "zcash_cypherpunk")]
         QRCodeType::ZcashSignBatch => {
             free_ptr_with_type!(data, ZcashSignBatch);

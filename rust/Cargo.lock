@@ -477,7 +477,6 @@ dependencies = [
  "postcard",
  "rand_core 0.6.4",
  "rust_tools",
- "sapling-crypto",
  "serde",
  "serde_with",
  "shardtree",
