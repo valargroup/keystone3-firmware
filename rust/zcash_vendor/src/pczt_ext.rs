@@ -15,9 +15,6 @@ use pczt::{
 use transparent::sighash::SignableInput;
 use zcash_protocol::value::ZatBalance;
 
-#[cfg(zcash_unstable = "nu6.3")]
-use zcash_protocol::constants::{V6_TX_VERSION, V6_VERSION_GROUP_ID};
-
 /// TxId tree root personalization
 const ZCASH_TX_PERSONALIZATION_PREFIX: &[u8; 12] = b"ZcashTxHash_";
 
@@ -64,15 +61,6 @@ const ZCASH_ORCHARD_ACTIONS_MEMOS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcAc
 const ZCASH_ORCHARD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActNHash";
 #[allow(unused)]
 const ZCASH_ORCHARD_SIGS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxAuthOrchaHash";
-
-#[cfg(zcash_unstable = "nu6.3")]
-const ZCASH_IRONWOOD_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIronwd_Hash";
-#[cfg(zcash_unstable = "nu6.3")]
-const ZCASH_IRONWOOD_ACTIONS_COMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIrnActCHash";
-#[cfg(zcash_unstable = "nu6.3")]
-const ZCASH_IRONWOOD_ACTIONS_MEMOS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIrnActMHash";
-#[cfg(zcash_unstable = "nu6.3")]
-const ZCASH_IRONWOOD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdIrnActNHash";
 
 const ZCASH_TRANSPARENT_INPUT_HASH_PERSONALIZATION: &[u8; 16] = b"Zcash___TxInHash";
 const ZCASH_TRANSPARENT_AMOUNTS_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxTrAmountsHash";
@@ -138,17 +126,6 @@ fn has_sapling(pczt: &Pczt) -> bool {
 
 fn has_orchard(pczt: &Pczt) -> bool {
     !pczt.orchard().actions().is_empty()
-}
-
-#[cfg(zcash_unstable = "nu6.3")]
-fn has_ironwood(pczt: &Pczt) -> bool {
-    !pczt.ironwood().actions().is_empty()
-}
-
-#[cfg(zcash_unstable = "nu6.3")]
-fn is_v6(pczt: &Pczt) -> bool {
-    *pczt.global().tx_version() == V6_TX_VERSION
-        && *pczt.global().version_group_id() == V6_VERSION_GROUP_ID
 }
 
 fn digest_header(pczt: &Pczt, lock_time: u32) -> Hash {
@@ -250,36 +227,7 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
     };
     h.update(&value_balance.to_le_bytes());
 
-    #[cfg(zcash_unstable = "nu6.3")]
-    if !is_v6(pczt) {
-        h.update(pczt.orchard().anchor());
-    }
-    #[cfg(not(zcash_unstable = "nu6.3"))]
     h.update(pczt.orchard().anchor());
-
-    h.finalize()
-}
-
-#[cfg(zcash_unstable = "nu6.3")]
-fn digest_ironwood(pczt: &Pczt) -> Hash {
-    let mut h = hasher(ZCASH_IRONWOOD_HASH_PERSONALIZATION);
-    let mut ch = hasher(ZCASH_IRONWOOD_ACTIONS_COMPACT_HASH_PERSONALIZATION);
-    let mut mh = hasher(ZCASH_IRONWOOD_ACTIONS_MEMOS_HASH_PERSONALIZATION);
-    let mut nh = hasher(ZCASH_IRONWOOD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION);
-
-    update_orchard_style_action_digests!(pczt.ironwood(), ch, mh, nh);
-
-    h.update(ch.finalize().as_bytes());
-    h.update(mh.finalize().as_bytes());
-    h.update(nh.finalize().as_bytes());
-    h.update(&[*pczt.ironwood().flags()]);
-    let (magnitude, sign) = pczt.ironwood().value_sum();
-    let value_balance = if *sign {
-        -(*magnitude as i64)
-    } else {
-        *magnitude as i64
-    };
-    h.update(&value_balance.to_le_bytes());
 
     h.finalize()
 }
@@ -354,11 +302,6 @@ fn hash_orchard_txid_empty() -> Hash {
     hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION).finalize()
 }
 
-#[cfg(zcash_unstable = "nu6.3")]
-fn hash_ironwood_txid_empty() -> Hash {
-    hasher(ZCASH_IRONWOOD_HASH_PERSONALIZATION).finalize()
-}
-
 fn shielded_sig_commitment(pczt: &Pczt, lock_time: u32, input_info: Option<SignableInput>) -> Hash {
     let mut personal = [0; 16];
     personal[..12].copy_from_slice(ZCASH_TX_PERSONALIZATION_PREFIX);
@@ -376,27 +319,6 @@ fn shielded_sig_commitment(pczt: &Pczt, lock_time: u32, input_info: Option<Signa
         }
         .as_bytes(),
     );
-    #[cfg(zcash_unstable = "nu6.3")]
-    if is_v6(pczt) {
-        h.update(
-            if has_orchard(pczt) {
-                digest_orchard(pczt)
-            } else {
-                hash_orchard_txid_empty()
-            }
-            .as_bytes(),
-        );
-        h.update(
-            if has_ironwood(pczt) {
-                digest_ironwood(pczt)
-            } else {
-                hash_ironwood_txid_empty()
-            }
-            .as_bytes(),
-        );
-        return h.finalize();
-    }
-
     h.update(
         if has_orchard(pczt) {
             digest_orchard(pczt)
