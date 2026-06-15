@@ -228,7 +228,6 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
                 seed_fingerprint,
                 account_index,
                 ufvk.transparent(),
-                true,
                 bundle,
             )
             .map_err(pczt::roles::verifier::TransparentError::Custom)?;
@@ -326,15 +325,9 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 
     Verifier::new(pczt.clone())
         .with_transparent(|bundle| {
-            parsed_transparent = parse_transparent(
-                params,
-                seed_fingerprint,
-                account_index,
-                Some(xpub),
-                true,
-                bundle,
-            )
-            .map_err(pczt::roles::verifier::TransparentError::Custom)?;
+            parsed_transparent =
+                parse_transparent(params, seed_fingerprint, account_index, Some(xpub), bundle)
+                    .map_err(pczt::roles::verifier::TransparentError::Custom)?;
             Ok(())
         })
         .map_err(map_transparent_verifier_error)?;
@@ -398,31 +391,18 @@ fn parse_transparent<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: zip32::AccountId,
     xpub: Option<&AccountPubKey>,
-    validate_selected_account: bool,
     transparent: &transparent::pczt::Bundle,
 ) -> Result<Option<ParsedTransparent>, ZcashError> {
     let mut parsed_transparent = ParsedTransparent::new(vec![], vec![]);
     transparent.inputs().iter().try_for_each(|input| {
-        let parsed_from = parse_transparent_input(
-            params,
-            seed_fingerprint,
-            account_index,
-            xpub,
-            validate_selected_account,
-            input,
-        )?;
+        let parsed_from =
+            parse_transparent_input(params, seed_fingerprint, account_index, xpub, input)?;
         parsed_transparent.add_from(parsed_from);
         Ok::<_, ZcashError>(())
     })?;
     transparent.outputs().iter().try_for_each(|output| {
-        let parsed_to = parse_transparent_output(
-            params,
-            seed_fingerprint,
-            account_index,
-            xpub,
-            validate_selected_account,
-            output,
-        )?;
+        let parsed_to =
+            parse_transparent_output(params, seed_fingerprint, account_index, xpub, output)?;
         parsed_transparent.add_to(parsed_to);
         Ok::<_, ZcashError>(())
     })?;
@@ -438,7 +418,6 @@ fn parse_transparent_input<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: zip32::AccountId,
     xpub: Option<&AccountPubKey>,
-    validate_selected_account: bool,
     input: &transparent::pczt::Input,
 ) -> Result<ParsedFrom, ZcashError> {
     let script = input.script_pubkey().clone();
@@ -467,12 +446,9 @@ fn parse_transparent_input<P: consensus::Parameters>(
                             "input",
                         )?,
                         None if seed_fingerprint == bip32_derivation.seed_fingerprint() => {
-                            if validate_selected_account {
-                                return Err(ZcashError::InvalidDataError(
-                                    "transparent xpub is not present".to_string(),
-                                ));
-                            }
-                            true
+                            return Err(ZcashError::InvalidDataError(
+                                "transparent xpub is not present".to_string(),
+                            ));
                         }
                         None => false,
                     },
@@ -498,7 +474,6 @@ fn parse_transparent_output<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: zip32::AccountId,
     xpub: Option<&AccountPubKey>,
-    validate_selected_account: bool,
     output: &transparent::pczt::Output,
 ) -> Result<ParsedTo, ZcashError> {
     let script = output.script_pubkey().clone();
@@ -528,12 +503,9 @@ fn parse_transparent_output<P: consensus::Parameters>(
                             "output",
                         )?,
                         None if seed_fingerprint == bip32_derivation.seed_fingerprint() => {
-                            if validate_selected_account {
-                                return Err(ZcashError::InvalidDataError(
-                                    "transparent xpub is not present".to_string(),
-                                ));
-                            }
-                            true
+                            return Err(ZcashError::InvalidDataError(
+                                "transparent xpub is not present".to_string(),
+                            ));
                         }
                         None => false,
                     },
@@ -1010,7 +982,6 @@ mod tests {
             &seed_fingerprint,
             zip32::AccountId::ZERO,
             None,
-            false,
             &output,
         )
         .unwrap();
