@@ -41,20 +41,20 @@ chacha20poly1305 = { version = "0.10.1", default-features = false, features = [
 ] }
 postcard = { version = "1.0.3", features = ["alloc"] }
 getset = { version = "0.1.3" }
-orchard = { git = "https://github.com/valargroup/qr_orchard", rev = "3d83aa6dc36c5e7af9c385ab0af579609d327254", default-features = false, optional = true }
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false }
+orchard = { git = "https://github.com/valargroup/qr_orchard", rev = "acabbab68ff7607819fe135c47d936bbb77fdb4a", default-features = false, optional = true }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false }
 serde = { workspace = true }
 serde_with = { version = "3.11.0", features = [
     "alloc",
     "macros",
 ], default-features = false }
-transparent = { package = "zcash_transparent", git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false, features = [
+transparent = { package = "zcash_transparent", git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false, features = [
     "transparent-inputs",
 ] }
-zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false }
-zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false }
-zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false }
-zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false }
+zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false }
+zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false }
+zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false }
+zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false }
 zip32 = { version = "0.2", default-features = false }
 rust_tools = { workspace = true }
 #zcash end
@@ -65,7 +65,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [dev-dependencies]
-transparent = { package = "zcash_transparent", git = "https://github.com/valargroup/librustzcash", rev = "1fabddc76bad1d0deeb9b6beba124c916cfb7c06", default-features = false, features = [
+transparent = { package = "zcash_transparent", git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false, features = [
     "transparent-inputs",
     "test-dependencies",
 ] }
