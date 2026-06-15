@@ -137,7 +137,6 @@ pub unsafe extern "C" fn parse_zcash_tx_cypherpunk(
     tx: PtrUR,
     ufvk: PtrString,
     seed_fingerprint: PtrBytes,
-    account_index: u32,
 ) -> Ptr<TransactionParseResult<DisplayPczt>> {
     let pczt = extract_ptr_with_type!(tx, ZcashPczt);
     let ufvk_text = unsafe { recover_c_char(ufvk) };
@@ -148,7 +147,7 @@ pub unsafe extern "C" fn parse_zcash_tx_cypherpunk(
         &pczt.get_data(),
         &ufvk_text,
         seed_fingerprint,
-        account_index,
+        0,
     ) {
         Ok(pczt) => TransactionParseResult::success(DisplayPczt::from(&pczt).c_ptr()).c_ptr(),
         Err(e) => TransactionParseResult::from(e).c_ptr(),
@@ -184,11 +183,10 @@ pub unsafe extern "C" fn sign_zcash_tx(
     tx: PtrUR,
     seed: PtrBytes,
     seed_len: u32,
-    account_index: u32,
 ) -> *mut UREncodeResult {
     let pczt = extract_ptr_with_type!(tx, ZcashPczt);
     let mut seed = extract_array_mut!(seed, u8, seed_len as usize);
-    let result = match app_zcash::sign_pczt(&pczt.get_data(), seed, account_index) {
+    let result = match app_zcash::sign_pczt(&pczt.get_data(), seed, 0) {
         Ok(pczt) => match ZcashPczt::new(pczt).try_into() {
             Err(e) => UREncodeResult::from(e).c_ptr(),
             Ok(v) => UREncodeResult::encode(
