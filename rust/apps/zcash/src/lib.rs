@@ -478,6 +478,8 @@ fn signable_shielded_actions<P: consensus::Parameters>(
         reject_unsupported_batch_pczt(&pczt)?;
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
+    let should_process_ironwood = pczt::pczt_should_process_ironwood(&pczt);
     let mut actions = Vec::new();
     let verifier = Verifier::new(pczt)
         .with_orchard::<ZcashError, _>(|bundle| {
@@ -494,19 +496,23 @@ fn signable_shielded_actions<P: consensus::Parameters>(
         .map_err(map_shielded_verifier_error)?;
 
     #[cfg(zcash_unstable = "nu6.3")]
-    let verifier = verifier
-        .with_ironwood::<ZcashError, _>(|bundle| {
-            collect_signable_shielded_actions(
-                params,
-                bundle,
-                SignableShieldedPool::Ironwood,
-                seed_fingerprint,
-                account_index,
-                policy,
-                &mut actions,
-            )
-        })
-        .map_err(map_shielded_verifier_error)?;
+    let verifier = if should_process_ironwood {
+        verifier
+            .with_ironwood::<ZcashError, _>(|bundle| {
+                collect_signable_shielded_actions(
+                    params,
+                    bundle,
+                    SignableShieldedPool::Ironwood,
+                    seed_fingerprint,
+                    account_index,
+                    policy,
+                    &mut actions,
+                )
+            })
+            .map_err(map_shielded_verifier_error)?
+    } else {
+        verifier
+    };
     drop(verifier);
 
     Ok(actions)
@@ -519,6 +525,8 @@ fn ensure_shielded_actions_are_signed(
 ) -> Result<()> {
     use zcash_vendor::pczt::roles::verifier::Verifier;
 
+    #[cfg(zcash_unstable = "nu6.3")]
+    let should_process_ironwood = pczt::pczt_should_process_ironwood(&signed_pczt);
     let verifier = Verifier::new(signed_pczt)
         .with_orchard::<ZcashError, _>(|bundle| {
             ensure_actions_are_signed(bundle, SignableShieldedPool::Orchard, signable_actions)
@@ -526,11 +534,15 @@ fn ensure_shielded_actions_are_signed(
         .map_err(map_shielded_verifier_error)?;
 
     #[cfg(zcash_unstable = "nu6.3")]
-    let verifier = verifier
-        .with_ironwood::<ZcashError, _>(|bundle| {
-            ensure_actions_are_signed(bundle, SignableShieldedPool::Ironwood, signable_actions)
-        })
-        .map_err(map_shielded_verifier_error)?;
+    let verifier = if should_process_ironwood {
+        verifier
+            .with_ironwood::<ZcashError, _>(|bundle| {
+                ensure_actions_are_signed(bundle, SignableShieldedPool::Ironwood, signable_actions)
+            })
+            .map_err(map_shielded_verifier_error)?
+    } else {
+        verifier
+    };
     drop(verifier);
 
     Ok(())
