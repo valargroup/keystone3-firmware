@@ -541,7 +541,7 @@ pub unsafe extern "C" fn sign_zcash_tx(
     seed: PtrBytes,
     seed_len: u32,
 ) -> *mut UREncodeResult {
-    sign_zcash_tx_dynamic(tx, seed, seed_len, 0, FRAGMENT_MAX_LENGTH_DEFAULT)
+    sign_zcash_tx_dynamic(tx, seed, seed_len, FRAGMENT_MAX_LENGTH_DEFAULT)
 }
 
 #[no_mangle]
@@ -550,14 +550,13 @@ pub unsafe extern "C" fn sign_zcash_tx_unlimited(
     seed: PtrBytes,
     seed_len: u32,
 ) -> *mut UREncodeResult {
-    sign_zcash_tx_dynamic(tx, seed, seed_len, 0, FRAGMENT_UNLIMITED_LENGTH)
+    sign_zcash_tx_dynamic(tx, seed, seed_len, FRAGMENT_UNLIMITED_LENGTH)
 }
 
 unsafe fn sign_zcash_tx_dynamic(
     tx: PtrUR,
     seed: PtrBytes,
     seed_len: u32,
-    account_index: u32,
     max_fragment_length: usize,
 ) -> *mut UREncodeResult {
     let pczt = extract_ptr_with_type!(tx, ZcashPczt);
