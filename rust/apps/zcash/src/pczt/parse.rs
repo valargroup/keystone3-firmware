@@ -11,7 +11,10 @@ use zcash_vendor::{
     sha2::Sha256,
     transparent::{self, address::TransparentAddress},
     zcash_address::{ToAddress, ZcashAddress},
-    zcash_protocol::consensus::{self},
+    zcash_protocol::{
+        consensus::{self},
+        value::ZatBalance,
+    },
 };
 
 #[cfg(feature = "cypherpunk")]
@@ -78,17 +81,6 @@ fn format_zec_value(value: f64) -> String {
         .trim_end_matches('.')
         .to_string();
     format!("{zec_value} ZEC")
-}
-
-fn checked_format_zec_difference(
-    minuend: u64,
-    subtrahend: u64,
-    label: &str,
-) -> Result<String, ZcashError> {
-    let value = minuend
-        .checked_sub(subtrahend)
-        .ok_or_else(|| ZcashError::InvalidPczt(format!("{label} cannot be negative")))?;
-    Ok(format_zec_value(value as f64))
 }
 
 /// Attempts to decrypt the output with the given `ovk`, or (if `None`) directly via the
@@ -167,7 +159,7 @@ pub fn decode_output_enc_ciphertext(
 /// The function:
 /// 1. Parses Orchard and transparent components of the transaction
 /// 2. Calculates total input, output, and change values
-/// 3. Rejects unsupported Sapling spends and outputs before display
+/// 3. Handles Sapling pool interactions (though full Sapling decoding is not supported)
 /// 4. Computes transfer values and fees
 /// 5. Returns a structured representation of the transaction
 #[cfg(feature = "cypherpunk")]
@@ -266,12 +258,30 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
             .fold(0, |acc, to| acc + to.get_amount());
     }
 
-    let total_transfer_value = checked_format_zec_difference(
-        total_output_value,
-        total_change_value,
-        "total transfer value",
-    )?;
-    let fee_value = checked_format_zec_difference(total_input_value, total_output_value, "fee")?;
+    //treat all sapling output as output value since we don't support sapling decoding yet
+    //sapling value_sum can be trusted
+
+    let value_balance = (*pczt.sapling().value_sum())
+        .try_into()
+        .ok()
+        .and_then(|v| ZatBalance::from_i64(v).ok())
+        .ok_or(ZcashError::InvalidPczt(
+            "sapling value_sum is invalid".to_string(),
+        ))?;
+    let sapling_value_sum: i64 = value_balance.into();
+    if sapling_value_sum < 0 {
+        //value transfered to sapling pool
+        total_output_value = total_output_value.saturating_add(sapling_value_sum.unsigned_abs())
+    } else {
+        //value transfered from sapling pool
+        //this should not happen with Zashi.
+        total_input_value = total_input_value.saturating_add(sapling_value_sum as u64)
+    };
+
+    let total_transfer_value = format_zec_value((total_output_value - total_change_value) as f64);
+    let fee_value = format_zec_value((total_input_value - total_output_value) as f64);
+
+    let has_sapling = !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
 
     #[cfg(zcash_unstable = "nu6.3")]
     let parsed_ironwood = parsed_ironwood;
@@ -284,7 +294,7 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
         parsed_ironwood,
         total_transfer_value,
         fee_value,
-        false,
+        has_sapling,
     ))
 }
 #[cfg(feature = "multi_coins")]
@@ -328,12 +338,30 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
             .fold(0, |acc, to| acc + to.get_amount());
     }
 
-    let total_transfer_value = checked_format_zec_difference(
-        total_output_value,
-        total_change_value,
-        "total transfer value",
-    )?;
-    let fee_value = checked_format_zec_difference(total_input_value, total_output_value, "fee")?;
+    //treat all sapling output as output value since we don't support sapling decoding yet
+    //sapling value_sum can be trusted
+
+    let value_balance = (*pczt.sapling().value_sum())
+        .try_into()
+        .ok()
+        .and_then(|v| ZatBalance::from_i64(v).ok())
+        .ok_or(ZcashError::InvalidPczt(
+            "sapling value_sum is invalid".to_string(),
+        ))?;
+    let sapling_value_sum: i64 = value_balance.into();
+    if sapling_value_sum < 0 {
+        //value transfered to sapling pool
+        total_output_value = total_output_value.saturating_add(sapling_value_sum.unsigned_abs())
+    } else {
+        //value transfered from sapling pool
+        //this should not happen with Zashi.
+        total_input_value = total_input_value.saturating_add(sapling_value_sum as u64)
+    };
+
+    let total_transfer_value = format_zec_value((total_output_value - total_change_value) as f64);
+    let fee_value = format_zec_value((total_input_value - total_output_value) as f64);
+
+    let has_sapling = !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
 
     Ok(ParsedPczt::new(
         parsed_transparent,
@@ -341,7 +369,7 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
         None,
         total_transfer_value,
         fee_value,
-        false,
+        has_sapling,
     ))
 }
 
@@ -612,7 +640,7 @@ fn parse_orchard_output<P: consensus::Parameters>(
         match decode_output_enc_ciphertext(action, vk.as_ref())? {
             Some((note, address, memo)) => {
                 let zec_value = format_zec_value(note.value().inner() as f64);
-                let memo = decode_memo(memo)?;
+                let memo = decode_memo(memo);
 
                 // Check output recipient with decoded address here to save CPU
                 // if the address is not match, return error
@@ -767,7 +795,7 @@ mod legacy_tests {
 }
 
 #[cfg(feature = "cypherpunk")]
-fn decode_memo(memo_bytes: [u8; 512]) -> Result<Option<String>, ZcashError> {
+fn decode_memo(memo_bytes: [u8; 512]) -> Option<String> {
     let first = memo_bytes[0];
 
     //decode as utf8.
@@ -786,23 +814,21 @@ fn decode_memo(memo_bytes: [u8; 512]) -> Result<Option<String>, ZcashError> {
         }
         result.reverse();
 
-        return String::from_utf8(result)
-            .map(Some)
-            .map_err(|e| ZcashError::InvalidPczt(format!("memo is invalid UTF-8: {e:?}")));
+        return Some(String::from_utf8(result).unwrap());
     }
 
     if first == 0xF6 {
         let temp_memo = memo_bytes.to_vec();
         let result = temp_memo[1..].iter().find(|&&v| v != 0);
         match result {
-            Some(_v) => return Ok(Some(hex::encode(memo_bytes))),
+            Some(_v) => return Some(hex::encode(memo_bytes)),
             None => {
-                return Ok(None);
+                return None;
             }
         }
     }
 
-    Ok(Some(hex::encode(memo_bytes)))
+    Some(hex::encode(memo_bytes))
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -855,26 +881,16 @@ mod tests {
     }
 
     #[test]
-    fn test_checked_format_zec_difference_rejects_negative_values() {
-        let result = checked_format_zec_difference(100, 101, "fee");
-
-        assert!(matches!(
-            result,
-            Err(ZcashError::InvalidPczt(msg)) if msg == "fee cannot be negative"
-        ));
-    }
-
-    #[test]
     fn test_decode_memo() {
         {
             let mut memo = [0u8; 512];
             memo[0] = 0xF6;
-            let result = decode_memo(memo).unwrap();
+            let result = decode_memo(memo);
             assert_eq!(result, None);
         }
         {
             let memo = hex::decode("74657374206b657973746f6e65206d656d6f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap().try_into().unwrap();
-            let result = decode_memo(memo).unwrap();
+            let result = decode_memo(memo);
             assert!(result.is_some());
             assert_eq!(result.unwrap(), "test keystone memo");
         }
@@ -910,7 +926,7 @@ mod tests {
             let mut memo = [0u8; 512];
             memo[0] = 0xF6;
             memo[1] = 0x01;
-            let result = decode_memo(memo).unwrap();
+            let result = decode_memo(memo);
             assert!(result.is_some());
             let hex_str = result.unwrap();
             assert!(hex_str.starts_with("f6"));
@@ -918,7 +934,7 @@ mod tests {
         {
             let mut memo = [0u8; 512];
             memo[0] = 0xF5;
-            let result = decode_memo(memo).unwrap();
+            let result = decode_memo(memo);
             assert!(result.is_some());
         }
     }
@@ -969,7 +985,7 @@ mod tests {
     #[test]
     fn test_decode_memo_empty() {
         let memo = [0u8; 512];
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         let decoded = result.unwrap();
         assert!(decoded.is_empty());
@@ -978,7 +994,7 @@ mod tests {
     #[test]
     fn test_decode_memo_full_text() {
         let memo = [b'A'; 512];
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         let decoded = result.unwrap();
         assert_eq!(decoded.len(), 512);
@@ -989,23 +1005,9 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Hello World";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Hello World");
-    }
-
-    #[test]
-    fn test_decode_memo_rejects_invalid_utf8() {
-        let mut memo = [0u8; 512];
-        memo[0] = 0xF4;
-        memo[1] = 0xFF;
-
-        let result = decode_memo(memo);
-
-        assert!(matches!(
-            result,
-            Err(ZcashError::InvalidPczt(msg)) if msg.contains("memo is invalid UTF-8")
-        ));
     }
 
     #[test]
@@ -1013,7 +1015,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = "测试中文".as_bytes();
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "测试中文");
     }
@@ -1025,14 +1027,14 @@ mod tests {
         memo[0] = b'A';
         memo[1] = b'B';
         memo[2] = b'C';
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "ABC");
 
         // Test with 0xF5 (should use hex encoding)
         let mut memo = [0u8; 512];
         memo[0] = 0xF5;
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         let hex_str = result.unwrap();
         assert!(hex_str.starts_with("f5"));
@@ -1043,7 +1045,7 @@ mod tests {
         // Test 0xF6 marker with all zeros after it (should return None)
         let mut memo = [0u8; 512];
         memo[0] = 0xF6;
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert_eq!(result, None);
     }
 
@@ -1054,7 +1056,7 @@ mod tests {
         memo[0] = 0xF6;
         memo[1] = 0xFF;
         memo[2] = 0xAB;
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         let hex_str = result.unwrap();
         assert!(hex_str.starts_with("f6ff"));
@@ -1065,7 +1067,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Test!@#$%^&*()_+-=[]{}|;:',.<>?/`~";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Test!@#$%^&*()_+-=[]{}|;:',.<>?/`~");
     }
@@ -1103,7 +1105,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Line1\nLine2\tTabbed";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Line1\nLine2\tTabbed");
     }
@@ -1115,7 +1117,7 @@ mod tests {
         for i in 32..=126 {
             memo[i - 32] = i as u8;
         }
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         let decoded = result.unwrap();
         // Should decode all printable ASCII
@@ -1139,7 +1141,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Test123!@# ZEC Payment";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo).unwrap();
+        let result = decode_memo(memo);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Test123!@# ZEC Payment");
     }

@@ -159,7 +159,7 @@ fn ensure_strict_pczt_encoding(bytes: &[u8]) -> Result<(), ZcashError> {
 }
 
 pub(crate) fn validate_supported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
-    validate_supported_sapling(pczt)?;
+    validate_sapling_bundle_consistency(pczt)?;
 
     #[cfg(zcash_unstable = "nu6.3")]
     {
@@ -189,7 +189,7 @@ pub(crate) fn pczt_should_process_ironwood(pczt: &Pczt) -> bool {
     pczt_is_v6(pczt) || pczt_has_ironwood_actions(pczt)
 }
 
-fn validate_supported_sapling(pczt: &Pczt) -> Result<(), ZcashError> {
+fn validate_sapling_bundle_consistency(pczt: &Pczt) -> Result<(), ZcashError> {
     let value_balance = (*pczt.sapling().value_sum())
         .try_into()
         .ok()
@@ -201,13 +201,7 @@ fn validate_supported_sapling(pczt: &Pczt) -> Result<(), ZcashError> {
     let has_sapling_bundle =
         !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty();
 
-    if has_sapling_bundle {
-        return Err(ZcashError::InvalidPczt(
-            "Sapling spends and outputs are not supported".to_string(),
-        ));
-    }
-
-    if sapling_value_sum != 0 {
+    if !has_sapling_bundle && sapling_value_sum != 0 {
         return Err(ZcashError::InvalidPczt(
             "sapling value_sum must be zero when Sapling bundle is empty".to_string(),
         ));

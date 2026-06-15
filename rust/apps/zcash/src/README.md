@@ -19,10 +19,10 @@ The PCZT lifecycle consists of:
    For Keystone, the signing process is divided into three phases:
    1. Checking: We perform basic validation of transaction data. If a transaction is deemed potentially harmful at this stage, we abort the signing process and alert the user.
       - For Transparent bundles: We verify that input addresses match the `zip32derivation` declared in the PCZT
-      - For Sapling Bundles: We reject Sapling spends and outputs. Keystone does not display or sign Sapling data.
+      - For Sapling Bundles: We do not support checking for Sapling components
       - For Orchard Bundles: We verify the spend's `nullifier` and `rk`, as well as the output's `note_commitment`
    2. Parsing: We analyze the transaction data as thoroughly as possible and display the parsed transaction on the Keystone screen for user verification.
-      - For Sapling Bundles: Sapling spends and outputs are rejected before review because Keystone does not support Sapling display or signing.
+      - For Sapling Bundles: Although we don't support signing Sapling Spends, Sapling outputs are allowed in transactions, and we attempt to parse them as thoroughly as possible to ensure transaction amount information doesn't cause confusion
    3. Signing: When the user chooses to sign, we sign all spends in the PCZT that Keystone is capable of signing.
 3. Proving: The prover calculates proofs for each input in the PCZT, writes these proofs into the PCZT, and returns the proof-containing PCZT to the combinator. For Sapling Spends, proof generation requires signer participation, but Keystone lacks the necessary computational capacity, so it doesn't support Sapling spends.
 4. Combination: The combinator collects PCZTs from signers and provers, merges the signatures and proofs into a single PCZT, and passes the result to the tx_extractor.
@@ -45,3 +45,4 @@ From Keystone's perspective, we need a QR protocol to encode both the UFVK (Unif
 Protocol definition: [docs](/docs/protocols/ur_registrys/zcash.md)
 
 Protocol implementation: https://github.com/KeystoneHQ/keystone-sdk-rust/tree/master/libs/ur-registry/src/zcash
+
