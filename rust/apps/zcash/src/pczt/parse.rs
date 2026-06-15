@@ -182,9 +182,9 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
 ) -> Result<ParsedPczt, ZcashError> {
     super::validate_supported_pczt(pczt)?;
     let mut parsed_orchard = None;
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     let mut parsed_ironwood = None;
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     let should_process_ironwood = super::pczt_should_process_ironwood(pczt);
     let mut parsed_transparent = None;
 
@@ -202,7 +202,7 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
             Ok(())
         })
         .map_err(map_orchard_verifier_error)?;
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     let verifier = if should_process_ironwood {
         verifier
             .with_ironwood(|bundle| {
@@ -257,7 +257,7 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
             .iter()
             .fold(0, |acc, to| acc + to.get_amount());
     }
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     if let Some(ironwood) = &parsed_ironwood {
         total_change_value += ironwood
             .get_to()
@@ -297,9 +297,9 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     )?;
     let fee_value = checked_format_zec_difference(total_input_value, total_output_value, "fee")?;
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     let parsed_ironwood = parsed_ironwood;
-    #[cfg(not(zcash_unstable = "nu7"))]
+    #[cfg(not(zcash_unstable = "nu6.3"))]
     let parsed_ironwood = None;
 
     Ok(ParsedPczt::new(
@@ -380,7 +380,7 @@ pub fn parse_pczt_multi_coins<P: consensus::Parameters>(
 
 #[cfg(feature = "multi_coins")]
 fn reject_legacy_parse_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     {
         // The legacy multi-coins parser only displays transparent data. Reject
         // V6/Ironwood PCZTs instead of showing an incomplete transaction review.
@@ -835,11 +835,11 @@ mod legacy_tests {
         zcash_protocol::consensus::{BranchId, MainNetwork, NetworkConstants},
     };
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_parse_rejects_v6_pczt() {
         let pczt = Creator::new(
-            BranchId::Nu7.into(),
+            BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
             [0; 32],

@@ -159,9 +159,9 @@ pub fn sign_pczt(
 
 #[cfg(not(feature = "cypherpunk"))]
 fn reject_legacy_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     {
-        // The legacy helper below carries the pre-NU7 transparent sighash implementation.
+        // The legacy helper below carries the pre-NU6.3 transparent sighash implementation.
         // It must not be used for V6/Ironwood PCZTs.
         if super::pczt_requires_cypherpunk_support(pczt) {
             return Err(ZcashError::SigningError(
@@ -182,7 +182,7 @@ pub fn sign_pczt(
     let transparent_keys = collect_transparent_signing_keys(&pczt, seed, account_index)?;
     let orchard_keys =
         collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Orchard)?;
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     let ironwood_keys = if super::pczt_should_process_ironwood(&pczt) {
         collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Ironwood)?
     } else {
@@ -190,7 +190,7 @@ pub fn sign_pczt(
     };
 
     let signature_count = transparent_keys.len() + orchard_keys.len();
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     let signature_count = signature_count + ironwood_keys.len();
     if signature_count == 0 {
         return Err(ZcashError::PcztNoMyInputs);
@@ -211,7 +211,7 @@ pub fn sign_pczt(
         })?;
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     for (index, ask) in ironwood_keys {
         signer.sign_ironwood(index, &ask).map_err(|e| {
             ZcashError::SigningError(format!("failed to sign Ironwood action: {e:?}"))
@@ -239,7 +239,7 @@ fn stamp_and_redact(pczt: Pczt) -> Pczt {
     // signing response does not need. This keeps the QR round trip small while
     // preserving signatures and global proprietary fields for the wallet.
     let redactor = Redactor::new(stamped_pczt).redact_orchard_with(redact_orchard_bundle);
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     let redactor = redactor.redact_ironwood_with(redact_orchard_bundle);
 
     redactor
@@ -477,7 +477,7 @@ fn collect_transparent_signing_keys(
 #[derive(Clone, Copy)]
 enum ShieldedPool {
     Orchard,
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     Ironwood,
 }
 
@@ -486,7 +486,7 @@ impl ShieldedPool {
     fn label(self) -> &'static str {
         match self {
             ShieldedPool::Orchard => "Orchard",
-            #[cfg(zcash_unstable = "nu7")]
+            #[cfg(zcash_unstable = "nu6.3")]
             ShieldedPool::Ironwood => "Ironwood",
         }
     }
@@ -515,7 +515,7 @@ fn collect_orchard_signing_keys(
                 })
                 .map_err(SigningKeyCollectionError::into_zcash)?;
         }
-        #[cfg(zcash_unstable = "nu7")]
+        #[cfg(zcash_unstable = "nu6.3")]
         ShieldedPool::Ironwood => {
             if !super::pczt_should_process_ironwood(pczt) {
                 return Ok(keys);
@@ -611,11 +611,11 @@ mod tests {
     }
 
     fn signable_sample_pczt() -> crate::pczt::test_support::SamplePczt {
-        #[cfg(zcash_unstable = "nu7")]
+        #[cfg(zcash_unstable = "nu6.3")]
         {
             crate::pczt::test_support::sample_ironwood_pczt()
         }
-        #[cfg(not(zcash_unstable = "nu7"))]
+        #[cfg(not(zcash_unstable = "nu6.3"))]
         {
             crate::pczt::test_support::sample_pczt_to_transparent()
         }
@@ -631,7 +631,7 @@ mod tests {
         assert!(matches!(result, Err(ZcashError::PcztNoMyInputs)));
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_sign_pczt_ironwood_spend() {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
@@ -739,7 +739,7 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_sign_pczt_orchard_spend_rejects_unsupported_zip32_path() {
@@ -762,7 +762,7 @@ mod tests {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_sign_pczt_ironwood_spend_rejects_unsupported_zip32_path() {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
@@ -784,7 +784,7 @@ mod tests {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_sign_pczt_ironwood_spend_ignores_dummy_zip32_metadata() {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
@@ -811,7 +811,7 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_sign_pczt_orchard_change_output_spend() {
         let sample = crate::pczt::test_support::sample_orchard_change_pczt();
@@ -832,7 +832,7 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_sign_pczt_orchard_spend_rejects_unselected_account() {
@@ -853,7 +853,7 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_sign_pczt_ironwood_spend_rejects_unselected_account() {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
@@ -988,11 +988,11 @@ mod legacy_tests {
         ));
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_signing_rejects_v6_pczt() {
         let pczt = Creator::new(
-            BranchId::Nu7.into(),
+            BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
             [0; 32],

@@ -26,15 +26,15 @@ serde_with = { version = "3.11.0", features = [
 
 [dev-dependencies]
 keystore = { path = "../../keystore" }
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
-zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "b3983b86035d6c625e6c97264e6412fa10c9d41d", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "288bc4e2b12fd720f972ad913bea441978380951", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
+zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "288bc4e2b12fd720f972ad913bea441978380951", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
 incrementalmerkletree = { version = "0.8.2", default-features = false }
 shardtree = "0.6.2"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(coverage_nightly)',
-    'cfg(zcash_unstable, values("nu7"))',
+    'cfg(zcash_unstable, values("nu6.3"))',
 ] }
 
 [features]

@@ -141,7 +141,7 @@ fn transparent_account_pubkey_from_xpub(
 
 #[cfg(feature = "multi_coins")]
 fn reject_legacy_check_unsupported_pczt(pczt: &Pczt) -> Result<()> {
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     {
         // The legacy multi-coins check path only verifies transparent data.
         // Reject V6/Ironwood PCZTs so check, parse, and sign enforce the same boundary.
@@ -331,11 +331,11 @@ mod legacy_tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_check_rejects_v6_pczt() {
         let pczt = Creator::new(
-            BranchId::Nu7.into(),
+            BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
             [0; 32],
@@ -404,7 +404,7 @@ mod tests {
         transparent: ::pczt::transparent::Bundle,
         sapling: SaplingBundleMirror,
         orchard: ::pczt::orchard::Bundle,
-        #[cfg(zcash_unstable = "nu7")]
+        #[cfg(zcash_unstable = "nu6.3")]
         ironwood: ::pczt::orchard::Bundle,
     }
 
@@ -514,7 +514,7 @@ mod tests {
         postcard::to_extend(&pczt, bytes).unwrap()
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     fn v5_pczt_with_ironwood_actions() -> Vec<u8> {
         let sample = pczt::test_support::sample_ironwood_pczt();
         let mut bytes = sample.bytes;
@@ -676,7 +676,7 @@ mod tests {
         assert_invalid_pczt_message(result, INVALID_PCZT_DATA_ERROR);
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     fn assert_unsupported_zip32_error<T: core::fmt::Debug>(result: Result<T>, pool_label: &str) {
         match result {
             Err(ZcashError::InvalidPczt(message))
@@ -686,7 +686,7 @@ mod tests {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     fn assert_unsupported_zip32_account_error<T: core::fmt::Debug>(
         result: Result<T>,
         pool_label: &str,
@@ -743,8 +743,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(zcash_unstable = "nu7", feature = "legacy_pczt_fixtures"))]
-    fn test_v5_pczt_without_ironwood_actions_remains_supported_under_nu7() {
+    #[cfg(all(zcash_unstable = "nu6.3", feature = "legacy_pczt_fixtures"))]
+    fn test_v5_pczt_without_ironwood_actions_remains_supported_under_nu6_3() {
         let sample = pczt::test_support::sample_orchard_spend_pczt();
         let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT must parse");
         assert_eq!(*pczt.global().tx_version(), constants::V5_TX_VERSION);
@@ -757,7 +757,7 @@ mod tests {
             &sample.seed_fingerprint,
             0,
         )
-        .expect("v5 Orchard PCZT should parse under NU7 when Ironwood is empty");
+        .expect("v5 Orchard PCZT should parse under NU6.3 when Ironwood is empty");
         check_pczt_cypherpunk(
             &MainNetwork,
             &sample.bytes,
@@ -765,21 +765,21 @@ mod tests {
             &sample.seed_fingerprint,
             0,
         )
-        .expect("v5 Orchard PCZT should check under NU7 when Ironwood is empty");
+        .expect("v5 Orchard PCZT should check under NU6.3 when Ironwood is empty");
 
         let signed = sign_pczt(&sample.bytes, &sample.seed, 0)
-            .expect("v5 Orchard PCZT should sign under NU7 when Ironwood is empty");
+            .expect("v5 Orchard PCZT should sign under NU6.3 when Ironwood is empty");
         let signed_pczt = Pczt::parse(&signed).expect("signed PCZT must parse");
         assert!(signed_pczt.ironwood().actions().is_empty());
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_pczt_ironwood_to_ironwood() {
         let sample = pczt::test_support::sample_ironwood_pczt();
         let seed_fingerprint = sample.seed_fingerprint;
         let parsed_pczt = parse_pczt_cypherpunk(
-            &pczt::test_support::Nu7Network,
+            &pczt::test_support::Nu6_3Network,
             &sample.bytes,
             &sample.ufvk_text,
             &seed_fingerprint,
@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(parsed_pczt.get_fee_value(), "0.0001 ZEC");
 
         check_pczt_cypherpunk(
-            &pczt::test_support::Nu7Network,
+            &pczt::test_support::Nu6_3Network,
             &sample.bytes,
             &sample.ufvk_text,
             &seed_fingerprint,
@@ -812,7 +812,7 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_check_reject_matching_fingerprint_unsupported_orchard_spend_zip32_path() {
@@ -863,12 +863,12 @@ mod tests {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_parse_and_check_reject_matching_fingerprint_unsupported_ironwood_spend_zip32_path() {
         let sample = pczt::test_support::sample_ironwood_pczt();
         let parsed_pczt = parse_pczt_cypherpunk(
-            &pczt::test_support::Nu7Network,
+            &pczt::test_support::Nu6_3Network,
             &sample.bytes,
             &sample.ufvk_text,
             &sample.seed_fingerprint,
@@ -892,7 +892,7 @@ mod tests {
 
             assert_unsupported_zip32_error(
                 parse_pczt_cypherpunk(
-                    &pczt::test_support::Nu7Network,
+                    &pczt::test_support::Nu6_3Network,
                     &pczt,
                     &sample.ufvk_text,
                     &sample.seed_fingerprint,
@@ -902,7 +902,7 @@ mod tests {
             );
             assert_unsupported_zip32_error(
                 check_pczt_cypherpunk(
-                    &pczt::test_support::Nu7Network,
+                    &pczt::test_support::Nu6_3Network,
                     &pczt,
                     &sample.ufvk_text,
                     &sample.seed_fingerprint,
@@ -913,7 +913,7 @@ mod tests {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_check_reject_matching_fingerprint_unselected_orchard_account() {
@@ -946,7 +946,7 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_parse_and_check_reject_matching_fingerprint_unselected_ironwood_account() {
         let sample = pczt::test_support::sample_ironwood_pczt();
@@ -958,7 +958,7 @@ mod tests {
 
         assert_unsupported_zip32_account_error(
             parse_pczt_cypherpunk(
-                &pczt::test_support::Nu7Network,
+                &pczt::test_support::Nu6_3Network,
                 &pczt,
                 &sample.ufvk_text,
                 &sample.seed_fingerprint,
@@ -968,7 +968,7 @@ mod tests {
         );
         assert_unsupported_zip32_account_error(
             check_pczt_cypherpunk(
-                &pczt::test_support::Nu7Network,
+                &pczt::test_support::Nu6_3Network,
                 &pczt,
                 &sample.ufvk_text,
                 &sample.seed_fingerprint,
@@ -978,7 +978,7 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     #[cfg(feature = "legacy_pczt_fixtures")]
     fn test_parse_and_check_ignore_dummy_orchard_spend_zip32_metadata() {
@@ -1019,7 +1019,7 @@ mod tests {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_parse_and_check_ignore_dummy_ironwood_spend_zip32_metadata() {
         let sample = pczt::test_support::sample_ironwood_pczt();
@@ -1034,7 +1034,7 @@ mod tests {
             );
 
             let parsed_pczt = parse_pczt_cypherpunk(
-                &pczt::test_support::Nu7Network,
+                &pczt::test_support::Nu6_3Network,
                 &pczt,
                 &sample.ufvk_text,
                 &sample.seed_fingerprint,
@@ -1049,7 +1049,7 @@ mod tests {
                 .unwrap()
                 .get_is_mine());
             check_pczt_cypherpunk(
-                &pczt::test_support::Nu7Network,
+                &pczt::test_support::Nu6_3Network,
                 &pczt,
                 &sample.ufvk_text,
                 &sample.seed_fingerprint,
@@ -1103,7 +1103,7 @@ mod tests {
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: Some(orchard::Anchor::empty_tree()),
-                #[cfg(zcash_unstable = "nu7")]
+                #[cfg(zcash_unstable = "nu6.3")]
                 ironwood_anchor: None,
             },
         );
@@ -1302,7 +1302,7 @@ mod tests {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_parse_check_and_sign_reject_v5_pczt_with_ironwood_actions() {
         let sample = pczt::test_support::sample_ironwood_pczt();
@@ -1310,7 +1310,7 @@ mod tests {
 
         assert_invalid_pczt_message(
             parse_pczt_cypherpunk(
-                &pczt::test_support::Nu7Network,
+                &pczt::test_support::Nu6_3Network,
                 &malformed_pczt,
                 &sample.ufvk_text,
                 &sample.seed_fingerprint,
@@ -1320,7 +1320,7 @@ mod tests {
         );
         assert_invalid_pczt_message(
             check_pczt_cypherpunk(
-                &pczt::test_support::Nu7Network,
+                &pczt::test_support::Nu6_3Network,
                 &malformed_pczt,
                 &sample.ufvk_text,
                 &sample.seed_fingerprint,

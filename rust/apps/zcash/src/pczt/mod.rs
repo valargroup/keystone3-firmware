@@ -100,7 +100,7 @@ struct PcztV1Zip32Derivation {
     derivation_path: Vec<u32>,
 }
 
-#[cfg(zcash_unstable = "nu7")]
+#[cfg(zcash_unstable = "nu6.3")]
 #[allow(dead_code)]
 #[derive(Deserialize)]
 struct PcztV2WithoutIronwood {
@@ -132,7 +132,7 @@ fn ensure_strict_pczt_encoding(bytes: &[u8]) -> Result<(), ZcashError> {
         PCZT_VERSION_2 => match postcard::take_from_bytes::<Pczt>(payload) {
             Ok((_, remaining)) => remaining,
             Err(err) => {
-                #[cfg(zcash_unstable = "nu7")]
+                #[cfg(zcash_unstable = "nu6.3")]
                 {
                     postcard::take_from_bytes::<PcztV2WithoutIronwood>(payload)
                         .map(|(_, remaining)| remaining)
@@ -141,7 +141,7 @@ fn ensure_strict_pczt_encoding(bytes: &[u8]) -> Result<(), ZcashError> {
                             ZcashError::InvalidPczt("invalid pczt data".to_string())
                         })?
                 }
-                #[cfg(not(zcash_unstable = "nu7"))]
+                #[cfg(not(zcash_unstable = "nu6.3"))]
                 {
                     let _ = err;
                     return Err(ZcashError::InvalidPczt("invalid pczt data".to_string()));
@@ -161,7 +161,7 @@ fn ensure_strict_pczt_encoding(bytes: &[u8]) -> Result<(), ZcashError> {
 pub(crate) fn validate_supported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
     validate_supported_sapling(pczt)?;
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     {
         if pczt_has_ironwood_actions(pczt) && !pczt_is_v6(pczt) {
             return Err(ZcashError::InvalidPczt(
@@ -173,18 +173,18 @@ pub(crate) fn validate_supported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
     Ok(())
 }
 
-#[cfg(zcash_unstable = "nu7")]
+#[cfg(zcash_unstable = "nu6.3")]
 pub(crate) fn pczt_has_ironwood_actions(pczt: &Pczt) -> bool {
     !pczt.ironwood().actions().is_empty()
 }
 
-#[cfg(zcash_unstable = "nu7")]
+#[cfg(zcash_unstable = "nu6.3")]
 pub(crate) fn pczt_is_v6(pczt: &Pczt) -> bool {
     *pczt.global().tx_version() == constants::V6_TX_VERSION
         && *pczt.global().version_group_id() == constants::V6_VERSION_GROUP_ID
 }
 
-#[cfg(zcash_unstable = "nu7")]
+#[cfg(zcash_unstable = "nu6.3")]
 pub(crate) fn pczt_should_process_ironwood(pczt: &Pczt) -> bool {
     pczt_is_v6(pczt) || pczt_has_ironwood_actions(pczt)
 }
@@ -316,7 +316,7 @@ pub(crate) fn matching_seed_selected_orchard_account(
 }
 
 #[cfg(all(
-    zcash_unstable = "nu7",
+    zcash_unstable = "nu6.3",
     any(feature = "multi_coins", not(feature = "cypherpunk"))
 ))]
 pub(crate) fn pczt_requires_cypherpunk_support(pczt: &zcash_vendor::pczt::Pczt) -> bool {
@@ -329,20 +329,20 @@ pub(crate) mod test_support {
 
     use ::pczt::roles::{creator::Creator, updater::Updater};
     use bitcoin::secp256k1::Secp256k1;
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     use incrementalmerkletree::Retention;
     use keystore::algorithms::zcash::{calculate_seed_fingerprint, derive_ufvk};
     use rand_core::OsRng;
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     use shardtree::{store::memory::MemoryShardStore, ShardTree};
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     use zcash_note_encryption::try_note_decryption;
     use zcash_primitives::transaction::{
         builder::{BuildConfig, Builder, PcztParts, PcztResult},
         fees::zip317,
         TxVersion,
     };
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     use zcash_vendor::zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade};
     use zcash_vendor::{
         orchard,
@@ -358,7 +358,7 @@ pub(crate) mod test_support {
     };
 
     #[cfg(feature = "legacy_pczt_fixtures")]
-    const PRE_NU7_ORCHARD_SAMPLE_HEIGHT: u32 = 2_000_000;
+    const PRE_NU6_3_ORCHARD_SAMPLE_HEIGHT: u32 = 2_000_000;
 
     pub(crate) struct SamplePczt {
         pub(crate) bytes: Vec<u8>,
@@ -369,25 +369,25 @@ pub(crate) mod test_support {
         pub(crate) transparent_recipient: String,
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     #[derive(Clone, Copy, Debug)]
-    pub(crate) struct Nu7Network;
+    pub(crate) struct Nu6_3Network;
 
-    #[cfg(zcash_unstable = "nu7")]
-    impl Parameters for Nu7Network {
+    #[cfg(zcash_unstable = "nu6.3")]
+    impl Parameters for Nu6_3Network {
         fn network_type(&self) -> NetworkType {
             NetworkType::Main
         }
 
         fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
             match nu {
-                NetworkUpgrade::Nu7 => Some(BlockHeight::from_u32(10)),
+                NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
                 _ => MainNetwork.activation_height(nu),
             }
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn unsupported_orchard_spend_paths() -> Vec<Vec<u32>> {
         vec![
             vec![
@@ -404,7 +404,7 @@ pub(crate) mod test_support {
         ]
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn orchard_spend_path_for_account(account_index: u32) -> Vec<u32> {
         vec![
             zip32::ChildIndex::hardened(32).index(),
@@ -473,7 +473,7 @@ pub(crate) mod test_support {
             .serialize()
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn ironwood_pczt_with_spend_derivation(
         bytes: &[u8],
         seed_fingerprint: [u8; 32],
@@ -497,7 +497,7 @@ pub(crate) mod test_support {
             .serialize()
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn ironwood_pczt_with_dummy_spend_derivation(
         bytes: &[u8],
         seed_fingerprint: [u8; 32],
@@ -535,7 +535,7 @@ pub(crate) mod test_support {
 
     #[cfg(feature = "legacy_pczt_fixtures")]
     pub(crate) fn sample_pczt_to_transparent() -> SamplePczt {
-        let params = Nu7Network;
+        let params = Nu6_3Network;
         let seed = [7u8; 32];
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
@@ -578,11 +578,11 @@ pub(crate) mod test_support {
         );
         let mut builder = Builder::new(
             &params,
-            PRE_NU7_ORCHARD_SAMPLE_HEIGHT.into(),
+            PRE_NU6_3_ORCHARD_SAMPLE_HEIGHT.into(),
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: Some(orchard::Anchor::empty_tree()),
-                #[cfg(zcash_unstable = "nu7")]
+                #[cfg(zcash_unstable = "nu6.3")]
                 ironwood_anchor: None,
             },
         );
@@ -677,7 +677,7 @@ pub(crate) mod test_support {
 
         let mut builder = Builder::new(
             &params,
-            PRE_NU7_ORCHARD_SAMPLE_HEIGHT.into(),
+            PRE_NU6_3_ORCHARD_SAMPLE_HEIGHT.into(),
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: Some(anchor),
@@ -733,9 +733,9 @@ pub(crate) mod test_support {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn sample_ironwood_pczt() -> SamplePczt {
-        let params = Nu7Network;
+        let params = Nu6_3Network;
         let seed = [7u8; 32];
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
@@ -845,7 +845,7 @@ pub(crate) mod test_support {
         }
     }
 
-    #[cfg(zcash_unstable = "nu7")]
+    #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn sample_orchard_change_pczt() -> SamplePczt {
         let params = MainNetwork;
         let seed = [7u8; 32];
@@ -912,7 +912,7 @@ pub(crate) mod test_support {
         let pczt = Creator::build_from_parts(PcztParts {
             params,
             version: TxVersion::V6,
-            consensus_branch_id: BranchId::Nu7,
+            consensus_branch_id: BranchId::Nu6_3,
             lock_time: 0,
             expiry_height: BlockHeight::from_u32(10_000_000),
             transparent: None,
@@ -1065,7 +1065,7 @@ pub(crate) mod legacy_test_support {
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: None,
-                #[cfg(zcash_unstable = "nu7")]
+                #[cfg(zcash_unstable = "nu6.3")]
                 ironwood_anchor: None,
             },
         );
