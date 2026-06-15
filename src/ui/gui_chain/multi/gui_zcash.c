@@ -35,12 +35,10 @@ void *GuiGetZcashGUIData(void)
     void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
     uint8_t sfp[32];
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
-    uint32_t zcash_account_index = 0;
 
     PtrT_TransactionParseResult_DisplayPczt parseResult = NULL;
     do {
 #ifdef WEB3_VERSION
-        char *xpub = GetCurrentAccountPublicKey(XPUB_TYPE_ZEC_TRANSPARENT_LEGACY);
         parseResult = parse_zcash_tx_multi_coins(data, sfp);
 #endif
 #ifdef CYPHERPUNK_VERSION
