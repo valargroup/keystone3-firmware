@@ -5,9 +5,10 @@ use alloc::{
 };
 
 use bitcoin::secp256k1;
-#[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
-use keystore::algorithms::secp256k1::get_public_key_by_seed;
-use keystore::algorithms::{secp256k1::get_private_key_by_seed, zcash::calculate_seed_fingerprint};
+use keystore::algorithms::{
+    secp256k1::{get_private_key_by_seed, get_public_key_by_seed},
+    zcash::calculate_seed_fingerprint,
+};
 use zcash_vendor::{
     pczt::{
         roles::{
@@ -17,18 +18,11 @@ use zcash_vendor::{
         },
         Pczt,
     },
-    transparent, zip32,
+    transparent,
 };
 
 #[cfg(feature = "cypherpunk")]
-use zcash_vendor::{
-    orchard,
-    pczt::roles::signer::Signer as RoleSigner,
-    ripemd::Ripemd160,
-    sha2::{Digest, Sha256},
-    transparent::{address::TransparentAddress, keys::AccountPrivKey},
-    zcash_protocol::consensus::MainNetwork,
-};
+use zcash_vendor::{orchard, pczt::roles::signer::Signer as RoleSigner};
 
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
 use zcash_vendor::{
@@ -103,7 +97,6 @@ impl From<zcash_vendor::pczt::orchard::BundleParseError> for SigningKeyCollectio
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
 struct SeedSigner<'a> {
     seed: &'a [u8],
-    account_index: zip32::AccountId,
 }
 
 #[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
@@ -119,7 +112,7 @@ impl LegacyPcztSigner for SeedSigner<'_> {
     where
         F: FnOnce(SignableInput) -> [u8; 32],
     {
-        if let Some(path) = transparent_key_path_for_input(self.seed, self.account_index, input)? {
+        if let Some(path) = transparent_key_path_for_input(self.seed, input)? {
             let sk = get_private_key_by_seed(self.seed, &path).map_err(|e| {
                 ZcashError::SigningError(format!("failed to get private key: {e:?}"))
             })?;
@@ -134,25 +127,15 @@ impl LegacyPcztSigner for SeedSigner<'_> {
 }
 
 #[cfg(not(feature = "cypherpunk"))]
-pub fn sign_pczt(
-    pczt: Pczt,
-    seed: &[u8],
-    account_index: zip32::AccountId,
-) -> crate::Result<Vec<u8>> {
+pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
     super::validate_supported_pczt(&pczt)?;
     reject_legacy_unsupported_pczt(&pczt)?;
 
     let signer = low_level_signer::Signer::new(pczt);
 
     #[cfg(feature = "multi_coins")]
-    let signer = pczt_ext::sign_transparent(
-        signer,
-        &SeedSigner {
-            seed,
-            account_index,
-        },
-    )
-    .map_err(|e| ZcashError::SigningError(e.to_string()))?;
+    let signer = pczt_ext::sign_transparent(signer, &SeedSigner { seed })
+        .map_err(|e| ZcashError::SigningError(e.to_string()))?;
 
     Ok(stamp_and_redact(signer.finish()).serialize())
 }
@@ -173,18 +156,13 @@ fn reject_legacy_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
 }
 
 #[cfg(feature = "cypherpunk")]
-pub fn sign_pczt(
-    pczt: Pczt,
-    seed: &[u8],
-    account_index: zip32::AccountId,
-) -> crate::Result<Vec<u8>> {
+pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
     super::validate_supported_pczt(&pczt)?;
-    let transparent_keys = collect_transparent_signing_keys(&pczt, seed, account_index)?;
-    let orchard_keys =
-        collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Orchard)?;
+    let transparent_keys = collect_transparent_signing_keys(&pczt, seed)?;
+    let orchard_keys = collect_orchard_signing_keys(&pczt, seed, ShieldedPool::Orchard)?;
     #[cfg(zcash_unstable = "nu6.3")]
     let ironwood_keys = if super::pczt_should_process_ironwood(&pczt) {
-        collect_orchard_signing_keys(&pczt, seed, account_index, ShieldedPool::Ironwood)?
+        collect_orchard_signing_keys(&pczt, seed, ShieldedPool::Ironwood)?
     } else {
         Vec::new()
     };
@@ -310,10 +288,12 @@ fn redact_orchard_bundle(mut r: OrchardRedactor<'_>) {
     r.clear_bsk();
 }
 
-#[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
+#[cfg(any(
+    feature = "cypherpunk",
+    all(feature = "multi_coins", not(feature = "cypherpunk"))
+))]
 fn transparent_key_path_for_input(
     seed: &[u8],
-    account_index: zip32::AccountId,
     input: &transparent::pczt::Input,
 ) -> Result<Option<String>, ZcashError> {
     let fingerprint =
@@ -323,13 +303,6 @@ fn transparent_key_path_for_input(
         let path_fingerprint = *path.seed_fingerprint();
         if fingerprint != path_fingerprint {
             continue;
-        }
-
-        if !legacy_transparent_path_matches_selected_account(path.derivation_path(), account_index)?
-        {
-            return Err(ZcashError::InvalidPczt(
-                "transparent input bip32 derivation path invalid".to_string(),
-            ));
         }
 
         let path = {
@@ -354,113 +327,16 @@ fn transparent_key_path_for_input(
     Ok(None)
 }
 
-#[cfg(all(feature = "multi_coins", not(feature = "cypherpunk")))]
-fn legacy_transparent_path_matches_selected_account(
-    path: &[zcash_vendor::bip32::ChildNumber],
-    account_index: zip32::AccountId,
-) -> Result<bool, ZcashError> {
-    let unsupported_path =
-        || ZcashError::InvalidPczt("transparent input bip32 derivation path invalid".to_string());
-
-    let [purpose, coin_type, account, ..] = path else {
-        return Err(unsupported_path());
-    };
-
-    if !purpose.is_hardened()
-        || purpose.index() != 44
-        || !coin_type.is_hardened()
-        || coin_type.index() != 133
-        || !account.is_hardened()
-    {
-        return Err(unsupported_path());
-    }
-
-    zip32::AccountId::try_from(account.index())
-        .map(|path_account| path_account == account_index)
-        .map_err(|_| unsupported_path())
-}
-
-#[cfg(feature = "cypherpunk")]
-fn transparent_derivation_path_string(path: &[zcash_vendor::bip32::ChildNumber]) -> String {
-    let mut ret = "m".to_string();
-    for i in path.iter() {
-        if i.is_hardened() {
-            ret.push_str(&format!("/{}'", i.index()));
-        } else {
-            ret.push_str(&format!("/{}", i.index()));
-        }
-    }
-    ret
-}
-
-#[cfg(feature = "cypherpunk")]
-fn transparent_key_path_for_selected_account(
-    seed: &[u8],
-    account_index: zip32::AccountId,
-    input: &transparent::pczt::Input,
-) -> Result<Option<String>, ZcashError> {
-    let fingerprint =
-        calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
-    let params = MainNetwork;
-    let account = AccountPrivKey::from_seed(&params, seed, account_index).map_err(|e| {
-        ZcashError::SigningError(format!("failed to derive transparent account key: {e:?}"))
-    })?;
-    let xpub = account.to_account_pubkey();
-
-    for (pubkey, derivation) in input.bip32_derivation().iter() {
-        if fingerprint != *derivation.seed_fingerprint() {
-            continue;
-        }
-
-        let target = xpub
-            .derive_pubkey_at_bip32_path(&params, account_index, derivation.derivation_path())
-            .map_err(|_| {
-                ZcashError::InvalidPczt(
-                    "transparent input bip32 derivation path invalid".to_string(),
-                )
-            })?;
-        if &target.serialize() != pubkey {
-            return Err(ZcashError::InvalidPczt(
-                "transparent input script pubkey mismatch".to_string(),
-            ));
-        }
-
-        match TransparentAddress::from_script_from_chain(&input.script_pubkey().clone()) {
-            Some(TransparentAddress::PublicKeyHash(hash)) => {
-                if hash[..] != Ripemd160::digest(Sha256::digest(pubkey))[..] {
-                    return Err(ZcashError::InvalidPczt(
-                        "transparent input script pubkey mismatch".to_string(),
-                    ));
-                }
-            }
-            _ => {
-                return Err(ZcashError::InvalidPczt(
-                    "transparent input script pubkey is not a public key hash".to_string(),
-                ))
-            }
-        }
-
-        return Ok(Some(transparent_derivation_path_string(
-            derivation.derivation_path(),
-        )));
-    }
-
-    Ok(None)
-}
-
 #[cfg(feature = "cypherpunk")]
 fn collect_transparent_signing_keys(
     pczt: &Pczt,
     seed: &[u8],
-    account_index: zip32::AccountId,
 ) -> Result<Vec<(usize, secp256k1::SecretKey)>, ZcashError> {
     let mut keys = Vec::new();
     low_level_signer::Signer::new(pczt.clone())
         .sign_transparent_with(|_pczt, bundle, _tx_modifiable| {
             for (index, input) in bundle.inputs_mut().iter().enumerate() {
-                if let Some(path) =
-                    transparent_key_path_for_selected_account(seed, account_index, input)?
-                {
+                if let Some(path) = transparent_key_path_for_input(seed, input)? {
                     let sk = get_private_key_by_seed(seed, &path).map_err(|e| {
                         ZcashError::SigningError(format!("failed to get private key: {e:?}"))
                     })?;
@@ -496,7 +372,6 @@ impl ShieldedPool {
 fn collect_orchard_signing_keys(
     pczt: &Pczt,
     seed: &[u8],
-    account_index: zip32::AccountId,
     pool: ShieldedPool,
 ) -> Result<Vec<(usize, orchard::keys::SpendAuthorizingKey)>, ZcashError> {
     let mut keys = Vec::new();
@@ -505,13 +380,7 @@ fn collect_orchard_signing_keys(
         ShieldedPool::Orchard => {
             low_level_signer::Signer::new(pczt.clone())
                 .sign_orchard_with(|_pczt, bundle, _tx_modifiable| {
-                    collect_orchard_bundle_signing_keys(
-                        &mut keys,
-                        seed,
-                        account_index,
-                        pool,
-                        bundle,
-                    )
+                    collect_orchard_bundle_signing_keys(&mut keys, seed, pool, bundle)
                 })
                 .map_err(SigningKeyCollectionError::into_zcash)?;
         }
@@ -522,13 +391,7 @@ fn collect_orchard_signing_keys(
             }
             low_level_signer::Signer::new(pczt.clone())
                 .sign_ironwood_with(|_pczt, bundle, _tx_modifiable| {
-                    collect_orchard_bundle_signing_keys(
-                        &mut keys,
-                        seed,
-                        account_index,
-                        pool,
-                        bundle,
-                    )
+                    collect_orchard_bundle_signing_keys(&mut keys, seed, pool, bundle)
                 })
                 .map_err(SigningKeyCollectionError::into_zcash)?;
         }
@@ -541,7 +404,6 @@ fn collect_orchard_signing_keys(
 fn collect_orchard_bundle_signing_keys(
     keys: &mut Vec<(usize, orchard::keys::SpendAuthorizingKey)>,
     seed: &[u8],
-    account_index: zip32::AccountId,
     pool: ShieldedPool,
     bundle: &mut orchard::pczt::Bundle,
 ) -> Result<(), SigningKeyCollectionError> {
@@ -564,9 +426,7 @@ fn collect_orchard_bundle_signing_keys(
         if action.spend().value().is_none() {
             continue;
         }
-        if let Some(ask) =
-            spend_authorizing_key_for_action(seed, account_index, action, pool_label)?
-        {
+        if let Some(ask) = spend_authorizing_key_for_action(seed, action, pool_label)? {
             keys.push((index, ask));
         }
     }
@@ -576,21 +436,20 @@ fn collect_orchard_bundle_signing_keys(
 #[cfg(feature = "cypherpunk")]
 fn spend_authorizing_key_for_action(
     seed: &[u8],
-    account_index: zip32::AccountId,
     action: &orchard::pczt::Action,
     pool_label: &str,
 ) -> Result<Option<orchard::keys::SpendAuthorizingKey>, ZcashError> {
     let fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
-    if !super::matching_seed_selected_orchard_account(
+    let Some(account_index) = super::matching_seed_supported_orchard_account(
         &fingerprint,
         action.spend().zip32_derivation().as_ref(),
         133,
-        account_index,
         pool_label,
-    )? {
+    )?
+    else {
         return Ok(None);
-    }
+    };
 
     let osk =
         orchard::keys::SpendingKey::from_zip32_seed(seed, 133, account_index).map_err(|e| {
@@ -622,7 +481,7 @@ mod tests {
         let pczt = Pczt::parse(&sample.bytes).unwrap();
         let mismatched_seed = [9u8; 32];
 
-        let result = sign_pczt(pczt, &mismatched_seed, zip32::AccountId::ZERO);
+        let result = sign_pczt(pczt, &mismatched_seed);
         assert!(matches!(result, Err(ZcashError::PcztNoMyInputs)));
     }
 
@@ -652,8 +511,7 @@ mod tests {
             "v6 Ironwood spend signatures must not commit to the anchor"
         );
 
-        let signed_pczt_bytes = sign_pczt(pczt, &sample.seed, zip32::AccountId::ZERO)
-            .expect("Ironwood PCZT should sign");
+        let signed_pczt_bytes = sign_pczt(pczt, &sample.seed).expect("Ironwood PCZT should sign");
         let parsed = Pczt::parse(&signed_pczt_bytes).expect("signed PCZT must parse");
 
         let stamp = parsed
@@ -702,11 +560,7 @@ mod tests {
             );
 
             assert_invalid_pczt_message(
-                sign_pczt(
-                    Pczt::parse(&pczt).unwrap(),
-                    &sample.seed,
-                    zip32::AccountId::ZERO,
-                ),
+                sign_pczt(Pczt::parse(&pczt).unwrap(), &sample.seed),
                 "unsupported Ironwood spend ZIP 32 derivation path",
             );
         }
@@ -722,12 +576,8 @@ mod tests {
             crate::pczt::test_support::orchard_spend_path_for_account(1),
         );
 
-        let signed = sign_pczt(
-            Pczt::parse(&pczt).unwrap(),
-            &sample.seed,
-            zip32::AccountId::ZERO,
-        )
-        .expect("dummy spend ZIP 32 metadata must not block signing real spends");
+        let signed = sign_pczt(Pczt::parse(&pczt).unwrap(), &sample.seed)
+            .expect("dummy spend ZIP 32 metadata must not block signing real spends");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
         assert!(
             parsed
@@ -745,8 +595,8 @@ mod tests {
         let sample = crate::pczt::test_support::sample_orchard_change_pczt();
         let pczt = Pczt::parse(&sample.bytes).unwrap();
 
-        let signed = sign_pczt(pczt, &sample.seed, zip32::AccountId::ZERO)
-            .expect("Orchard change output spend should sign");
+        let signed =
+            sign_pczt(pczt, &sample.seed).expect("Orchard change output spend should sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
         let signed_actions = parsed
             .orchard()
@@ -757,26 +607,6 @@ mod tests {
         assert_eq!(
             signed_actions, 2,
             "real spend and wallet controlled zero value spend must be signed",
-        );
-    }
-
-    #[cfg(zcash_unstable = "nu6.3")]
-    #[test]
-    fn test_sign_pczt_ironwood_spend_rejects_unselected_account() {
-        let sample = crate::pczt::test_support::sample_ironwood_pczt();
-        let account_one_pczt = crate::pczt::test_support::ironwood_pczt_with_spend_derivation(
-            &sample.bytes,
-            sample.seed_fingerprint,
-            crate::pczt::test_support::orchard_spend_path_for_account(1),
-        );
-
-        assert_invalid_pczt_message(
-            sign_pczt(
-                Pczt::parse(&account_one_pczt).unwrap(),
-                &sample.seed,
-                zip32::AccountId::ZERO,
-            ),
-            "unsupported Ironwood spend ZIP 32 account index",
         );
     }
 
@@ -801,8 +631,7 @@ mod tests {
     #[test]
     fn firmware_equal_version_stamps_response() {
         let pczt = pczt_with_min_version(&KEYSTONE_FW_VERSION.encode());
-        let signed = sign_pczt(pczt, &test_seed(), zip32::AccountId::ZERO)
-            .expect("equal-version PCZT should sign");
+        let signed = sign_pczt(pczt, &test_seed()).expect("equal-version PCZT should sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
 
         let stamp = parsed
@@ -824,8 +653,7 @@ mod tests {
     #[test]
     fn firmware_older_min_version_still_stamps_response() {
         let pczt = pczt_with_min_version(&[1, 0, 0]);
-        let signed = sign_pczt(pczt, &test_seed(), zip32::AccountId::ZERO)
-            .expect("older-min PCZT should sign");
+        let signed = sign_pczt(pczt, &test_seed()).expect("older-min PCZT should sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
 
         let stamp = parsed
@@ -840,8 +668,8 @@ mod tests {
     #[test]
     fn malformed_min_version_round_trips_and_stamps() {
         let pczt = pczt_with_min_version(&[1, 2]);
-        let signed = sign_pczt(pczt, &test_seed(), zip32::AccountId::ZERO)
-            .expect("malformed min bytes must not block signing");
+        let signed =
+            sign_pczt(pczt, &test_seed()).expect("malformed min bytes must not block signing");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
 
         let stamp = parsed
@@ -868,38 +696,6 @@ mod legacy_tests {
         zcash_protocol::consensus::{BranchId, MainNetwork, NetworkConstants},
     };
 
-    #[test]
-    fn legacy_signing_rejects_unselected_transparent_account() {
-        let sample = crate::pczt::legacy_test_support::legacy_transparent_sample();
-
-        sign_pczt(
-            Pczt::parse(&sample.bytes).unwrap(),
-            &sample.seed,
-            zip32::AccountId::ZERO,
-        )
-        .expect("selected account PCZT should sign");
-
-        let account_one_pczt =
-            crate::pczt::legacy_test_support::legacy_transparent_pczt_with_input_derivation(
-                &sample.bytes,
-                sample.seed_fingerprint,
-                sample.input_pubkey,
-                crate::pczt::legacy_test_support::legacy_transparent_path_for_account(1),
-            );
-
-        let result = sign_pczt(
-            Pczt::parse(&account_one_pczt).unwrap(),
-            &sample.seed,
-            zip32::AccountId::ZERO,
-        );
-
-        assert!(matches!(
-            result,
-            Err(ZcashError::SigningError(msg))
-                if msg.contains("transparent input bip32 derivation path invalid")
-        ));
-    }
-
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_signing_rejects_v6_pczt() {
@@ -913,7 +709,7 @@ mod legacy_tests {
         .with_ironwood_anchor([1; 32])
         .build();
 
-        let result = sign_pczt(pczt, &[7u8; 32], zip32::AccountId::ZERO);
+        let result = sign_pczt(pczt, &[7u8; 32]);
 
         assert!(matches!(
             result,

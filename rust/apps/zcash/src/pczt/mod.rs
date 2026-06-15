@@ -290,31 +290,6 @@ pub(crate) fn matching_seed_supported_orchard_account(
         .map_err(|_| unsupported_path())
 }
 
-/// Returns whether a shielded spend belongs to the selected account. Matching
-/// seed fingerprints for any other supported account are invalid because the UI
-/// only reviews and signs the selected account.
-#[cfg(feature = "cypherpunk")]
-pub(crate) fn matching_seed_selected_orchard_account(
-    seed_fingerprint: &[u8; 32],
-    derivation: Option<&zcash_vendor::orchard::pczt::Zip32Derivation>,
-    coin_type: u32,
-    account_index: zcash_vendor::zip32::AccountId,
-    pool_label: &str,
-) -> Result<bool, crate::errors::ZcashError> {
-    match matching_seed_supported_orchard_account(
-        seed_fingerprint,
-        derivation,
-        coin_type,
-        pool_label,
-    )? {
-        Some(matching_account) if matching_account == account_index => Ok(true),
-        Some(_) => Err(crate::errors::ZcashError::InvalidPczt(alloc::format!(
-            "unsupported {pool_label} spend ZIP 32 account index"
-        ))),
-        None => Ok(false),
-    }
-}
-
 #[cfg(all(
     zcash_unstable = "nu6.3",
     any(feature = "multi_coins", not(feature = "cypherpunk"))
