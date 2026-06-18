@@ -774,14 +774,14 @@ mod legacy_tests {
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_parse_rejects_v6_pczt() {
-        let pczt = Creator::new(
+        let pczt = Creator::new_v6(
             BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
             [0; 32],
             [0; 32],
+            [1; 32],
         )
-        .with_ironwood_anchor([1; 32])
         .build();
 
         let result = parse_pczt_multi_coins(&MainNetwork, &[7u8; 32], &pczt);

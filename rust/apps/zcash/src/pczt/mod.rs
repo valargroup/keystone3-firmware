@@ -354,9 +354,9 @@ pub(crate) mod test_support {
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: None,
-                ironwood_anchor: Some(anchor),
             },
-        );
+        )
+        .with_ironwood_anchor(anchor);
         builder
             .add_ironwood_spend::<zip317::FeeRule>(orchard_fvk.clone(), note, merkle_path)
             .unwrap();
@@ -622,8 +622,6 @@ pub(crate) mod legacy_test_support {
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: None,
-                #[cfg(zcash_unstable = "nu6.3")]
-                ironwood_anchor: None,
             },
         );
         builder
