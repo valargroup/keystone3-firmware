@@ -26,8 +26,8 @@ serde_with = { version = "3.11.0", features = [
 
 [dev-dependencies]
 keystore = { path = "../../keystore" }
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "288bc4e2b12fd720f972ad913bea441978380951", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
-zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "288bc4e2b12fd720f972ad913bea441978380951", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "345c450abe91736c128de628f03a8723a34aa227", default-features = false, features = ["orchard", "sapling", "transparent", "zcp-builder"] }
+zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "345c450abe91736c128de628f03a8723a34aa227", default-features = false, features = ["circuits", "test-dependencies", "transparent-inputs"] }
 incrementalmerkletree = { version = "0.8.2", default-features = false }
 shardtree = "0.6.2"
 

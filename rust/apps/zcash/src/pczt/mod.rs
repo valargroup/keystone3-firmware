@@ -3,14 +3,7 @@ pub mod parse;
 pub mod sign;
 pub mod structs;
 
-use alloc::{
-    collections::BTreeMap,
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
-use serde::Deserialize;
-use serde_with::serde_as;
+use alloc::{format, string::ToString};
 use zcash_vendor::{
     pczt::Pczt,
     transparent,
@@ -20,142 +13,8 @@ use zcash_vendor::{
 
 use crate::errors::ZcashError;
 
-const PCZT_MAGIC_BYTES: &[u8] = b"PCZT";
-const PCZT_VERSION_1: u32 = 1;
-const PCZT_VERSION_2: u32 = 2;
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct PcztV1 {
-    global: zcash_vendor::pczt::common::Global,
-    transparent: zcash_vendor::pczt::transparent::Bundle,
-    sapling: zcash_vendor::pczt::sapling::Bundle,
-    orchard: PcztV1OrchardBundle,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct PcztV1OrchardBundle {
-    actions: Vec<PcztV1OrchardAction>,
-    flags: u8,
-    value_sum: (u64, bool),
-    anchor: [u8; 32],
-    zkproof: Option<Vec<u8>>,
-    bsk: Option<[u8; 32]>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct PcztV1OrchardAction {
-    cv_net: [u8; 32],
-    spend: PcztV1OrchardSpend,
-    output: PcztV1OrchardOutput,
-    rcv: Option<[u8; 32]>,
-}
-
-#[serde_as]
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct PcztV1OrchardSpend {
-    nullifier: [u8; 32],
-    rk: [u8; 32],
-    #[serde_as(as = "Option<[_; 64]>")]
-    spend_auth_sig: Option<[u8; 64]>,
-    #[serde_as(as = "Option<[_; 43]>")]
-    recipient: Option<[u8; 43]>,
-    value: Option<u64>,
-    rho: Option<[u8; 32]>,
-    rseed: Option<[u8; 32]>,
-    #[serde_as(as = "Option<[_; 96]>")]
-    fvk: Option<[u8; 96]>,
-    witness: Option<(u32, [[u8; 32]; 32])>,
-    alpha: Option<[u8; 32]>,
-    zip32_derivation: Option<PcztV1Zip32Derivation>,
-    dummy_sk: Option<[u8; 32]>,
-    proprietary: BTreeMap<String, Vec<u8>>,
-}
-
-#[serde_as]
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct PcztV1OrchardOutput {
-    cmx: [u8; 32],
-    ephemeral_key: [u8; 32],
-    enc_ciphertext: Vec<u8>,
-    out_ciphertext: Vec<u8>,
-    #[serde_as(as = "Option<[_; 43]>")]
-    recipient: Option<[u8; 43]>,
-    value: Option<u64>,
-    rseed: Option<[u8; 32]>,
-    ock: Option<[u8; 32]>,
-    zip32_derivation: Option<PcztV1Zip32Derivation>,
-    user_address: Option<String>,
-    proprietary: BTreeMap<String, Vec<u8>>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct PcztV1Zip32Derivation {
-    seed_fingerprint: [u8; 32],
-    derivation_path: Vec<u32>,
-}
-
-#[cfg(zcash_unstable = "nu6.3")]
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct PcztV2WithoutIronwood {
-    global: zcash_vendor::pczt::common::Global,
-    transparent: zcash_vendor::pczt::transparent::Bundle,
-    sapling: zcash_vendor::pczt::sapling::Bundle,
-    orchard: zcash_vendor::pczt::orchard::Bundle,
-}
-
 pub(crate) fn parse_pczt(bytes: &[u8]) -> Result<Pczt, ZcashError> {
-    ensure_strict_pczt_encoding(bytes)?;
     Pczt::parse(bytes).map_err(|_| ZcashError::InvalidPczt("invalid pczt data".to_string()))
-}
-
-fn ensure_strict_pczt_encoding(bytes: &[u8]) -> Result<(), ZcashError> {
-    if bytes.len() < 8 {
-        return Err(ZcashError::InvalidPczt("invalid pczt data".to_string()));
-    }
-    if &bytes[..4] != PCZT_MAGIC_BYTES {
-        return Err(ZcashError::InvalidPczt("invalid pczt data".to_string()));
-    }
-
-    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let payload = &bytes[8..];
-    let remaining = match version {
-        PCZT_VERSION_1 => postcard::take_from_bytes::<PcztV1>(payload)
-            .map(|(_, remaining)| remaining)
-            .map_err(|_| ZcashError::InvalidPczt("invalid pczt data".to_string()))?,
-        PCZT_VERSION_2 => match postcard::take_from_bytes::<Pczt>(payload) {
-            Ok((_, remaining)) => remaining,
-            Err(err) => {
-                #[cfg(zcash_unstable = "nu6.3")]
-                {
-                    postcard::take_from_bytes::<PcztV2WithoutIronwood>(payload)
-                        .map(|(_, remaining)| remaining)
-                        .map_err(|_| {
-                            let _ = err;
-                            ZcashError::InvalidPczt("invalid pczt data".to_string())
-                        })?
-                }
-                #[cfg(not(zcash_unstable = "nu6.3"))]
-                {
-                    let _ = err;
-                    return Err(ZcashError::InvalidPczt("invalid pczt data".to_string()));
-                }
-            }
-        },
-        _ => return Err(ZcashError::InvalidPczt("invalid pczt data".to_string())),
-    };
-
-    if remaining.is_empty() {
-        Ok(())
-    } else {
-        Err(ZcashError::InvalidPczt("invalid pczt data".to_string()))
-    }
 }
 
 pub(crate) fn validate_supported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
