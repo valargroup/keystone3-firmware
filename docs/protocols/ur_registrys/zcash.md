@@ -69,6 +69,13 @@ The 35-message limit is the current batch memory budget for `pczt-v1`. A full
 for request ids, message ids, or payloads. Revisit the limit if new message
 kinds or substantially larger payload encodings are added.
 
+The ZEC network is selected on Keystone by the persisted ZEC testnet menu toggle
+before scanning. Keystone uses that selected network for PCZT checking, parsing,
+and signing. The batch envelope `network` field remains `zcash-mainnet` in
+version 1 because the registry currently defines only that value. It is not used
+to enable testnet. When the registry defines a testnet value, firmware should
+reject envelopes that do not match the selected device network.
+
 Message kinds:
 
 ```cddl
@@ -93,7 +100,7 @@ signed = 0
 zcash-sign-batch = {
     1: uint,                 ; version. Must be 1.
     2: bytes,                ; request id. Echoed by zcash-sign-result.
-    3: uint,                 ; network. Must be zcash-mainnet.
+    3: uint,                 ; batch envelope network. Must be zcash-mainnet in version 1.
     4: [1*35 zcash-sign-message],
    ?11: bool,                ; atomic. Defaults to true. Must be true.
 }

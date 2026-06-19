@@ -21,7 +21,7 @@ bool g_reboot = false;
 bool g_otpProtect = false;
 
 // Comment out this macro if you need to retrieve data from the file
-// #define GET_QR_DATA_FROM_SCREEN
+#define GET_QR_DATA_FROM_SCREEN
 
 void OTP_PowerOn(void)
 {
@@ -552,7 +552,7 @@ int32_t prepare_qrcode()
 }
 
 #ifdef GET_QR_DATA_FROM_SCREEN
-#define SCREEN_QR_MAX_LOOP_COUNT 512
+#define SCREEN_QR_MAX_LOOP_COUNT 4096
 static struct URParseResult *urResult;
 static UrViewType_t viewType;
 static bool firstQrFlag = true;

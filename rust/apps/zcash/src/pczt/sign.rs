@@ -18,7 +18,7 @@ use zcash_vendor::{
         },
         Pczt,
     },
-    transparent,
+    transparent, zip32,
 };
 
 #[cfg(feature = "cypherpunk")]
@@ -439,22 +439,48 @@ fn spend_authorizing_key_for_action(
     action: &orchard::pczt::Action,
     pool_label: &str,
 ) -> Result<Option<orchard::keys::SpendAuthorizingKey>, ZcashError> {
+    const HARDENED_FLAG: u32 = 1 << 31;
+    const ZIP32_PURPOSE: u32 = 32;
+    const ZCASH_MAINNET_COIN_TYPE: u32 = 133;
+    const ZCASH_TESTNET_COIN_TYPE: u32 = 1;
+
     let fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
-    let Some(account_index) = super::matching_seed_supported_orchard_account(
-        &fingerprint,
-        action.spend().zip32_derivation().as_ref(),
-        133,
-        pool_label,
-    )?
-    else {
-        return Ok(None);
+    let derivation = match action.spend().zip32_derivation().as_ref() {
+        Some(derivation) if &fingerprint == derivation.seed_fingerprint() => derivation,
+        _ => return Ok(None),
     };
 
-    let osk =
-        orchard::keys::SpendingKey::from_zip32_seed(seed, 133, account_index).map_err(|e| {
-            ZcashError::SigningError(format!("failed to derive {pool_label} spending key: {e:?}"))
-        })?;
+    let unsupported_path = || {
+        ZcashError::InvalidPczt(alloc::format!(
+            "unsupported {pool_label} spend ZIP 32 derivation path"
+        ))
+    };
+    let [purpose, coin_type, path_account_index] = &derivation.derivation_path()[..] else {
+        return Err(unsupported_path());
+    };
+    if purpose != &zip32::ChildIndex::hardened(ZIP32_PURPOSE) {
+        return Err(unsupported_path());
+    }
+
+    let coin_type = coin_type
+        .index()
+        .checked_sub(HARDENED_FLAG)
+        .ok_or_else(unsupported_path)?;
+    if coin_type != ZCASH_MAINNET_COIN_TYPE && coin_type != ZCASH_TESTNET_COIN_TYPE {
+        return Err(unsupported_path());
+    }
+
+    let path_account_index = path_account_index
+        .index()
+        .checked_sub(HARDENED_FLAG)
+        .ok_or_else(unsupported_path)?;
+    let account_index =
+        zip32::AccountId::try_from(path_account_index).map_err(|_| unsupported_path())?;
+
+    let osk = orchard::keys::SpendingKey::from_zip32_seed(seed, coin_type, account_index).map_err(
+        |e| ZcashError::SigningError(format!("failed to derive {pool_label} spending key: {e:?}")),
+    )?;
     Ok(Some(orchard::keys::SpendAuthorizingKey::from(&osk)))
 }
 
@@ -475,6 +501,13 @@ mod tests {
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
+    fn unsupported_orchard_spend_paths_for_signing() -> Vec<Vec<u32>> {
+        crate::pczt::test_support::unsupported_orchard_spend_paths()
+            .into_iter()
+            .filter(|path| path.get(1) != Some(&zip32::ChildIndex::hardened(1).index()))
+            .collect()
+    }
+
     #[test]
     fn test_sign_pczt_invalid_seed_fingerprint() {
         let sample = signable_sample_pczt();
@@ -552,7 +585,7 @@ mod tests {
     #[test]
     fn test_sign_pczt_ironwood_spend_rejects_unsupported_zip32_path() {
         let sample = crate::pczt::test_support::sample_ironwood_pczt();
-        for path in crate::pczt::test_support::unsupported_orchard_spend_paths() {
+        for path in unsupported_orchard_spend_paths_for_signing() {
             let pczt = crate::pczt::test_support::ironwood_pczt_with_spend_derivation(
                 &sample.bytes,
                 sample.seed_fingerprint,
