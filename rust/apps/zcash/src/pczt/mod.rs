@@ -308,17 +308,12 @@ pub(crate) mod test_support {
         let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
             let mut orchard_builder = orchard::builder::Builder::new(
-                orchard::BundleProtocol::Ironwood,
+                orchard::BundleProtocol::IronwoodPostNu6_3,
+                orchard::builder::BundleType::DEFAULT,
                 orchard::Anchor::empty_tree(),
             );
             orchard_builder
-                .add_output_with_version(
-                    None,
-                    recipient,
-                    value,
-                    Memo::Empty.encode().into_bytes(),
-                    orchard::note::NoteVersion::V3,
-                )
+                .add_output(None, recipient, value, Memo::Empty.encode().into_bytes())
                 .unwrap();
             let (bundle, meta) = orchard_builder.build::<i64>(&mut OsRng).unwrap().unwrap();
             let action = bundle
@@ -354,9 +349,9 @@ pub(crate) mod test_support {
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: None,
+                ironwood_anchor: Some(anchor),
             },
-        )
-        .with_ironwood_anchor(anchor);
+        );
         builder
             .add_ironwood_spend::<zip317::FeeRule>(orchard_fvk.clone(), note, merkle_path)
             .unwrap();
@@ -418,8 +413,9 @@ pub(crate) mod test_support {
 
         let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
-            let mut orchard_builder = orchard::builder::Builder::new_coinbase(
-                orchard::BundleProtocol::Orchard,
+            let mut orchard_builder = orchard::builder::Builder::new(
+                orchard::BundleProtocol::OrchardPostNu6_3,
+                orchard::builder::BundleType::Coinbase,
                 orchard::Anchor::empty_tree(),
             );
             orchard_builder
@@ -453,7 +449,11 @@ pub(crate) mod test_support {
             (anchor.into(), merkle_path.into())
         };
 
-        let mut builder = orchard::builder::Builder::new(orchard::BundleProtocol::Orchard, anchor);
+        let mut builder = orchard::builder::Builder::new(
+            orchard::BundleProtocol::OrchardPostNu6_3,
+            orchard::builder::BundleType::DEFAULT,
+            anchor,
+        );
         builder
             .add_spend(orchard_fvk.clone(), note, merkle_path)
             .unwrap();
@@ -622,6 +622,7 @@ pub(crate) mod legacy_test_support {
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: None,
+                ironwood_anchor: None,
             },
         );
         builder
