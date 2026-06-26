@@ -204,9 +204,8 @@ pub(crate) mod test_support {
     #[cfg(zcash_unstable = "nu6.3")]
     use zcash_note_encryption::try_note_decryption;
     use zcash_primitives::transaction::{
-        builder::{BuildConfig, Builder, PcztParts, PcztResult},
+        builder::{BuildConfig, Builder, PcztResult},
         fees::zip317,
-        TxVersion,
     };
     #[cfg(zcash_unstable = "nu6.3")]
     use zcash_vendor::zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade};
@@ -215,7 +214,7 @@ pub(crate) mod test_support {
         pczt::Pczt,
         zcash_keys::keys::UnifiedFullViewingKey,
         zcash_protocol::{
-            consensus::{BranchId, MainNetwork, Parameters},
+            consensus::{MainNetwork, Parameters},
             memo::{Memo, MemoBytes},
             value::Zatoshis,
         },
@@ -347,7 +346,7 @@ pub(crate) mod test_support {
         let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
             let mut orchard_builder = orchard::builder::Builder::new(
-                orchard::BundleProtocol::IronwoodPostNu6_3,
+                orchard::bundle::BundlePoolRestrictions::IronwoodNu6_3Onward,
                 orchard::builder::BundleType::DEFAULT,
                 orchard::Anchor::empty_tree(),
             );
@@ -359,7 +358,7 @@ pub(crate) mod test_support {
                 .actions()
                 .get(meta.output_action_index(0).unwrap())
                 .unwrap();
-            let domain = orchard::note_encryption::OrchardDomain::for_action(action);
+            let domain = orchard::note_encryption::IronwoodDomain::for_action(action);
             let (note, _, _) =
                 try_note_decryption(&domain, &orchard_ivk.prepare(), action).unwrap();
             note
@@ -457,7 +456,7 @@ pub(crate) mod test_support {
         let value = orchard::value::NoteValue::from_raw(1_010_000);
         let note = {
             let mut orchard_builder = orchard::builder::Builder::new(
-                orchard::BundleProtocol::OrchardPostNu6_3,
+                orchard::bundle::BundlePoolRestrictions::OrchardNu6_2Only,
                 orchard::builder::BundleType::Coinbase,
                 orchard::Anchor::empty_tree(),
             );
@@ -548,9 +547,19 @@ pub(crate) mod test_support {
         }
     }
 
+    // An Orchard spend with an Orchard change output, in a v6 / Nu6_3 transaction. Built
+    // with the librustzcash `Builder` (`add_orchard_spend` + `add_orchard_change_output`,
+    // then `build_for_pczt`) like `sample_ironwood_pczt`, rather than hand-assembling the
+    // Orchard bundle and `Creator::build_from_parts`: the converged 30c4ea27 Orchard
+    // applies the `OrchardNu6_3Onward` pool restriction to v6 transactions, which rejects a
+    // hand-built `OrchardNu6_2Only` bundle. A change output is still permitted under
+    // `OrchardNu6_3Onward` because the bundle has a spend (cross-address is only disabled for
+    // output-only bundles). The change is sent to the external address with the external OVK
+    // so it decodes as an ordinary visible wallet output (not internal change), preserving
+    // the meaning of the tests that consume this fixture.
     #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn sample_orchard_change_pczt() -> SamplePczt {
-        let params = MainNetwork;
+        let params = Nu6_3Network;
         let seed = [7u8; 32];
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
@@ -563,7 +572,7 @@ pub(crate) mod test_support {
         let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
             let mut orchard_builder = orchard::builder::Builder::new(
-                orchard::BundleProtocol::OrchardPostNu6_3,
+                orchard::bundle::BundlePoolRestrictions::OrchardNu6_2Only,
                 orchard::builder::BundleType::Coinbase,
                 orchard::Anchor::empty_tree(),
             );
@@ -598,39 +607,41 @@ pub(crate) mod test_support {
             (anchor.into(), merkle_path.into())
         };
 
-        let mut builder = orchard::builder::Builder::new(
-            orchard::BundleProtocol::OrchardPostNu6_3,
-            orchard::builder::BundleType::DEFAULT,
-            anchor,
+        let mut builder = Builder::new(
+            &params,
+            10_000_000.into(),
+            BuildConfig::Standard {
+                sapling_anchor: None,
+                orchard_anchor: Some(anchor),
+                ironwood_anchor: None,
+            },
         );
         builder
-            .add_spend(orchard_fvk.clone(), note, merkle_path)
+            .add_orchard_spend::<zip317::FeeRule>(orchard_fvk.clone(), note, merkle_path)
             .unwrap();
         builder
-            .add_change_output(
+            .add_orchard_change_output::<zip317::FeeRule>(
                 orchard_fvk,
                 Some(orchard_ovk),
                 recipient,
-                orchard::value::NoteValue::from_raw(990_000),
-                Memo::Empty.encode().into_bytes(),
+                Zatoshis::const_from_u64(990_000),
+                MemoBytes::empty(),
             )
             .unwrap();
-        let (orchard_bundle, _) = builder.build_for_pczt(&mut OsRng).unwrap();
+        let PcztResult {
+            pczt_parts,
+            orchard_meta,
+            ..
+        } = builder
+            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .unwrap();
+        let spend_action_index = orchard_meta.spend_action_index(0).unwrap();
         let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
-        let pczt = Creator::build_from_parts(PcztParts {
-            params,
-            version: TxVersion::V6,
-            consensus_branch_id: BranchId::Nu6_3,
-            lock_time: 0,
-            expiry_height: BlockHeight::from_u32(10_000_000),
-            transparent: None,
-            sapling: None,
-            orchard: Some(orchard_bundle),
-            ironwood: None,
-        })
-        .unwrap();
-        let pczt = Updater::new(pczt)
+        let pczt = Updater::new(Creator::build_from_parts(pczt_parts).unwrap())
             .update_orchard_with(|mut bundle| {
+                // The real spend plus the wallet-controlled zero-value padding spend the
+                // builder adds to balance the change are the two non-dummy actions that this
+                // account signs.
                 let signing_action_indices = bundle
                     .bundle()
                     .actions()
@@ -641,6 +652,7 @@ pub(crate) mod test_support {
                     })
                     .collect::<Vec<_>>();
                 assert_eq!(signing_action_indices.len(), 2);
+                assert!(signing_action_indices.contains(&spend_action_index));
 
                 for action_index in signing_action_indices {
                     let derivation = orchard::pczt::Zip32Derivation::parse(

@@ -4,7 +4,9 @@ use alloc::{
     vec,
 };
 #[cfg(feature = "cypherpunk")]
-use zcash_note_encryption::{try_output_recovery_with_ovk, try_output_recovery_with_pkd_esk};
+use zcash_note_encryption::{
+    try_output_recovery_with_ovk, try_output_recovery_with_pkd_esk, ENC_CIPHERTEXT_SIZE,
+};
 use zcash_vendor::{
     pczt::{self, roles::verifier::Verifier, Pczt},
     ripemd::{Digest, Ripemd160},
@@ -21,7 +23,11 @@ use zcash_vendor::{
 use zcash_note_encryption::Domain;
 #[cfg(feature = "cypherpunk")]
 use zcash_vendor::orchard::{
-    self, keys::OutgoingViewingKey, note::Note, note_encryption::OrchardDomain, Address,
+    self,
+    keys::OutgoingViewingKey,
+    note::{Note, NoteVersion},
+    note_encryption::{IronwoodDomain, OrchardDomain},
+    Address,
 };
 #[cfg(feature = "cypherpunk")]
 use zcash_vendor::{
@@ -99,11 +105,45 @@ pub fn decode_output_enc_ciphertext(
     action: &orchard::pczt::Action,
     ovk: Option<&OutgoingViewingKey>,
 ) -> Result<Option<(Note, Address, [u8; 512])>, ZcashError> {
-    let domain = OrchardDomain::for_pczt_action(action);
+    // The note-encryption domain was split when Ironwood landed: Orchard (V2) notes use
+    // `OrchardDomain` and Ironwood (V3) notes use `IronwoodDomain` (the version policy
+    // gates which note-plaintext lead byte the trial decryption accepts). Pick the domain
+    // from the action's own note version so a V3 Ironwood output decrypts instead of
+    // failing as "undecryptable" under the Orchard-only policy.
+    match action.output().note_version() {
+        NoteVersion::V2 => {
+            decode_output_with_domain(&OrchardDomain::for_pczt_action(action), action, ovk)
+        }
+        NoteVersion::V3 => {
+            decode_output_with_domain(&IronwoodDomain::for_pczt_action(action), action, ovk)
+        }
+    }
+}
 
+/// Trial-decrypts an Orchard-shaped action's output under a concrete note-encryption
+/// `domain` (Orchard or Ironwood). Both domains share the same associated types, so the
+/// recovery logic is identical apart from the version policy baked into `domain`.
+#[cfg(feature = "cypherpunk")]
+fn decode_output_with_domain<D>(
+    domain: &D,
+    action: &orchard::pczt::Action,
+    ovk: Option<&OutgoingViewingKey>,
+) -> Result<Option<(Note, Address, [u8; 512])>, ZcashError>
+where
+    D: Domain<
+        Note = Note,
+        Recipient = Address,
+        Memo = [u8; 512],
+        OutgoingViewingKey = OutgoingViewingKey,
+        ValueCommitment = orchard::value::ValueCommitment,
+        DiversifiedTransmissionKey = orchard::keys::DiversifiedTransmissionKey,
+        EphemeralSecretKey = orchard::keys::EphemeralSecretKey,
+    >,
+    orchard::pczt::Action: zcash_note_encryption::ShieldedOutput<D, ENC_CIPHERTEXT_SIZE>,
+{
     if let Some(ovk) = ovk {
         Ok(try_output_recovery_with_ovk(
-            &domain,
+            domain,
             ovk,
             action,
             action.cv_net(),
@@ -137,10 +177,10 @@ pub fn decode_output_enc_ciphertext(
         .into_option()
         .ok_or_else(|| ZcashError::InvalidPczt("Orchard action contains invalid note".into()))?;
 
-        let pk_d = OrchardDomain::get_pk_d(&note);
-        let esk = OrchardDomain::derive_esk(&note).expect("Orchard notes are post-ZIP 212");
+        let pk_d = D::get_pk_d(&note);
+        let esk = D::derive_esk(&note).expect("Orchard notes are post-ZIP 212");
 
-        Ok(try_output_recovery_with_pkd_esk(&domain, pk_d, esk, action))
+        Ok(try_output_recovery_with_pkd_esk(domain, pk_d, esk, action))
     }
 }
 

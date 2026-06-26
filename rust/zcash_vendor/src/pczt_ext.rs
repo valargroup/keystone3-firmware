@@ -196,16 +196,63 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
     let mut nh = hasher(ZCASH_ORCHARD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION);
 
     for action in pczt.orchard().actions().iter() {
-        ch.update(action.spend().nullifier());
-        ch.update(action.output().cmx());
-        ch.update(action.output().ephemeral_key());
-        ch.update(&action.output().enc_ciphertext()[..52]);
+        ch.update(
+            action
+                .spend()
+                .nullifier()
+                .as_ref()
+                .expect("nullifier present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .cmx()
+                .as_ref()
+                .expect("cmx present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .ephemeral_key()
+                .as_ref()
+                .expect("ephemeral_key present after fill_derived_fields"),
+        );
+        ch.update(
+            &action
+                .output()
+                .enc_ciphertext()
+                .as_ref()
+                .expect("enc_ciphertext present after fill_derived_fields")[..52],
+        );
 
-        mh.update(&action.output().enc_ciphertext()[52..564]);
+        mh.update(
+            &action
+                .output()
+                .enc_ciphertext()
+                .as_ref()
+                .expect("enc_ciphertext present after fill_derived_fields")[52..564],
+        );
 
-        nh.update(action.cv_net());
-        nh.update(action.spend().rk());
-        nh.update(&action.output().enc_ciphertext()[564..]);
+        nh.update(
+            action
+                .cv_net()
+                .as_ref()
+                .expect("cv_net present after fill_derived_fields"),
+        );
+        nh.update(
+            action
+                .spend()
+                .rk()
+                .as_ref()
+                .expect("rk present after fill_derived_fields"),
+        );
+        nh.update(
+            &action
+                .output()
+                .enc_ciphertext()
+                .as_ref()
+                .expect("enc_ciphertext present after fill_derived_fields")[564..],
+        );
         nh.update(action.output().out_ciphertext());
     }
 
@@ -351,16 +398,63 @@ fn digest_orchard_shaped_v6(
     let mut nh = hasher(noncompact_personalization);
 
     for action in bundle.actions().iter() {
-        ch.update(action.spend().nullifier());
-        ch.update(action.output().cmx());
-        ch.update(action.output().ephemeral_key());
-        ch.update(&action.output().enc_ciphertext()[..52]);
+        ch.update(
+            action
+                .spend()
+                .nullifier()
+                .as_ref()
+                .expect("nullifier present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .cmx()
+                .as_ref()
+                .expect("cmx present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .ephemeral_key()
+                .as_ref()
+                .expect("ephemeral_key present after fill_derived_fields"),
+        );
+        ch.update(
+            &action
+                .output()
+                .enc_ciphertext()
+                .as_ref()
+                .expect("enc_ciphertext present after fill_derived_fields")[..52],
+        );
 
-        mh.update(&action.output().enc_ciphertext()[52..564]);
+        mh.update(
+            &action
+                .output()
+                .enc_ciphertext()
+                .as_ref()
+                .expect("enc_ciphertext present after fill_derived_fields")[52..564],
+        );
 
-        nh.update(action.cv_net());
-        nh.update(action.spend().rk());
-        nh.update(&action.output().enc_ciphertext()[564..]);
+        nh.update(
+            action
+                .cv_net()
+                .as_ref()
+                .expect("cv_net present after fill_derived_fields"),
+        );
+        nh.update(
+            action
+                .spend()
+                .rk()
+                .as_ref()
+                .expect("rk present after fill_derived_fields"),
+        );
+        nh.update(
+            &action
+                .output()
+                .enc_ciphertext()
+                .as_ref()
+                .expect("enc_ciphertext present after fill_derived_fields")[564..],
+        );
         nh.update(action.output().out_ciphertext());
     }
 

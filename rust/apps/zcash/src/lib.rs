@@ -666,9 +666,9 @@ mod tests {
         global: GlobalMirror,
         transparent: ::pczt::transparent::Bundle,
         sapling: SaplingBundleMirror,
-        orchard: ::pczt::orchard::Bundle,
+        orchard: OrchardBundleMirror,
         #[cfg(zcash_unstable = "nu6.3")]
-        ironwood: ::pczt::orchard::Bundle,
+        ironwood: OrchardBundleMirror,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -722,12 +722,78 @@ mod tests {
         derivation_path: Vec<u32>,
     }
 
+    // Mirror of the pczt crate's `v2` Orchard-shaped bundle wire format (the encoding
+    // `Pczt::serialize` emits for a fully-populated PCZT). It is kept in lock-step with that
+    // wire layout by hand because postcard encodes struct fields positionally with no names,
+    // so the mirror used to splice raw bytes must match field-for-field. This is NOT the live
+    // `::pczt::orchard::Bundle`: after Ironwood landed, the live action fields became
+    // `Option`-wrapped (v3-shaped) and gained a `note_version`, so the live type no longer
+    // decodes v2 action bytes. The `note_version` enum below is the real public
+    // `NotePlaintextVersion` (V2 for Orchard actions, V3 for Ironwood actions).
+    #[derive(Serialize, Deserialize)]
+    struct OrchardBundleMirror {
+        actions: Vec<OrchardActionMirror>,
+        flags: u8,
+        value_sum: (u64, bool),
+        anchor: [u8; 32],
+        zkproof: Option<Vec<u8>>,
+        bsk: Option<[u8; 32]>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct OrchardActionMirror {
+        cv_net: [u8; 32],
+        spend: OrchardSpendMirror,
+        output: OrchardOutputMirror,
+        rcv: Option<[u8; 32]>,
+    }
+
+    #[serde_with::serde_as]
+    #[derive(Serialize, Deserialize)]
+    struct OrchardSpendMirror {
+        nullifier: [u8; 32],
+        rk: [u8; 32],
+        #[serde_as(as = "Option<[_; 64]>")]
+        spend_auth_sig: Option<[u8; 64]>,
+        #[serde_as(as = "Option<[_; 43]>")]
+        recipient: Option<[u8; 43]>,
+        value: Option<u64>,
+        rho: Option<[u8; 32]>,
+        rseed: Option<[u8; 32]>,
+        note_version: ::pczt::orchard::NotePlaintextVersion,
+        #[serde_as(as = "Option<[_; 96]>")]
+        fvk: Option<[u8; 96]>,
+        witness: Option<(u32, [[u8; 32]; 32])>,
+        alpha: Option<[u8; 32]>,
+        zip32_derivation: Option<Zip32DerivationMirror>,
+        dummy_sk: Option<[u8; 32]>,
+        proprietary: BTreeMap<String, Vec<u8>>,
+    }
+
+    #[serde_with::serde_as]
+    #[derive(Serialize, Deserialize)]
+    struct OrchardOutputMirror {
+        cmx: [u8; 32],
+        note_version: ::pczt::orchard::NotePlaintextVersion,
+        ephemeral_key: [u8; 32],
+        enc_ciphertext: Vec<u8>,
+        out_ciphertext: Vec<u8>,
+        #[serde_as(as = "Option<[_; 43]>")]
+        recipient: Option<[u8; 43]>,
+        value: Option<u64>,
+        rseed: Option<[u8; 32]>,
+        ock: Option<[u8; 32]>,
+        zip32_derivation: Option<Zip32DerivationMirror>,
+        user_address: Option<String>,
+        proprietary: BTreeMap<String, Vec<u8>>,
+    }
+
     #[cfg(zcash_unstable = "nu6.3")]
     fn v5_pczt_with_ironwood_actions() -> Vec<u8> {
         let sample = pczt::test_support::sample_ironwood_pczt();
         let mut bytes = sample.bytes;
         let mut pczt: PcztMirror = postcard::from_bytes(&bytes[8..]).unwrap();
-        assert!(!pczt.ironwood.actions().is_empty());
+        assert!(!pczt.ironwood.actions.is_empty());
 
         pczt.global.tx_version = constants::V5_TX_VERSION;
         pczt.global.version_group_id = constants::V5_VERSION_GROUP_ID;
@@ -741,6 +807,26 @@ mod tests {
             result.unwrap_err(),
             ZcashError::InvalidPczt(expected.to_string())
         );
+    }
+
+    /// Reproduces what the wallet does with the device's signing response before it
+    /// postflights: combine the device's redacted response back into the wallet's own full
+    /// (pre-sign) PCZT via the pczt `Combiner`. `sign_pczt` strips every redactable field
+    /// from its response (the derived Orchard fields plus `recipient`), so the bare response
+    /// no longer parses on its own (`into_parsed` recompute needs `recipient`); the Combiner
+    /// refills those fields from `unsigned_full` while carrying through the response's
+    /// signatures. Returns the serialized combined PCZT to feed back as the "signed" input.
+    #[cfg(zcash_unstable = "nu6.3")]
+    fn combine_signed_response(unsigned_full: &[u8], redacted_response: &[u8]) -> Vec<u8> {
+        use zcash_vendor::pczt::roles::combiner::Combiner;
+
+        let unsigned_full = Pczt::parse(unsigned_full).expect("unsigned PCZT must parse");
+        let redacted_response =
+            Pczt::parse(redacted_response).expect("redacted response must parse");
+        Combiner::new(alloc::vec![unsigned_full, redacted_response])
+            .combine()
+            .expect("redacted response must recombine with the original full PCZT")
+            .serialize()
     }
 
     fn malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum() -> Vec<u8> {
@@ -1216,11 +1302,14 @@ mod tests {
     fn test_batch_postflight_confirms_orchard_signature() {
         let sample = pczt::test_support::sample_orchard_change_pczt();
         let signed = sign_pczt(&sample.bytes, &sample.seed).expect("Orchard PCZT should sign");
+        // The wallet recombines the redacted device response with its full PCZT before
+        // postflighting; the bare response is intentionally not parseable on its own.
+        let combined = combine_signed_response(&sample.bytes, &signed);
 
         ensure_signable_shielded_actions_are_signed(
             &pczt::test_support::Nu6_3Network,
             &sample.bytes,
-            &signed,
+            &combined,
             &sample.seed_fingerprint,
             0,
         )
@@ -1245,10 +1334,11 @@ mod tests {
         ));
 
         let signed = sign_pczt(&sample.bytes, &sample.seed).expect("Orchard PCZT should sign");
+        let combined = combine_signed_response(&sample.bytes, &signed);
         ensure_owned_supported_shielded_actions_are_signed(
             &pczt::test_support::Nu6_3Network,
             &sample.bytes,
-            &signed,
+            &combined,
             &sample.seed_fingerprint,
             0,
         )
@@ -1311,11 +1401,14 @@ mod tests {
     fn test_batch_postflight_confirms_ironwood_signature() {
         let sample = pczt::test_support::sample_ironwood_pczt();
         let signed = sign_pczt(&sample.bytes, &sample.seed).expect("Ironwood PCZT should sign");
+        // The wallet recombines the redacted device response with its full PCZT before
+        // postflighting; the bare response is intentionally not parseable on its own.
+        let combined = combine_signed_response(&sample.bytes, &signed);
 
         ensure_signable_shielded_actions_are_signed(
             &pczt::test_support::Nu6_3Network,
             &sample.bytes,
-            &signed,
+            &combined,
             &sample.seed_fingerprint,
             0,
         )

@@ -239,8 +239,15 @@ impl PcztSigner for SeedSigner<'_> {
 }
 
 #[cfg(feature = "cypherpunk")]
-pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
+pub fn sign_pczt(mut pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
     super::validate_supported_pczt(&pczt)?;
+
+    // Recompute and fill any Orchard/Ironwood derived fields a wallet omitted to keep the
+    // request QR small (cv_net, nullifier, rk, cmx, ephemeral_key, enc_ciphertext). The
+    // lean sighash below reads these directly off the PCZT, so they must be present; this
+    // is a no-op for a full PCZT. The redactor strips them again from the response.
+    pczt.fill_derived_fields()
+        .map_err(|e| ZcashError::InvalidPczt(format!("failed to fill derived fields: {e:?}")))?;
 
     let seed_fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
@@ -364,6 +371,12 @@ fn redact_orchard_bundle(mut r: OrchardRedactor<'_>) {
         ar.clear_output_zip32_derivation();
         ar.clear_output_user_address();
         ar.clear_rcv();
+        ar.clear_cv_net();
+        ar.clear_nullifier();
+        ar.clear_rk();
+        ar.clear_cmx();
+        ar.clear_ephemeral_key();
+        ar.clear_enc_ciphertext();
     });
     r.clear_zkproof();
     r.clear_bsk();
@@ -548,6 +561,20 @@ mod tests {
             "v6 Ironwood spend signatures must not commit to the anchor"
         );
 
+        // The signing response redacts `rk` (see `redact_orchard_bundle`), so source each
+        // action's randomized validating key from the filled unsigned PCZT, matched by
+        // index to the corresponding signed action below.
+        let mut filled = pczt.clone();
+        filled
+            .fill_derived_fields()
+            .expect("derived fields should fill for the sample Ironwood PCZT");
+        let rks: Vec<Option<[u8; 32]>> = filled
+            .ironwood()
+            .actions()
+            .iter()
+            .map(|action| *action.spend().rk())
+            .collect();
+
         let signed_pczt_bytes = sign_pczt(pczt, &sample.seed).expect("Ironwood PCZT should sign");
         let parsed = Pczt::parse(&signed_pczt_bytes).expect("signed PCZT must parse");
 
@@ -565,11 +592,12 @@ mod tests {
                 .any(|action| action.spend().spend_auth_sig().is_some()),
             "Ironwood spend authorization signature must be present",
         );
-        for action in parsed.ironwood().actions().iter() {
+        for (index, action) in parsed.ironwood().actions().iter().enumerate() {
             if let Some(sig) = action.spend().spend_auth_sig() {
+                let rk_bytes = rks[index].expect("filled unsigned PCZT must carry rk");
                 let rk = orchard::primitives::redpallas::VerificationKey::<
                     orchard::primitives::redpallas::SpendAuth,
-                >::try_from(*action.spend().rk())
+                >::try_from(rk_bytes)
                 .expect("Ironwood randomized validating key must parse");
                 let sig: orchard::primitives::redpallas::Signature<
                     orchard::primitives::redpallas::SpendAuth,
