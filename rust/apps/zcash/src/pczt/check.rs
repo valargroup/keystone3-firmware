@@ -287,6 +287,53 @@ fn check_transparent_output<P: consensus::Parameters>(
 }
 
 #[cfg(feature = "cypherpunk")]
+/// Per-bundle outgoing viewing keys and ownership IVKs, derived once from the UFVK and
+/// reused for every action. These depend only on the UFVK (not on the action), and the
+/// Internal-scope derivations each run a Sinsemilla commit-ivk, so hoisting them out of
+/// the per-action loop avoids redundant key derivation without changing any value used.
+struct BundleViewingKeys {
+    /// Outgoing viewing keys to trial-decrypt each output with, paired with whether the
+    /// key is an internal-scope OVK (which constrains the recovered note to this wallet).
+    /// Built in the same order as the previous per-action construction so trial decryption
+    /// is bit-identical.
+    ovks: vec::Vec<(Option<orchard::keys::OutgoingViewingKey>, bool)>,
+    /// External/internal incoming viewing keys used to decide whether a recovered address
+    /// belongs to this wallet. Derived once instead of per `is_wallet_orchard_address`.
+    external_ivk: orchard::keys::IncomingViewingKey,
+    internal_ivk: orchard::keys::IncomingViewingKey,
+}
+
+#[cfg(feature = "cypherpunk")]
+impl BundleViewingKeys {
+    fn derive(ufvk: &UnifiedFullViewingKey) -> Result<Self, ZcashError> {
+        let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
+            "orchard fvk is not present".to_string(),
+        ))?;
+        let external_ovk = fvk.to_ovk(zcash_vendor::zip32::Scope::External).clone();
+        let internal_ovk = fvk.to_ovk(zcash_vendor::zip32::Scope::Internal).clone();
+        let transparent_internal_ovk = ufvk
+            .transparent()
+            .map(|k| orchard::keys::OutgoingViewingKey::from(k.internal_ovk().as_bytes()));
+
+        let mut ovks = vec![(Some(external_ovk), false), (Some(internal_ovk), true)];
+        if let Some(ovk) = transparent_internal_ovk {
+            ovks.push((Some(ovk), true));
+        }
+
+        Ok(Self {
+            ovks,
+            external_ivk: fvk.to_ivk(zcash_vendor::zip32::Scope::External),
+            internal_ivk: fvk.to_ivk(zcash_vendor::zip32::Scope::Internal),
+        })
+    }
+
+    fn is_wallet_address(&self, address: &Address) -> bool {
+        self.external_ivk.diversifier_index(address).is_some()
+            || self.internal_ivk.diversifier_index(address).is_some()
+    }
+}
+
+#[cfg(feature = "cypherpunk")]
 // check orchard bundle
 fn check_shielded_bundle<P: consensus::Parameters>(
     params: &P,
@@ -297,12 +344,15 @@ fn check_shielded_bundle<P: consensus::Parameters>(
     pool: ShieldedPool,
 ) -> Result<(), ZcashError> {
     let pool_label = pool.label();
+    // Derive the outgoing viewing keys and ownership IVKs once for the whole bundle.
+    let viewing_keys = BundleViewingKeys::derive(ufvk)?;
     bundle.actions().iter().try_for_each(|action| {
         check_action(
             params,
             seed_fingerprint,
             account_index,
             ufvk,
+            &viewing_keys,
             action,
             pool,
         )?;
@@ -334,6 +384,7 @@ fn check_action<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: zip32::AccountId,
     ufvk: &UnifiedFullViewingKey,
+    viewing_keys: &BundleViewingKeys,
     action: &orchard::pczt::Action,
     pool: ShieldedPool,
 ) -> Result<(), ZcashError> {
@@ -357,7 +408,7 @@ fn check_action<P: consensus::Parameters>(
         action.spend(),
         pool,
     )?;
-    check_action_output(params, ufvk, action, pool)?;
+    check_action_output(params, viewing_keys, action, pool)?;
     Ok(())
 }
 
@@ -409,19 +460,10 @@ fn check_action_spend<P: consensus::Parameters>(
 }
 
 #[cfg(feature = "cypherpunk")]
-fn is_wallet_orchard_address(fvk: &FullViewingKey, address: &Address) -> bool {
-    let external_ivk = fvk.to_ivk(zcash_vendor::zip32::Scope::External);
-    let internal_ivk = fvk.to_ivk(zcash_vendor::zip32::Scope::Internal);
-
-    external_ivk.diversifier_index(address).is_some()
-        || internal_ivk.diversifier_index(address).is_some()
-}
-
-#[cfg(feature = "cypherpunk")]
 // check output cmx and internal-ovk output ownership constraints
 fn check_action_output<P: consensus::Parameters>(
     params: &P,
-    ufvk: &UnifiedFullViewingKey,
+    viewing_keys: &BundleViewingKeys,
     action: &orchard::pczt::Action,
     pool: ShieldedPool,
 ) -> Result<(), ZcashError> {
@@ -433,28 +475,17 @@ fn check_action_output<P: consensus::Parameters>(
             ZcashError::InvalidPczt(format!("invalid {pool_label} action cmx: {e:?}"))
         })?;
 
-    let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
-        "orchard fvk is not present".to_string(),
-    ))?;
-    let external_ovk = fvk.to_ovk(zcash_vendor::zip32::Scope::External).clone();
-    let internal_ovk = fvk.to_ovk(zcash_vendor::zip32::Scope::Internal).clone();
-    let transparent_internal_ovk = ufvk
-        .transparent()
-        .map(|k| orchard::keys::OutgoingViewingKey::from(k.internal_ovk().as_bytes()));
-
-    let mut keys = vec![(Some(external_ovk), false), (Some(internal_ovk), true)];
-    if let Some(ovk) = transparent_internal_ovk {
-        keys.push((Some(ovk), true));
-    }
-
-    for (vk, is_internal_ovk) in keys {
+    // `viewing_keys.ovks` is the same (key, is_internal) list this function used to build
+    // per action; it is iterated identically, so trial decryption and the accept/reject
+    // outcome are unchanged.
+    for (vk, is_internal_ovk) in viewing_keys.ovks.iter() {
         if let Some((_, address, _)) =
             super::parse::decode_output_enc_ciphertext(action, vk.as_ref())?
         {
             if let Some(user_address) = action.output().user_address() {
                 super::parse::validate_orchard_user_address(params, user_address, &address)?;
             }
-            if is_internal_ovk && !is_wallet_orchard_address(fvk, &address) {
+            if *is_internal_ovk && !viewing_keys.is_wallet_address(&address) {
                 return Err(ZcashError::InvalidPczt(format!(
                     "{pool_label} output was recoverable with an internal OVK but does not belong to this wallet"
                 )));

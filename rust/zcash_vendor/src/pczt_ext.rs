@@ -611,8 +611,13 @@ where
     llsigner.sign_orchard_with::<T::Error, _>(|pczt, signable, tx_modifiable| {
         let lock_time = determine_lock_time(pczt.global(), pczt.transparent().inputs())
             .ok_or(transparent::pczt::ParseError::InvalidRequiredHeightLocktime)?;
+        // The shielded sighash with `input_info = None` commits to the whole bundle, not
+        // to any individual action index, so it is invariant across actions. Compute it
+        // once per bundle and reuse it for every action (pure memoization; the bytes
+        // handed to `sign_orchard` are identical to recomputing per action).
+        let sighash = shielded_sig_commitment(pczt, lock_time, None);
         signable.actions_mut().iter_mut().try_for_each(|action| {
-            sign_orchard_action(pczt, lock_time, signer, action, tx_modifiable)
+            sign_orchard_action(signer, action, sighash, tx_modifiable)
         })
     })
 }
@@ -624,10 +629,9 @@ where
 /// spend. `tx_modifiable` is cleared only when this call adds a new signature.
 #[cfg(feature = "orchard")]
 fn sign_orchard_action<T>(
-    pczt: &Pczt,
-    lock_time: u32,
     signer: &T,
     action: &mut orchard::pczt::Action,
+    sighash: Hash,
     tx_modifiable: &mut u8,
 ) -> Result<(), T::Error>
 where
@@ -638,7 +642,10 @@ where
         return Ok(());
     }
     let had_sig = action.spend().spend_auth_sig().is_some();
-    signer.sign_orchard(action, shielded_sig_commitment(pczt, lock_time, None))?;
+    // `sighash` is the per-bundle commitment hoisted by the caller (action-independent
+    // for `input_info = None`), so this is the same value `shielded_sig_commitment`
+    // would return here.
+    signer.sign_orchard(action, sighash)?;
     if !had_sig && action.spend().spend_auth_sig().is_some() {
         *tx_modifiable &= !(FLAG_TRANSPARENT_INPUTS_MODIFIABLE
             | FLAG_TRANSPARENT_OUTPUTS_MODIFIABLE
@@ -664,8 +671,11 @@ where
     llsigner.sign_ironwood_with::<T::Error, _>(|pczt, signable, tx_modifiable| {
         let lock_time = determine_lock_time(pczt.global(), pczt.transparent().inputs())
             .ok_or(transparent::pczt::ParseError::InvalidRequiredHeightLocktime)?;
+        // See `sign_orchard`: the `input_info = None` sighash is action-independent, so
+        // compute it once per bundle and reuse it for every Ironwood action.
+        let sighash = shielded_sig_commitment(pczt, lock_time, None);
         signable.actions_mut().iter_mut().try_for_each(|action| {
-            sign_orchard_action(pczt, lock_time, signer, action, tx_modifiable)
+            sign_orchard_action(signer, action, sighash, tx_modifiable)
         })
     })
 }
