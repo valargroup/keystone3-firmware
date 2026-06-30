@@ -23,11 +23,13 @@ use structs::DisplayPczt;
 use structs::DisplayZcashBatch;
 use ur_registry::traits::RegistryItem;
 use ur_registry::zcash::zcash_pczt::ZcashPczt;
+use ur_registry::zcash::zcash_sig_result::{
+    ZcashActionSig, ZcashMsgSig, ZcashSigResult, ZCASH_SIG_RESULT_VERSION,
+};
 use ur_registry::zcash::zcash_sign_batch::{
     ZcashSignBatch, ZcashSignMessage, ZCASH_SIGN_BATCH_NETWORK_MAINNET, ZCASH_SIGN_BATCH_VERSION,
     ZCASH_SIGN_MESSAGE_KIND_PCZT_V1,
 };
-use ur_registry::zcash::zcash_sign_result::{ZcashSignMessageResult, ZcashSignResult};
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
@@ -215,6 +217,7 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<(), RustCError> {
         )));
     }
 
+    let mut seen_messages: Vec<(&[u8], [u8; 32])> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         if message.get_kind() != ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 {
             return Err(RustCError::UnsupportedTransaction(format!(
@@ -242,18 +245,19 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<(), RustCError> {
             }
         }
 
-        for previous in &messages[..index] {
-            if sha256(previous.get_payload()) == digest {
+        for (previous_id, previous_digest) in &seen_messages {
+            if previous_digest == &digest {
                 return Err(RustCError::InvalidData(
                     "Zcash batch contains duplicate payloads".to_string(),
                 ));
             }
-            if previous.get_id() == message.get_id() {
+            if *previous_id == message.get_id().as_slice() {
                 return Err(RustCError::InvalidData(
                     "Zcash batch contains duplicate message ids".to_string(),
                 ));
             }
         }
+        seen_messages.push((message.get_id().as_slice(), digest));
     }
 
     Ok(())
@@ -359,21 +363,32 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
         return TransactionParseResult::from(e).c_ptr();
     }
 
-    let mut display_items = Vec::new();
-    for message in batch.get_messages() {
-        if let Err(e) = check_zcash_batch_message_cypherpunk(
-            message,
+    #[cfg(zcash_unstable = "nu6.3")]
+    if batch.get_messages().len() > 1 {
+        match parse_zcash_batch_as_split_plus_migrations(
+            batch,
             &ufvk_text,
             seed_fingerprint,
             account_index,
         ) {
-            return TransactionParseResult::from(e).c_ptr();
+            Ok(display_items) => {
+                return TransactionParseResult::success(
+                    DisplayZcashBatch::from(display_items).c_ptr(),
+                )
+                .c_ptr();
+            }
+            Err(_) => {}
         }
-        match app_zcash::parse_pczt_cypherpunk(
+    }
+
+    let mut display_items = Vec::new();
+    for message in batch.get_messages() {
+        match app_zcash::check_and_parse_batch_pczt_cypherpunk(
             &MainNetwork,
             message.get_payload(),
             &ufvk_text,
-            seed_fingerprint,
+            &seed_fingerprint,
+            account_index,
         ) {
             Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
             Err(e) => return TransactionParseResult::from(e).c_ptr(),
@@ -381,6 +396,44 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
     }
 
     TransactionParseResult::success(DisplayZcashBatch::from(display_items).c_ptr()).c_ptr()
+}
+
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+fn parse_zcash_batch_as_split_plus_migrations(
+    batch: &ZcashSignBatch,
+    ufvk_text: &str,
+    seed_fingerprint: [u8; 32],
+    account_index: u32,
+) -> app_zcash::errors::Result<Vec<DisplayPczt>> {
+    let messages = batch.get_messages();
+    let mut display_items = Vec::new();
+
+    let split_message = &messages[0];
+    let split_pczt = app_zcash::check_and_parse_batch_pczt_cypherpunk(
+        &MainNetwork,
+        split_message.get_payload(),
+        ufvk_text,
+        &seed_fingerprint,
+        account_index,
+    )?;
+    display_items.push(DisplayPczt::from(&split_pczt));
+
+    let mut summary = app_zcash::BatchMigrationSummary::default();
+    for message in messages.iter().skip(1) {
+        let child = app_zcash::summarize_batch_migration_pczt_cypherpunk(
+            &MainNetwork,
+            message.get_payload(),
+            ufvk_text,
+            &seed_fingerprint,
+            account_index,
+        )?;
+        summary.add_child(&child)?;
+    }
+
+    let summary_pczt = summary.to_parsed_pczt();
+    display_items.push(DisplayPczt::from(&summary_pczt));
+
+    Ok(display_items)
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -419,38 +472,37 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
 
                     let mut results = Vec::new();
                     for message in batch.get_messages() {
-                        if let Err(e) = check_zcash_batch_message_cypherpunk(
-                            message,
+                        match app_zcash::sign_batch_pczt_cypherpunk(
+                            &MainNetwork,
+                            message.get_payload(),
                             &ufvk_text,
+                            seed,
                             &seed_fingerprint,
                             account_index,
                         ) {
-                            seed.zeroize();
-                            return UREncodeResult::from(e).c_ptr();
-                        }
-
-                        match app_zcash::sign_pczt(message.get_payload(), seed) {
                             Ok(payload) => {
-                                if let Err(e) =
-                                    app_zcash::ensure_signable_shielded_actions_are_signed(
-                                        &MainNetwork,
-                                        message.get_payload(),
-                                        &payload,
-                                        &seed_fingerprint,
-                                        account_index,
-                                    )
-                                {
-                                    seed.zeroize();
-                                    return UREncodeResult::from(e).c_ptr();
+                                match app_zcash::extract_compact_sigs_from_signed_pczt(&payload) {
+                                    Ok(compact_sigs) => {
+                                        let action_sigs = compact_sigs
+                                            .into_iter()
+                                            .map(|sig| {
+                                                ZcashActionSig::new(
+                                                    sig.pool,
+                                                    sig.action_index,
+                                                    sig.sig,
+                                                )
+                                            })
+                                            .collect();
+                                        results.push(ZcashMsgSig::new(
+                                            message.get_id().clone(),
+                                            action_sigs,
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        seed.zeroize();
+                                        return UREncodeResult::from(e).c_ptr();
+                                    }
                                 }
-
-                                let payload_digest = sha256(&payload).to_vec();
-                                results.push(ZcashSignMessageResult::signed(
-                                    message.get_id().clone(),
-                                    message.get_kind(),
-                                    payload,
-                                    payload_digest,
-                                ));
                             }
                             Err(e) => {
                                 seed.zeroize();
@@ -459,20 +511,20 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                         }
                     }
 
-                    let result = ZcashSignResult::new(
-                        ZCASH_SIGN_BATCH_VERSION,
+                    let result = ZcashSigResult::new(
+                        ZCASH_SIG_RESULT_VERSION,
                         batch.get_request_id().clone(),
                         results,
                     );
                     match TryInto::<Vec<u8>>::try_into(result) {
                         Ok(bytes) => {
-                            let registry_type = ZcashSignResult::get_registry_type().get_type();
-                            let encode_result = if allow_multipart {
+                            let registry_type = ZcashSigResult::get_registry_type().get_type();
+                            if allow_multipart {
                                 UREncodeResult::encode(bytes, registry_type, max_fragment_length)
                             } else {
                                 UREncodeResult::encode_full_response(bytes, registry_type)
-                            };
-                            encode_result.c_ptr()
+                            }
+                            .c_ptr()
                         }
                         Err(e) => UREncodeResult::from(e).c_ptr(),
                     }

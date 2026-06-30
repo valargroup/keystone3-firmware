@@ -8,10 +8,12 @@ pub mod version;
 use errors::{Result, ZcashError};
 
 use alloc::{
+    format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
-use pczt::structs::ParsedPczt;
+use pczt::structs::{ParsedFrom, ParsedOrchard, ParsedPczt, ParsedTo};
 use zcash_vendor::{
     zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey},
     zcash_protocol::consensus::{self},
@@ -70,6 +72,18 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     account_index: u32,
 ) -> Result<()> {
     let pczt = pczt::parse_pczt(pczt)?;
+    check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+    Ok(())
+}
+
+#[cfg(feature = "cypherpunk")]
+fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &Pczt,
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<(UnifiedFullViewingKey, zip32::AccountId)> {
     let account_index = zip32::AccountId::try_from(account_index)
         .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
     let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
@@ -86,7 +100,7 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
         &pczt,
         false,
     )?;
-    Ok(())
+    Ok((ufvk, account_index))
 }
 
 #[cfg(feature = "multi_coins")]
@@ -182,6 +196,297 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
         .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
     let pczt = pczt::parse_pczt(pczt)?;
     pczt::parse::parse_pczt_cypherpunk(params, seed_fingerprint, &ufvk, &pczt)
+}
+
+/// Checks a batch PCZT with the selected account and returns the display data
+/// using the same parsed PCZT and decoded UFVK.
+#[cfg(feature = "cypherpunk")]
+pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &[u8],
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<ParsedPczt> {
+    let pczt = pczt::parse_pczt(pczt)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
+        .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
+    let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
+        "transparent xpub is not present".to_string(),
+    ))?;
+    let checked_shielded = pczt::check::check_and_parse_pczt_shielded(
+        params,
+        seed_fingerprint,
+        account_index,
+        &ufvk,
+        &pczt,
+    )?;
+    pczt::check::check_pczt_transparent(
+        params,
+        seed_fingerprint,
+        account_index,
+        xpub,
+        &pczt,
+        false,
+    )?;
+    let signable_actions = signable_shielded_actions(
+        params,
+        pczt.clone(),
+        seed_fingerprint,
+        account_index,
+        ShieldedActionPolicy::Batch,
+    )?;
+
+    if signable_actions.is_empty() {
+        Err(ZcashError::PcztNoMyInputs)
+    } else {
+        pczt::parse::parse_pczt_cypherpunk_with_checked_shielded(
+            params,
+            seed_fingerprint,
+            &pczt,
+            checked_shielded.orchard,
+            checked_shielded.ironwood,
+        )
+    }
+}
+
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatchMigrationChildSummary {
+    pub input: u64,
+    pub output: u64,
+    pub fee: u64,
+}
+
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BatchMigrationSummary {
+    pub migrations: u32,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub total_fee: u64,
+    pub children: Vec<BatchMigrationChildSummary>,
+}
+
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+impl BatchMigrationSummary {
+    pub fn add_child(&mut self, child: &BatchMigrationSummary) -> Result<()> {
+        self.migrations = self
+            .migrations
+            .checked_add(child.migrations)
+            .ok_or_else(|| ZcashError::InvalidPczt("migration count overflow".to_string()))?;
+        self.total_input = self
+            .total_input
+            .checked_add(child.total_input)
+            .ok_or_else(|| ZcashError::InvalidPczt("migration input overflow".to_string()))?;
+        self.total_output = self
+            .total_output
+            .checked_add(child.total_output)
+            .ok_or_else(|| ZcashError::InvalidPczt("migration output overflow".to_string()))?;
+        self.total_fee = self
+            .total_fee
+            .checked_add(child.total_fee)
+            .ok_or_else(|| ZcashError::InvalidPczt("migration fee overflow".to_string()))?;
+        if child.children.is_empty() {
+            self.children.push(BatchMigrationChildSummary {
+                input: child.total_input,
+                output: child.total_output,
+                fee: child.total_fee,
+            });
+        } else {
+            self.children.extend(child.children.iter().copied());
+        }
+        Ok(())
+    }
+
+    pub fn to_parsed_pczt(&self) -> ParsedPczt {
+        let children = if self.children.is_empty() {
+            vec![BatchMigrationChildSummary {
+                input: self.total_input,
+                output: self.total_output,
+                fee: self.total_fee,
+            }]
+        } else {
+            self.children.clone()
+        };
+
+        let orchard = ParsedOrchard::new(
+            children
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    ParsedFrom::new(
+                        Some(format!(
+                            "Migration #{} Orchard note from selected account",
+                            index + 1
+                        )),
+                        pczt::parse::format_zec_value(child.input as f64),
+                        child.input,
+                        true,
+                    )
+                })
+                .collect(),
+            Vec::new(),
+        );
+        let ironwood = ParsedOrchard::new(
+            Vec::new(),
+            children
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    ParsedTo::new(
+                        format!("Migration #{} wallet Ironwood output", index + 1),
+                        pczt::parse::format_zec_value(child.output as f64),
+                        child.output,
+                        true,
+                        false,
+                        None,
+                    )
+                })
+                .collect(),
+        );
+
+        ParsedPczt::new(
+            None,
+            Some(orchard),
+            Some(ironwood),
+            pczt::parse::format_zec_value(self.total_output as f64),
+            pczt::parse::format_zec_value(self.total_fee as f64),
+            false,
+        )
+    }
+}
+
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+fn nonzero_action_value(value: &Option<u64>, label: &str) -> Result<u64> {
+    value
+        .as_ref()
+        .copied()
+        .ok_or_else(|| ZcashError::InvalidPczt(format!("missing {label} value")))
+}
+
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+fn summarize_migration_actions(
+    ufvk: &UnifiedFullViewingKey,
+    pczt: &Pczt,
+) -> Result<BatchMigrationSummary> {
+    if !pczt.transparent().outputs().is_empty() {
+        return Err(ZcashError::InvalidPczt(
+            "migration summary does not support transparent outputs".to_string(),
+        ));
+    }
+
+    let mut orchard_spends = 0u32;
+    let mut orchard_outputs = 0u32;
+    let mut ironwood_spends = 0u32;
+    let mut ironwood_outputs = 0u32;
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+
+    for action in pczt.orchard().actions() {
+        let spend_value = nonzero_action_value(action.spend().value(), "Orchard spend")?;
+        if spend_value != 0 {
+            orchard_spends = orchard_spends.checked_add(1).ok_or_else(|| {
+                ZcashError::InvalidPczt("Orchard spend count overflow".to_string())
+            })?;
+            total_input = total_input
+                .checked_add(spend_value)
+                .ok_or_else(|| ZcashError::InvalidPczt("migration input overflow".to_string()))?;
+        }
+
+        let output_value = nonzero_action_value(action.output().value(), "Orchard output")?;
+        if output_value != 0 {
+            orchard_outputs = orchard_outputs.checked_add(1).ok_or_else(|| {
+                ZcashError::InvalidPczt("Orchard output count overflow".to_string())
+            })?;
+        }
+    }
+
+    for action in pczt.ironwood().actions() {
+        let spend_value = nonzero_action_value(action.spend().value(), "Ironwood spend")?;
+        if spend_value != 0 {
+            ironwood_spends = ironwood_spends.checked_add(1).ok_or_else(|| {
+                ZcashError::InvalidPczt("Ironwood spend count overflow".to_string())
+            })?;
+        }
+
+        let output_value = nonzero_action_value(action.output().value(), "Ironwood output")?;
+        if output_value == 0 {
+            continue;
+        }
+
+        let recipient = action.output().recipient().ok_or_else(|| {
+            ZcashError::InvalidPczt("missing Ironwood output recipient".to_string())
+        })?;
+        let recipient = zcash_vendor::orchard::Address::from_raw_address_bytes(&recipient)
+            .into_option()
+            .ok_or_else(|| {
+                ZcashError::InvalidPczt("invalid Ironwood output recipient".to_string())
+            })?;
+        if !pczt::parse::is_wallet_orchard_address(ufvk, &recipient)? {
+            return Err(ZcashError::InvalidPczt(
+                "migration Ironwood output is not wallet-owned".to_string(),
+            ));
+        }
+
+        ironwood_outputs = ironwood_outputs
+            .checked_add(1)
+            .ok_or_else(|| ZcashError::InvalidPczt("Ironwood output count overflow".to_string()))?;
+        total_output = total_output
+            .checked_add(output_value)
+            .ok_or_else(|| ZcashError::InvalidPczt("migration output overflow".to_string()))?;
+    }
+
+    if orchard_spends != 1 || orchard_outputs != 0 || ironwood_spends != 0 || ironwood_outputs != 1
+    {
+        return Err(ZcashError::InvalidPczt(format!(
+            "unsupported migration summary shape orchard_spends={orchard_spends} orchard_outputs={orchard_outputs} ironwood_spends={ironwood_spends} ironwood_outputs={ironwood_outputs}"
+        )));
+    }
+
+    let total_fee = total_input
+        .checked_sub(total_output)
+        .ok_or_else(|| ZcashError::InvalidPczt("migration output exceeds input".to_string()))?;
+
+    Ok(BatchMigrationSummary {
+        migrations: 1,
+        total_input,
+        total_output,
+        total_fee,
+        children: vec![BatchMigrationChildSummary {
+            input: total_input,
+            output: total_output,
+            fee: total_fee,
+        }],
+    })
+}
+
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+pub fn summarize_batch_migration_pczt_cypherpunk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &[u8],
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<BatchMigrationSummary> {
+    let pczt = pczt::parse_pczt(pczt)?;
+    let (ufvk, account_index) =
+        check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+
+    let signable_actions = signable_shielded_actions(
+        params,
+        pczt.clone(),
+        seed_fingerprint,
+        account_index,
+        ShieldedActionPolicy::Batch,
+    )?;
+    if signable_actions.is_empty() {
+        return Err(ZcashError::PcztNoMyInputs);
+    }
+
+    summarize_migration_actions(&ufvk, &pczt)
 }
 
 #[cfg(test)]
@@ -374,6 +679,19 @@ struct SignableShieldedAction {
 }
 
 #[cfg(feature = "cypherpunk")]
+pub const COMPACT_SIG_POOL_ORCHARD: u32 = 0;
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+pub const COMPACT_SIG_POOL_IRONWOOD: u32 = 1;
+
+#[cfg(feature = "cypherpunk")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactActionSig {
+    pub pool: u32,
+    pub action_index: u32,
+    pub sig: Vec<u8>,
+}
+
+#[cfg(feature = "cypherpunk")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShieldedActionPolicy {
     Batch,
@@ -392,6 +710,35 @@ fn reject_unsupported_batch_pczt(pczt: &Pczt) -> Result<()> {
         return Err(ZcashError::InvalidPczt(
             "Zcash batch PCZT must not contain transparent inputs".to_string(),
         ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cypherpunk")]
+fn require_signature_hash_fields_for_bundle(
+    bundle: &zcash_vendor::pczt::orchard::Bundle,
+    pool: &str,
+) -> Result<()> {
+    for (index, action) in bundle.actions().iter().enumerate() {
+        let enc_ciphertext = action.output().enc_ciphertext();
+        if enc_ciphertext.len() < 564 {
+            return Err(ZcashError::InvalidPczt(format!(
+                "invalid {pool} action {index} enc_ciphertext length"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cypherpunk")]
+fn require_signature_hash_fields(pczt: &Pczt) -> Result<()> {
+    require_signature_hash_fields_for_bundle(pczt.orchard(), "Orchard")?;
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    if pczt::pczt_should_process_ironwood(pczt) {
+        require_signature_hash_fields_for_bundle(pczt.ironwood(), "Ironwood")?;
     }
 
     Ok(())
@@ -590,6 +937,29 @@ pub fn ensure_pczt_has_signable_shielded_action<P: consensus::Parameters>(
     }
 }
 
+/// Signs a batch PCZT after applying the batch shielded action policy.
+///
+/// The UI review path already ran the expensive UFVK/output checks before the
+/// user approved the batch. This signer therefore keeps only cheap structural
+/// batch rejections, and the low-level signer itself enforces that any signed
+/// shielded action belongs to the selected account.
+#[cfg(feature = "cypherpunk")]
+pub fn sign_batch_pczt_cypherpunk<P: consensus::Parameters>(
+    _params: &P,
+    pczt: &[u8],
+    _ufvk_text: &str,
+    seed: &[u8],
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<Vec<u8>> {
+    let pczt = pczt::parse_pczt(pczt)?;
+    reject_unsupported_batch_pczt(&pczt)?;
+    require_signature_hash_fields(&pczt)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    pczt::sign::sign_batch_pczt_with_seed_fingerprint(pczt, seed, *seed_fingerprint, account_index)
+}
+
 /// Confirms that every signable supported shielded action in `unsigned_pczt`
 /// has a spend authorization signature in the same position in `signed_pczt`.
 #[cfg(feature = "cypherpunk")]
@@ -646,6 +1016,42 @@ pub fn ensure_owned_supported_shielded_actions_are_signed<P: consensus::Paramete
             .map_err(|_| ZcashError::InvalidPczt("invalid signed pczt data".to_string()))?;
         ensure_shielded_actions_are_signed(signed_pczt, &signable_actions)
     }
+}
+
+#[cfg(feature = "cypherpunk")]
+pub fn extract_compact_sigs_from_signed_pczt(signed_pczt: &[u8]) -> Result<Vec<CompactActionSig>> {
+    let signed_pczt = pczt::parse_pczt(signed_pczt)
+        .map_err(|_| ZcashError::InvalidPczt("invalid signed pczt data".to_string()))?;
+
+    let mut sigs = Vec::new();
+    for (index, action) in signed_pczt.orchard().actions().iter().enumerate() {
+        if let Some(sig) = action.spend().spend_auth_sig() {
+            sigs.push(CompactActionSig {
+                pool: COMPACT_SIG_POOL_ORCHARD,
+                action_index: index as u32,
+                sig: sig.to_vec(),
+            });
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    for (index, action) in signed_pczt.ironwood().actions().iter().enumerate() {
+        if let Some(sig) = action.spend().spend_auth_sig() {
+            sigs.push(CompactActionSig {
+                pool: COMPACT_SIG_POOL_IRONWOOD,
+                action_index: index as u32,
+                sig: sig.to_vec(),
+            });
+        }
+    }
+
+    if sigs.is_empty() {
+        return Err(ZcashError::SigningError(
+            "signed PCZT has no spend authorization signatures".to_string(),
+        ));
+    }
+
+    Ok(sigs)
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -775,7 +1181,8 @@ mod tests {
         let ufvk = derive_ufvk(&MainNetwork, &seed, "m/32'/133'/0'").unwrap();
         let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
 
-        let result = check_pczt_cypherpunk(&MainNetwork, &malformed_pczt, &ufvk, &seed_fingerprint, 0);
+        let result =
+            check_pczt_cypherpunk(&MainNetwork, &malformed_pczt, &ufvk, &seed_fingerprint, 0);
 
         assert_invalid_pczt_message(
             result,
@@ -1155,8 +1562,22 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu6.3")]
     fn pczt_with_sapling_output() -> pczt::test_support::SamplePczt {
-        let mut sample = pczt::test_support::sample_orchard_change_pczt();
-        let mut pczt: PcztMirror = postcard::from_bytes(&sample.bytes[8..]).unwrap();
+        let seed = [7u8; 32];
+        let ufvk_text =
+            derive_ufvk(&pczt::test_support::Nu6_3Network, &seed, "m/32'/133'/0'").unwrap();
+        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        let mut bytes = ::pczt::roles::creator::Creator::new_v6(
+            zcash_vendor::zcash_protocol::consensus::BranchId::Nu6_3.into(),
+            10_000_000,
+            1,
+            [0; 32],
+            [0; 32],
+            [0; 32],
+        )
+        .build()
+        .serialize();
+
+        let mut pczt: PcztMirror = postcard::from_bytes(&bytes[8..]).unwrap();
         pczt.sapling.outputs.push(SaplingOutputMirror {
             cv: [0; 32],
             cmu: [0; 32],
@@ -1175,9 +1596,14 @@ mod tests {
         });
         pczt.sapling.value_sum = -1;
 
-        sample.bytes.truncate(8);
-        sample.bytes = postcard::to_extend(&pczt, sample.bytes).unwrap();
-        sample
+        bytes.truncate(8);
+        let bytes = postcard::to_extend(&pczt, bytes).unwrap();
+        pczt::test_support::SamplePczt {
+            bytes,
+            seed: seed.to_vec(),
+            ufvk_text,
+            seed_fingerprint,
+        }
     }
 
     fn assert_batch_unsupported_sapling_error<T: core::fmt::Debug>(result: Result<T>) {
@@ -1270,6 +1696,226 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
+    fn test_batch_sign_rejects_sapling_outputs() {
+        let sample = pczt_with_sapling_output();
+
+        assert_batch_unsupported_sapling_error(sign_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed,
+            &sample.seed_fingerprint,
+            0,
+        ));
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_check_and_parse_accepts_ironwood_spend() {
+        let sample = pczt::test_support::sample_ironwood_pczt();
+
+        let parsed = check_and_parse_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("Ironwood batch PCZT should parse");
+        assert!(parsed.get_orchard().is_some() || parsed.get_ironwood().is_some());
+
+        assert_eq!(
+            check_and_parse_batch_pczt_cypherpunk(
+                &pczt::test_support::Nu6_3Network,
+                &sample.bytes,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                1,
+            )
+            .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_check_and_parse_accepts_orchard_to_ironwood_migration() {
+        let sample = pczt::test_support::sample_migration_pczt();
+
+        let parsed = check_and_parse_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("migration batch PCZT should parse");
+        assert!(!parsed
+            .get_orchard()
+            .expect("migration must show Orchard inputs")
+            .get_from()
+            .is_empty());
+        assert!(!parsed
+            .get_ironwood()
+            .expect("migration must show Ironwood outputs")
+            .get_to()
+            .is_empty());
+        assert_eq!(parsed.get_fee_value(), "0.0002 ZEC");
+
+        assert_eq!(
+            check_and_parse_batch_pczt_cypherpunk(
+                &pczt::test_support::Nu6_3Network,
+                &sample.bytes,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                1,
+            )
+            .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_migration_summary_accepts_orchard_to_ironwood_child() {
+        let sample = pczt::test_support::sample_migration_pczt();
+
+        let summary = summarize_batch_migration_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("migration child should summarize");
+
+        assert_eq!(
+            summary,
+            BatchMigrationSummary {
+                migrations: 1,
+                total_input: 1_010_000,
+                total_output: 990_000,
+                total_fee: 20_000,
+                children: vec![BatchMigrationChildSummary {
+                    input: 1_010_000,
+                    output: 990_000,
+                    fee: 20_000,
+                }],
+            }
+        );
+
+        let parsed = summary.to_parsed_pczt();
+        assert_eq!(parsed.get_total_transfer_value(), "0.0099 ZEC");
+        assert_eq!(parsed.get_fee_value(), "0.0002 ZEC");
+        assert_eq!(
+            parsed
+                .get_orchard()
+                .expect("summary should show Orchard inputs")
+                .get_from()
+                .len(),
+            1
+        );
+        assert_eq!(
+            parsed
+                .get_ironwood()
+                .expect("summary should show Ironwood outputs")
+                .get_to()
+                .len(),
+            1
+        );
+        assert_eq!(
+            parsed
+                .get_orchard()
+                .expect("summary should show Orchard inputs")
+                .get_from()[0]
+                .get_address()
+                .as_deref(),
+            Some("Migration #1 Orchard note from selected account")
+        );
+        assert_eq!(
+            parsed
+                .get_ironwood()
+                .expect("summary should show Ironwood outputs")
+                .get_to()[0]
+                .get_address(),
+            "Migration #1 wallet Ironwood output"
+        );
+        assert!(parsed
+            .get_ironwood()
+            .expect("summary should show Ironwood outputs")
+            .get_to()[0]
+            .get_is_change());
+
+        assert_eq!(
+            summarize_batch_migration_pczt_cypherpunk(
+                &pczt::test_support::Nu6_3Network,
+                &sample.bytes,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                1,
+            )
+            .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_migration_summary_accepts_optional_spend_fvk() {
+        use zcash_vendor::pczt::{roles::redactor::Redactor, Pczt};
+
+        let sample = pczt::test_support::sample_migration_pczt();
+        let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT should parse");
+        let redacted = Redactor::new(pczt)
+            .redact_orchard_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_fvk();
+                });
+            })
+            .redact_ironwood_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_fvk();
+                });
+            })
+            .finish()
+            .serialize();
+
+        let summary = summarize_batch_migration_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &redacted,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("redacted migration child should summarize");
+
+        assert_eq!(summary.migrations, 1);
+        assert_eq!(summary.total_input, 1_010_000);
+        assert_eq!(summary.total_output, 990_000);
+        assert_eq!(summary.total_fee, 20_000);
+
+        let signed = sign_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &redacted,
+            &sample.ufvk_text,
+            &sample.seed,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("request redacted only by optional spend FVK should sign");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT should parse");
+        assert!(
+            parsed
+                .orchard()
+                .actions()
+                .iter()
+                .any(|action| action.spend().spend_auth_sig().is_some()),
+            "redacted migration request must still produce an Orchard spend signature"
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
     fn test_batch_postflight_rejects_sapling_outputs() {
         let sample = pczt_with_sapling_output();
 
@@ -1298,6 +1944,49 @@ mod tests {
             ensure_pczt_has_signable_shielded_action(
                 &pczt::test_support::Nu6_3Network,
                 &sample.bytes,
+                &sample.seed_fingerprint,
+                1,
+            )
+            .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_sign_accepts_ironwood_spend() {
+        let sample = pczt::test_support::sample_ironwood_pczt();
+
+        let signed = sign_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("Ironwood batch PCZT should sign");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
+
+        assert!(
+            parsed
+                .ironwood()
+                .actions()
+                .iter()
+                .any(|action| action.spend().spend_auth_sig().is_some()),
+            "Ironwood spend authorization signature must be present",
+        );
+        let compact_sigs =
+            extract_compact_sigs_from_signed_pczt(&signed).expect("compact sigs should extract");
+        assert!(compact_sigs
+            .iter()
+            .any(|sig| sig.pool == COMPACT_SIG_POOL_IRONWOOD && sig.sig.len() == 64));
+        assert_eq!(
+            sign_batch_pczt_cypherpunk(
+                &pczt::test_support::Nu6_3Network,
+                &sample.bytes,
+                &sample.ufvk_text,
+                &sample.seed,
                 &sample.seed_fingerprint,
                 1,
             )

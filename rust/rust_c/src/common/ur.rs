@@ -715,6 +715,8 @@ impl_response!(URParseMultiResult);
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]
@@ -746,18 +748,32 @@ mod tests {
             full_result.free();
         }
 
-        let zcash_result = UREncodeResult::encode_full_response(
+        let zcash_sign_result = UREncodeResult::encode_full_response(
             vec![0; FRAGMENT_UNLIMITED_LENGTH + 1],
             "zcash-sign-result".to_string(),
         );
-        assert_eq!(zcash_result.error_code, ErrorCodes::Success as u32);
-        assert!(!zcash_result.is_multi_part);
-        assert!(zcash_result.encoder.is_null());
-        let zcash_data = unsafe { recover_c_char(zcash_result.data) };
+        assert_eq!(zcash_sign_result.error_code, ErrorCodes::Success as u32);
+        assert!(!zcash_sign_result.is_multi_part);
+        assert!(zcash_sign_result.encoder.is_null());
+        let zcash_data = unsafe { recover_c_char(zcash_sign_result.data) };
         assert!(zcash_data.starts_with("UR:ZCASH-SIGN-RESULT/"));
         assert!(!zcash_data.contains("/1-"));
         unsafe {
-            zcash_result.free();
+            zcash_sign_result.free();
+        }
+
+        let zcash_sig_result = UREncodeResult::encode_full_response(
+            vec![0; FRAGMENT_UNLIMITED_LENGTH + 1],
+            "zcash-sig-result".to_string(),
+        );
+        assert_eq!(zcash_sig_result.error_code, ErrorCodes::Success as u32);
+        assert!(!zcash_sig_result.is_multi_part);
+        assert!(zcash_sig_result.encoder.is_null());
+        let zcash_data = unsafe { recover_c_char(zcash_sig_result.data) };
+        assert!(zcash_data.starts_with("UR:ZCASH-SIG-RESULT/"));
+        assert!(!zcash_data.contains("/1-"));
+        unsafe {
+            zcash_sig_result.free();
         }
     }
 }
