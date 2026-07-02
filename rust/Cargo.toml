@@ -135,4 +135,4 @@ zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "
 zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
 zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
 # Use the SDK rev with the compact Zcash signature result registry type until it is published as a crate.
-ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "62c6ef26da178107b93a6d6fd27b5fcd119dbb2a" }
+ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "97c1a5d5df5fb457a169cd66e0f91e40acb18c64" }

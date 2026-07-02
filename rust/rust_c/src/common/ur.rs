@@ -762,18 +762,21 @@ mod tests {
             zcash_sign_result.free();
         }
 
-        let zcash_sig_result = UREncodeResult::encode_full_response(
+        let zcash_batch_sig_result = UREncodeResult::encode_full_response(
             vec![0; FRAGMENT_UNLIMITED_LENGTH + 1],
-            "zcash-sig-result".to_string(),
+            "zcash-batch-sig-result".to_string(),
         );
-        assert_eq!(zcash_sig_result.error_code, ErrorCodes::Success as u32);
-        assert!(!zcash_sig_result.is_multi_part);
-        assert!(zcash_sig_result.encoder.is_null());
-        let zcash_data = unsafe { recover_c_char(zcash_sig_result.data) };
-        assert!(zcash_data.starts_with("UR:ZCASH-SIG-RESULT/"));
+        assert_eq!(
+            zcash_batch_sig_result.error_code,
+            ErrorCodes::Success as u32
+        );
+        assert!(!zcash_batch_sig_result.is_multi_part);
+        assert!(zcash_batch_sig_result.encoder.is_null());
+        let zcash_data = unsafe { recover_c_char(zcash_batch_sig_result.data) };
+        assert!(zcash_data.starts_with("UR:ZCASH-BATCH-SIG-RESULT/"));
         assert!(!zcash_data.contains("/1-"));
         unsafe {
-            zcash_sig_result.free();
+            zcash_batch_sig_result.free();
         }
     }
 }

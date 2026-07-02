@@ -22,10 +22,10 @@ use keystore::algorithms::{
 use structs::DisplayPczt;
 use structs::DisplayZcashBatch;
 use ur_registry::traits::RegistryItem;
-use ur_registry::zcash::zcash_pczt::ZcashPczt;
-use ur_registry::zcash::zcash_sig_result::{
-    ZcashActionSig, ZcashMsgSig, ZcashSigResult, ZCASH_SIG_RESULT_VERSION,
+use ur_registry::zcash::zcash_batch_sig_result::{
+    ZcashActionSig, ZcashBatchSigResult, ZcashMsgSig, ZCASH_BATCH_SIG_RESULT_VERSION,
 };
+use ur_registry::zcash::zcash_pczt::ZcashPczt;
 use ur_registry::zcash::zcash_sign_batch::{
     ZcashSignBatch, ZcashSignMessage, ZCASH_SIGN_BATCH_NETWORK_MAINNET, ZCASH_SIGN_BATCH_VERSION,
     ZCASH_SIGN_MESSAGE_KIND_PCZT_V1,
@@ -569,14 +569,14 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                         }
                     }
 
-                    let result = ZcashSigResult::new(
-                        ZCASH_SIG_RESULT_VERSION,
+                    let result = ZcashBatchSigResult::new(
+                        ZCASH_BATCH_SIG_RESULT_VERSION,
                         batch.get_request_id().clone(),
                         results,
                     );
                     match TryInto::<Vec<u8>>::try_into(result) {
                         Ok(bytes) => {
-                            let registry_type = ZcashSigResult::get_registry_type().get_type();
+                            let registry_type = ZcashBatchSigResult::get_registry_type().get_type();
                             if allow_multipart {
                                 UREncodeResult::encode(bytes, registry_type, max_fragment_length)
                             } else {

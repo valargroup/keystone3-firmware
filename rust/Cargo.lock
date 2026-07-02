@@ -4812,7 +4812,7 @@ dependencies = [
 [[package]]
 name = "ur-registry"
 version = "1.0.5"
-source = "git+https://github.com/valargroup/keystone-sdk-rust.git?rev=62c6ef26da178107b93a6d6fd27b5fcd119dbb2a#62c6ef26da178107b93a6d6fd27b5fcd119dbb2a"
+source = "git+https://github.com/valargroup/keystone-sdk-rust.git?rev=97c1a5d5df5fb457a169cd66e0f91e40acb18c64#97c1a5d5df5fb457a169cd66e0f91e40acb18c64"
 dependencies = [
  "bs58",
  "hex",
