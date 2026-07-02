@@ -188,6 +188,17 @@ fn hash_transparent_tx_id(t_digests: Option<TransparentDigests>) -> Hash {
     h.finalize()
 }
 
+/// Byte layout of a Sapling/Orchard `enc_ciphertext` as the ZIP-244 digests
+/// consume it: the first [`ENC_CIPHERTEXT_COMPACT_LEN`] bytes are the compact
+/// note ciphertext (the `*CHash` digests), bytes up to
+/// [`ENC_CIPHERTEXT_MEMO_END`] are the encrypted memo (the `*MHash` digests),
+/// and the remainder is hashed with the non-compact fields. Any signing
+/// precondition that keeps these slices panic-free must use the same
+/// constants (see `app_zcash`'s `require_signature_hash_fields`).
+pub const ENC_CIPHERTEXT_COMPACT_LEN: usize = 52;
+/// See [`ENC_CIPHERTEXT_COMPACT_LEN`]: 52 compact bytes + 512 memo bytes.
+pub const ENC_CIPHERTEXT_MEMO_END: usize = ENC_CIPHERTEXT_COMPACT_LEN + 512;
+
 fn digest_orchard(pczt: &Pczt) -> Hash {
     let mut h = hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION);
 
@@ -201,13 +212,13 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
         ch.update(action.spend().nullifier());
         ch.update(action.output().cmx());
         ch.update(action.output().ephemeral_key());
-        ch.update(&enc_ciphertext[..52]);
+        ch.update(&enc_ciphertext[..ENC_CIPHERTEXT_COMPACT_LEN]);
 
-        mh.update(&enc_ciphertext[52..564]);
+        mh.update(&enc_ciphertext[ENC_CIPHERTEXT_COMPACT_LEN..ENC_CIPHERTEXT_MEMO_END]);
 
         nh.update(action.cv_net());
         nh.update(action.spend().rk());
-        nh.update(&enc_ciphertext[564..]);
+        nh.update(&enc_ciphertext[ENC_CIPHERTEXT_MEMO_END..]);
         nh.update(action.output().out_ciphertext());
     }
 
@@ -259,12 +270,12 @@ fn hash_sapling_outputs(pczt: &Pczt) -> Hash {
         for s_out in pczt.sapling().outputs() {
             ch.update(s_out.cmu());
             ch.update(s_out.ephemeral_key());
-            ch.update(&s_out.enc_ciphertext()[..52]);
+            ch.update(&s_out.enc_ciphertext()[..ENC_CIPHERTEXT_COMPACT_LEN]);
 
-            mh.update(&s_out.enc_ciphertext()[52..564]);
+            mh.update(&s_out.enc_ciphertext()[ENC_CIPHERTEXT_COMPACT_LEN..ENC_CIPHERTEXT_MEMO_END]);
 
             nh.update(s_out.cv());
-            nh.update(&s_out.enc_ciphertext()[564..]);
+            nh.update(&s_out.enc_ciphertext()[ENC_CIPHERTEXT_MEMO_END..]);
             nh.update(s_out.out_ciphertext());
         }
 
@@ -358,13 +369,13 @@ fn digest_orchard_shaped_v6(
         ch.update(action.spend().nullifier());
         ch.update(action.output().cmx());
         ch.update(action.output().ephemeral_key());
-        ch.update(&enc_ciphertext[..52]);
+        ch.update(&enc_ciphertext[..ENC_CIPHERTEXT_COMPACT_LEN]);
 
-        mh.update(&enc_ciphertext[52..564]);
+        mh.update(&enc_ciphertext[ENC_CIPHERTEXT_COMPACT_LEN..ENC_CIPHERTEXT_MEMO_END]);
 
         nh.update(action.cv_net());
         nh.update(action.spend().rk());
-        nh.update(&enc_ciphertext[564..]);
+        nh.update(&enc_ciphertext[ENC_CIPHERTEXT_MEMO_END..]);
         nh.update(action.output().out_ciphertext());
     }
 

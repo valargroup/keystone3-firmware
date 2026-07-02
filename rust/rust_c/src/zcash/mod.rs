@@ -479,9 +479,11 @@ fn parse_zcash_batch_as_split_plus_migrations(
 }
 
 #[cfg(feature = "cypherpunk")]
+// `_ufvk` stays in the FFI signature for C-side call compatibility, but batch
+// signing consumes only the PCZT bytes, seed material, and selected account.
 unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
     tx: PtrUR,
-    ufvk: PtrString,
+    _ufvk: PtrString,
     seed_fingerprint: PtrBytes,
     account_index: u32,
     disabled: bool,
@@ -497,7 +499,6 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
         .c_ptr();
     }
     let batch = extract_ptr_with_type!(tx, ZcashSignBatch);
-    let ufvk_text = unsafe { recover_c_char(ufvk) };
     let expected_seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let expected_seed_fingerprint: &[u8; 32] = expected_seed_fingerprint.try_into().unwrap();
     let mut seed = extract_array_mut!(seed, u8, seed_len as usize);
@@ -532,9 +533,7 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                     let mut results = Vec::new();
                     for message in batch.get_messages() {
                         match app_zcash::sign_batch_pczt_cypherpunk(
-                            &MainNetwork,
                             message.get_payload(),
-                            &ufvk_text,
                             seed,
                             &seed_fingerprint,
                             account_index,

@@ -359,8 +359,10 @@ impl BatchMigrationSummary {
     }
 }
 
+/// Requires an action value to be present on the wire, returning it (zero is a
+/// valid value; callers classify zero themselves).
 #[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
-fn nonzero_action_value(value: &Option<u64>, label: &str) -> Result<u64> {
+fn require_action_value(value: &Option<u64>, label: &str) -> Result<u64> {
     value
         .as_ref()
         .copied()
@@ -386,7 +388,7 @@ fn summarize_migration_actions(
     let mut total_output = 0u64;
 
     for action in pczt.orchard().actions() {
-        let spend_value = nonzero_action_value(action.spend().value(), "Orchard spend")?;
+        let spend_value = require_action_value(action.spend().value(), "Orchard spend")?;
         if spend_value != 0 {
             orchard_spends = orchard_spends.checked_add(1).ok_or_else(|| {
                 ZcashError::InvalidPczt("Orchard spend count overflow".to_string())
@@ -396,7 +398,7 @@ fn summarize_migration_actions(
                 .ok_or_else(|| ZcashError::InvalidPczt("migration input overflow".to_string()))?;
         }
 
-        let output_value = nonzero_action_value(action.output().value(), "Orchard output")?;
+        let output_value = require_action_value(action.output().value(), "Orchard output")?;
         if output_value != 0 {
             orchard_outputs = orchard_outputs.checked_add(1).ok_or_else(|| {
                 ZcashError::InvalidPczt("Orchard output count overflow".to_string())
@@ -405,14 +407,14 @@ fn summarize_migration_actions(
     }
 
     for action in pczt.ironwood().actions() {
-        let spend_value = nonzero_action_value(action.spend().value(), "Ironwood spend")?;
+        let spend_value = require_action_value(action.spend().value(), "Ironwood spend")?;
         if spend_value != 0 {
             ironwood_spends = ironwood_spends.checked_add(1).ok_or_else(|| {
                 ZcashError::InvalidPczt("Ironwood spend count overflow".to_string())
             })?;
         }
 
-        let output_value = nonzero_action_value(action.output().value(), "Ironwood output")?;
+        let output_value = require_action_value(action.output().value(), "Ironwood output")?;
         if output_value == 0 {
             continue;
         }
@@ -715,6 +717,9 @@ fn reject_unsupported_batch_pczt(pczt: &Pczt) -> Result<()> {
     Ok(())
 }
 
+/// Requires every action's `enc_ciphertext` to reach the ZIP-244 memo boundary
+/// so the signature-hash slicing in `zcash_vendor::pczt_ext` cannot panic on a
+/// truncated field.
 #[cfg(feature = "cypherpunk")]
 fn require_signature_hash_fields_for_bundle(
     bundle: &zcash_vendor::pczt::orchard::Bundle,
@@ -722,7 +727,7 @@ fn require_signature_hash_fields_for_bundle(
 ) -> Result<()> {
     for (index, action) in bundle.actions().iter().enumerate() {
         let enc_ciphertext = action.output().enc_ciphertext();
-        if enc_ciphertext.len() < 564 {
+        if enc_ciphertext.len() < zcash_vendor::pczt_ext::ENC_CIPHERTEXT_MEMO_END {
             return Err(ZcashError::InvalidPczt(format!(
                 "invalid {pool} action {index} enc_ciphertext length"
             )));
@@ -947,12 +952,12 @@ pub fn ensure_pczt_has_signable_shielded_action<P: consensus::Parameters>(
 /// The UI review path already ran the expensive UFVK/output checks before the
 /// user approved the batch. This signer therefore keeps only cheap structural
 /// batch rejections, and the low-level signer itself enforces that any signed
-/// shielded action belongs to the selected account.
+/// shielded action belongs to the selected account — signing consumes only the
+/// PCZT bytes, the seed material, and the selected account, never network
+/// parameters or the UFVK.
 #[cfg(feature = "cypherpunk")]
-pub fn sign_batch_pczt_cypherpunk<P: consensus::Parameters>(
-    _params: &P,
+pub fn sign_batch_pczt_cypherpunk(
     pczt: &[u8],
-    _ufvk_text: &str,
     seed: &[u8],
     seed_fingerprint: &[u8; 32],
     account_index: u32,
@@ -1668,15 +1673,9 @@ mod tests {
     fn test_batch_sign_orchard_change_output_spend() {
         let sample = pczt::test_support::sample_orchard_change_pczt();
 
-        let signed = sign_batch_pczt_cypherpunk(
-            &pczt::test_support::Nu6_3Network,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("Orchard change batch PCZT should sign");
+        let signed =
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("Orchard change batch PCZT should sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
 
         let signed_actions = parsed
@@ -1711,15 +1710,9 @@ mod tests {
             .finish()
             .serialize();
 
-        let signed = sign_batch_pczt_cypherpunk(
-            &pczt::test_support::Nu6_3Network,
-            &redacted,
-            &sample.ufvk_text,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("redacted Orchard change batch PCZT should sign");
+        let signed =
+            sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("redacted Orchard change batch PCZT should sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
 
         let signed_actions = parsed
@@ -1770,15 +1763,9 @@ mod tests {
             .finish()
             .serialize();
 
-        let signed = sign_batch_pczt_cypherpunk(
-            &pczt::test_support::Nu6_3Network,
-            &redacted,
-            &sample.ufvk_text,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("IO-finalized-shaped migration child should batch-sign");
+        let signed =
+            sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("IO-finalized-shaped migration child should batch-sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
 
         for (index, action) in parsed.orchard().actions().iter().enumerate() {
@@ -1813,15 +1800,8 @@ mod tests {
         );
 
         assert_eq!(
-            sign_batch_pczt_cypherpunk(
-                &pczt::test_support::Nu6_3Network,
-                &retagged,
-                &sample.ufvk_text,
-                &sample.seed,
-                &sample.seed_fingerprint,
-                0,
-            )
-            .unwrap_err(),
+            sign_batch_pczt_cypherpunk(&retagged, &sample.seed, &sample.seed_fingerprint, 0,)
+                .unwrap_err(),
             ZcashError::PcztNoMyInputs
         );
     }
@@ -1844,15 +1824,9 @@ mod tests {
         )
         .unwrap();
 
-        let signed = sign_batch_pczt_cypherpunk(
-            &pczt::test_support::Nu6_3Network,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("Orchard change batch PCZT should sign");
+        let signed =
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("Orchard change batch PCZT should sign");
         ensure_signable_shielded_actions_are_signed(
             &pczt::test_support::Nu6_3Network,
             &sample.bytes,
@@ -1941,9 +1915,7 @@ mod tests {
         let sample = pczt_with_sapling_output();
 
         assert_batch_unsupported_sapling_error(sign_batch_pczt_cypherpunk(
-            &pczt::test_support::Nu6_3Network,
             &sample.bytes,
-            &sample.ufvk_text,
             &sample.seed,
             &sample.seed_fingerprint,
             0,
@@ -2135,15 +2107,9 @@ mod tests {
         assert_eq!(summary.total_output, 990_000);
         assert_eq!(summary.total_fee, 20_000);
 
-        let signed = sign_batch_pczt_cypherpunk(
-            &pczt::test_support::Nu6_3Network,
-            &redacted,
-            &sample.ufvk_text,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("request redacted only by optional spend FVK should sign");
+        let signed =
+            sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("request redacted only by optional spend FVK should sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT should parse");
         assert!(
             parsed
@@ -2198,15 +2164,9 @@ mod tests {
     fn test_batch_sign_accepts_ironwood_spend() {
         let sample = pczt::test_support::sample_ironwood_pczt();
 
-        let signed = sign_batch_pczt_cypherpunk(
-            &pczt::test_support::Nu6_3Network,
-            &sample.bytes,
-            &sample.ufvk_text,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("Ironwood batch PCZT should sign");
+        let signed =
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("Ironwood batch PCZT should sign");
         let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
 
         assert!(
@@ -2223,15 +2183,8 @@ mod tests {
             .iter()
             .any(|sig| sig.pool == COMPACT_SIG_POOL_IRONWOOD && sig.sig.len() == 64));
         assert_eq!(
-            sign_batch_pczt_cypherpunk(
-                &pczt::test_support::Nu6_3Network,
-                &sample.bytes,
-                &sample.ufvk_text,
-                &sample.seed,
-                &sample.seed_fingerprint,
-                1,
-            )
-            .unwrap_err(),
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 1,)
+                .unwrap_err(),
             ZcashError::PcztNoMyInputs
         );
     }
