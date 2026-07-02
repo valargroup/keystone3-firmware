@@ -241,9 +241,10 @@ impl PcztSigner for SeedSigner<'_> {
                 Ok(())
             };
         };
-        if self.selected_account.is_some() && value.inner() == 0 {
-            return Ok(());
-        }
+        // Ownership decides signing, never the value: post-NU6.3 restricted bundles
+        // pair each change output with a fabricated wallet-controlled zero-value spend
+        // that must be signed by the account spend authorizing key (see
+        // pczt_ext::sign_orchard_action: we "must NOT pre-filter by value").
         let Some(account_index) = super::matching_seed_supported_orchard_account(
             &self.seed_fingerprint,
             action.spend().zip32_derivation().as_ref(),
@@ -251,9 +252,11 @@ impl PcztSigner for SeedSigner<'_> {
             self.pool,
         )?
         else {
-            // Not derivable from this seed. Ordinary PCZT signing ignores it; a
-            // reviewed batch must contain only selected-account spends.
-            return if self.selected_account.is_some() {
+            // Not derivable from this seed. Ordinary PCZT signing ignores it. A
+            // reviewed batch tolerates untagged zero-value spends (IO Finalizer-signed
+            // dummies whose signatures the wallet strips for the QR round trip) but
+            // must otherwise contain only selected-account spends.
+            return if self.selected_account.is_some() && value.inner() != 0 {
                 Err(ZcashError::PcztNoMyInputs)
             } else {
                 Ok(())

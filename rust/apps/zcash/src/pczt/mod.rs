@@ -333,6 +333,46 @@ pub(crate) mod test_support {
             .serialize()
     }
 
+    /// Re-tags every zero-value Orchard spend in `bytes` with a ZIP 32 derivation
+    /// built from `seed_fingerprint` and `path`. Used to simulate a batch entry whose
+    /// fabricated wallet-controlled change spend is tagged for a different account of
+    /// the same seed.
+    #[cfg(zcash_unstable = "nu6.3")]
+    pub(crate) fn orchard_pczt_with_zero_value_spend_derivation(
+        bytes: &[u8],
+        seed_fingerprint: [u8; 32],
+        path: Vec<u32>,
+    ) -> Vec<u8> {
+        Updater::new(Pczt::parse(bytes).unwrap())
+            .update_orchard_with(|mut bundle| {
+                let zero_value_indices = bundle
+                    .bundle()
+                    .actions()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, action)| {
+                        matches!(action.spend().value().map(|value| value.inner()), Some(0))
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                assert!(!zero_value_indices.is_empty());
+
+                for action_index in zero_value_indices {
+                    let derivation =
+                        orchard::pczt::Zip32Derivation::parse(seed_fingerprint, path.clone())
+                            .unwrap();
+                    bundle.update_action_with(action_index, |mut action| {
+                        action.set_spend_zip32_derivation(derivation);
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish()
+            .serialize()
+    }
+
     #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn sample_ironwood_pczt() -> SamplePczt {
         let params = Nu6_3Network;
