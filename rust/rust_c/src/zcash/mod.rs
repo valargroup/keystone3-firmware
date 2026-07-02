@@ -63,6 +63,17 @@ const ZCASH_BATCH_MAX_MESSAGES: usize = 35;
 #[cfg(feature = "cypherpunk")]
 static REVIEWED_BATCH_FINGERPRINT: spin::Mutex<Option<[u8; 32]>> = spin::Mutex::new(None);
 
+/// Confirms that `batch_fingerprint` is the reviewed batch's fingerprint.
+/// `try_lock` so the (possibly higher-priority) signing task never spin-waits
+/// on a preempted lock holder — an unobtainable lock means the reviewed
+/// fingerprint cannot be confirmed, so this reports unreviewed (fail closed).
+#[cfg(feature = "cypherpunk")]
+fn confirm_batch_reviewed(batch_fingerprint: &[u8; 32]) -> bool {
+    REVIEWED_BATCH_FINGERPRINT
+        .try_lock()
+        .is_some_and(|reviewed| reviewed.as_ref() == Some(batch_fingerprint))
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn derive_zcash_ufvk(
     seed: PtrBytes,
@@ -508,14 +519,8 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
             // Only sign the exact batch the user reviewed and approved: the
             // review path verified every message and recorded this
             // fingerprint, and this signer intentionally re-runs only cheap
-            // structural checks. `try_lock` so this (possibly higher-priority)
-            // task never spin-waits on a preempted lock holder — an
-            // unobtainable lock means the reviewed fingerprint cannot be
-            // confirmed, so refuse (fail closed).
-            let batch_is_reviewed = REVIEWED_BATCH_FINGERPRINT
-                .try_lock()
-                .is_some_and(|reviewed| reviewed.as_ref() == Some(&batch_fingerprint));
-            if !batch_is_reviewed {
+            // structural checks.
+            if !confirm_batch_reviewed(&batch_fingerprint) {
                 seed.zeroize();
                 return UREncodeResult::from(RustCError::InvalidData(
                     "Zcash batch does not match the reviewed batch".to_string(),
@@ -921,6 +926,39 @@ mod tests {
             validate_zcash_batch(&batch).unwrap(),
             fingerprint,
             "identical batch bytes must produce the reviewed fingerprint"
+        );
+
+        // The signing gate itself: refuse with nothing reviewed, sign only the
+        // reviewed batch, follow re-reviews, and disarm on clear. One test
+        // exercises the whole lifecycle because the static is shared state.
+        let other = validate_zcash_batch(&test_zcash_batch(vec![test_zcash_message(
+            b"one",
+            b"pczt-other",
+        )]))
+        .unwrap();
+        *REVIEWED_BATCH_FINGERPRINT.lock() = None;
+        assert!(
+            !confirm_batch_reviewed(&fingerprint),
+            "no review armed: refuse"
+        );
+        *REVIEWED_BATCH_FINGERPRINT.lock() = Some(fingerprint);
+        assert!(
+            confirm_batch_reviewed(&fingerprint),
+            "the reviewed batch signs"
+        );
+        assert!(
+            !confirm_batch_reviewed(&other),
+            "a different batch is refused while another is armed"
+        );
+        *REVIEWED_BATCH_FINGERPRINT.lock() = Some(other);
+        assert!(
+            !confirm_batch_reviewed(&fingerprint),
+            "a new review replaces the armed fingerprint"
+        );
+        *REVIEWED_BATCH_FINGERPRINT.lock() = None;
+        assert!(
+            !confirm_batch_reviewed(&other),
+            "a cleared review disarms signing"
         );
 
         let changed_payload = test_zcash_batch(vec![
