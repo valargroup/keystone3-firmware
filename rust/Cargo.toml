@@ -126,13 +126,13 @@ zeroize = { version = "1.8.2", default-features = false }
 # third party dependencies end
 
 [patch.crates-io]
-orchard = { git = "https://github.com/valargroup/orchard", rev = "34c9c5047f3ef31777453413716d91b6ceda561f" }
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
-zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
-zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
-zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
-zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
-zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
-zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "f7ce0b56a522b0f3cbf16fcc19a7c6b3a9e9872d" }
+orchard = { git = "https://github.com/valargroup/orchard", rev = "c8e98aa8a2bcdd365df6915c4056882bea1904d1" }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
+zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
+zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
+zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
+zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
+zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
+zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
 # Use the SDK rev with the compact Zcash signature result registry type until it is published as a crate.
 ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "97c1a5d5df5fb457a169cd66e0f91e40acb18c64" }
