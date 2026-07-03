@@ -112,6 +112,10 @@ struct SeedSigner<'a> {
     seed: &'a [u8],
     seed_fingerprint: [u8; 32],
     pool: ShieldedPool,
+    /// Batch mode restricts signing to a single account. `Some(account)`
+    /// (`for_batch_account`): only spends tagged for that account are signed;
+    /// spends tagged for a different account of the same seed are refused. `None`
+    /// (`new`): ordinary signing — any account derivable from the seed.
     selected_account: Option<zcash_vendor::zip32::AccountId>,
     /// Per-account spend authorizing key cache. The seed fingerprint and the account
     /// key depend only on (seed, account), not on the action, so a bundle with many
@@ -283,6 +287,16 @@ impl PcztSigner for SeedSigner<'_> {
     }
 }
 
+// Ordinary and batch signing share one core, `sign_pczt_with_seed_fingerprint_inner`,
+// which threads an optional selected account (None = ordinary, Some = batch/restricted).
+// The three wrappers exist so callers can enter at the right level:
+//   sign_pczt                          -> public ordinary entry; computes the seed fingerprint
+//   sign_pczt_with_seed_fingerprint    -> ordinary, fingerprint already known (avoids recomputing)
+//   sign_batch_pczt_with_seed_fingerprint -> batch; restricts signing to `account_index`
+// The batch path already holds the fingerprint (validated during review), so it skips recomputing it.
+
+/// Public ordinary (non-batch) signing entry: signs every action derivable from
+/// the seed. Computes the seed fingerprint, then delegates to the shared core.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
     let seed_fingerprint =
@@ -291,6 +305,7 @@ pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
     sign_pczt_with_seed_fingerprint(pczt, seed, seed_fingerprint)
 }
 
+/// Ordinary signing with a precomputed seed fingerprint (no account restriction).
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn sign_pczt_with_seed_fingerprint(
     pczt: Pczt,
@@ -300,6 +315,8 @@ pub(crate) fn sign_pczt_with_seed_fingerprint(
     sign_pczt_with_seed_fingerprint_inner(pczt, seed, seed_fingerprint, None)
 }
 
+/// Batch signing: restricts signing to `account_index` (the device-selected
+/// account); spends tagged for another account of the same seed are refused.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn sign_batch_pczt_with_seed_fingerprint(
     pczt: Pczt,
@@ -310,6 +327,9 @@ pub(crate) fn sign_batch_pczt_with_seed_fingerprint(
     sign_pczt_with_seed_fingerprint_inner(pczt, seed, seed_fingerprint, Some(account_index))
 }
 
+/// Shared signing core for both ordinary and batch paths. `selected_account`
+/// distinguishes them: `None` signs any of the seed's accounts, `Some` restricts
+/// to that one.
 #[cfg(feature = "cypherpunk")]
 fn sign_pczt_with_seed_fingerprint_inner(
     pczt: Pczt,

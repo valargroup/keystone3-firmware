@@ -334,9 +334,15 @@ pub(crate) mod test_support {
     }
 
     /// Re-tags every zero-value Orchard spend in `bytes` with a ZIP 32 derivation
-    /// built from `seed_fingerprint` and `path`. Used to simulate a batch entry whose
-    /// fabricated wallet-controlled change spend is tagged for a different account of
-    /// the same seed.
+    /// built from `seed_fingerprint` and `path`.
+    ///
+    /// Why this exists: post-NU6.3 restricted bundles pair each change output with a
+    /// fabricated wallet-controlled zero-value spend. The batch signer must sign the
+    /// ones for the *selected* account but must reject one tagged for a *different*
+    /// account of the same seed (signing it would produce a response the wallet
+    /// cannot extract). This helper builds exactly that adversarial case, and
+    /// `test_batch_sign_rejects_foreign_account_zero_value_spend` asserts the signer
+    /// refuses it with `PcztNoMyInputs`.
     #[cfg(zcash_unstable = "nu6.3")]
     pub(crate) fn orchard_pczt_with_zero_value_spend_derivation(
         bytes: &[u8],

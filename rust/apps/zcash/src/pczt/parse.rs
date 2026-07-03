@@ -98,6 +98,11 @@ pub(crate) fn format_zec_value(value: f64) -> String {
 /// - `Ok(None)` if the output cannot be decrypted.
 /// - `Err(_)` if `ovk` is `None` and the PCZT is missing fields needed to directly
 ///   decrypt the output.
+///
+/// `pool` only selects the note-encryption domain — `OrchardDomain` for Orchard,
+/// `IronwoodDomain` for Ironwood. The recovery logic is identical for both, so
+/// the body is written once in the `decode_with_domain!` macro and instantiated
+/// per domain; this is why the diff looks larger than a plain "match on pool".
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn decode_output_enc_ciphertext(
     action: &orchard::pczt::Action,
@@ -248,6 +253,13 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     assemble_parsed_pczt(pczt, parsed_transparent, parsed_orchard, parsed_ironwood)
 }
 
+/// Finishes a parse whose shielded pools were ALREADY checked-and-parsed in one
+/// pass (`parsed_orchard`/`parsed_ironwood` come from
+/// [`super::check::check_and_parse_pczt_shielded`]). It only parses the
+/// transparent bundle and assembles the totals, reusing the shielded work rather
+/// than decrypting the outputs again. The full-from-scratch variant that decodes
+/// everything itself is [`parse_pczt_cypherpunk`]; both funnel into
+/// [`assemble_parsed_pczt`].
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn parse_pczt_cypherpunk_with_checked_shielded<P: consensus::Parameters>(
     params: &P,

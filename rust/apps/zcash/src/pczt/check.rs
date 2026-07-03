@@ -83,12 +83,27 @@ pub fn check_pczt_orchard<P: consensus::Parameters>(
     Ok(())
 }
 
+/// The shielded display data (`orchard` / `ironwood`) produced as a side effect
+/// of the check pass, so the parse step does not have to decrypt every output a
+/// second time. Populated by [`check_and_parse_pczt_shielded`] and consumed by
+/// [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`]. `None` for a
+/// pool means it had nothing to display (e.g. all-dummy bundle).
 #[cfg(feature = "cypherpunk")]
 pub(crate) struct CheckedShieldedParse {
     pub(crate) orchard: Option<ParsedOrchard>,
     pub(crate) ironwood: Option<ParsedOrchard>,
 }
 
+/// Runs the shielded validation and builds the display data in a SINGLE pass.
+///
+/// Previously the device validated a PCZT with `check_*` and then re-ran the
+/// Verifier in `parse_*` to build the display rows, decrypting every output
+/// twice. This checks and parses at once: it runs the Verifier once, and for
+/// each action both validates it and records its [`ParsedOrchard`] row. The
+/// result feeds [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`],
+/// which only has to assemble the transparent bundle and totals. Behaviour is
+/// identical to the old check-then-reparse, minus the second decryption. Used by
+/// the batch review path (`check_and_parse_batch_pczt_cypherpunk`).
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
     params: &P,
@@ -381,6 +396,13 @@ fn check_shielded_bundle<P: consensus::Parameters>(
     }
 }
 
+/// The check-and-parse twin of [`check_shielded_bundle`]: it runs the same
+/// per-action validation but also decodes each action into a [`ParsedOrchard`]
+/// display row. Returns `Ok(None)` when the bundle has nothing to show the user
+/// (all dummies), `Ok(Some(_))` otherwise. `check_shielded_bundle` stays as the
+/// check-only variant for paths that don't need display data; keep the two in
+/// sync. (GitHub renders these two similar functions as one mangled diff — they
+/// are separate: check-only vs check+parse.)
 #[cfg(feature = "cypherpunk")]
 fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
     params: &P,
