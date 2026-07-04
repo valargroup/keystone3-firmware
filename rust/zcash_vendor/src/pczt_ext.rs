@@ -207,17 +207,50 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
     let mut nh = hasher(ZCASH_ORCHARD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION);
 
     for action in pczt.orchard().actions().iter() {
-        let enc_ciphertext = action.output().enc_ciphertext();
+        let enc_ciphertext = action
+            .output()
+            .enc_ciphertext()
+            .as_ref()
+            .expect("enc_ciphertext present after fill_derived_fields");
 
-        ch.update(action.spend().nullifier());
-        ch.update(action.output().cmx());
-        ch.update(action.output().ephemeral_key());
+        ch.update(
+            action
+                .spend()
+                .nullifier()
+                .as_ref()
+                .expect("nullifier present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .cmx()
+                .as_ref()
+                .expect("cmx present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .ephemeral_key()
+                .as_ref()
+                .expect("ephemeral_key present after fill_derived_fields"),
+        );
         ch.update(&enc_ciphertext[..ENC_CIPHERTEXT_COMPACT_LEN]);
 
         mh.update(&enc_ciphertext[ENC_CIPHERTEXT_COMPACT_LEN..ENC_CIPHERTEXT_MEMO_END]);
 
-        nh.update(action.cv_net());
-        nh.update(action.spend().rk());
+        nh.update(
+            action
+                .cv_net()
+                .as_ref()
+                .expect("cv_net present after fill_derived_fields"),
+        );
+        nh.update(
+            action
+                .spend()
+                .rk()
+                .as_ref()
+                .expect("rk present after fill_derived_fields"),
+        );
         nh.update(&enc_ciphertext[ENC_CIPHERTEXT_MEMO_END..]);
         nh.update(action.output().out_ciphertext());
     }
@@ -234,7 +267,12 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
     };
     h.update(&value_balance.to_le_bytes());
 
-    h.update(pczt.orchard().anchor());
+    h.update(
+        pczt.orchard()
+            .anchor()
+            .as_ref()
+            .expect("anchor present after fill_derived_fields"),
+    );
 
     h.finalize()
 }
@@ -364,17 +402,50 @@ fn digest_orchard_shaped_v6(
     let mut nh = hasher(noncompact_personalization);
 
     for action in bundle.actions().iter() {
-        let enc_ciphertext = action.output().enc_ciphertext();
+        let enc_ciphertext = action
+            .output()
+            .enc_ciphertext()
+            .as_ref()
+            .expect("enc_ciphertext present after fill_derived_fields");
 
-        ch.update(action.spend().nullifier());
-        ch.update(action.output().cmx());
-        ch.update(action.output().ephemeral_key());
+        ch.update(
+            action
+                .spend()
+                .nullifier()
+                .as_ref()
+                .expect("nullifier present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .cmx()
+                .as_ref()
+                .expect("cmx present after fill_derived_fields"),
+        );
+        ch.update(
+            action
+                .output()
+                .ephemeral_key()
+                .as_ref()
+                .expect("ephemeral_key present after fill_derived_fields"),
+        );
         ch.update(&enc_ciphertext[..ENC_CIPHERTEXT_COMPACT_LEN]);
 
         mh.update(&enc_ciphertext[ENC_CIPHERTEXT_COMPACT_LEN..ENC_CIPHERTEXT_MEMO_END]);
 
-        nh.update(action.cv_net());
-        nh.update(action.spend().rk());
+        nh.update(
+            action
+                .cv_net()
+                .as_ref()
+                .expect("cv_net present after fill_derived_fields"),
+        );
+        nh.update(
+            action
+                .spend()
+                .rk()
+                .as_ref()
+                .expect("rk present after fill_derived_fields"),
+        );
         nh.update(&enc_ciphertext[ENC_CIPHERTEXT_MEMO_END..]);
         nh.update(action.output().out_ciphertext());
     }
@@ -623,7 +694,7 @@ where
 pub fn sign_orchard<T>(llsigner: Signer, signer: &T) -> Result<Signer, T::Error>
 where
     T: PcztSigner,
-    T::Error: From<pczt::orchard::BundleParseError>,
+    T::Error: From<pczt::roles::low_level_signer::OrchardParseError>,
     T::Error: From<orchard::pczt::ParseError>,
     T::Error: From<transparent::pczt::ParseError>,
 {
@@ -682,7 +753,7 @@ where
 pub fn sign_ironwood<T>(llsigner: Signer, signer: &T) -> Result<Signer, T::Error>
 where
     T: PcztSigner,
-    T::Error: From<pczt::orchard::BundleParseError>,
+    T::Error: From<pczt::roles::low_level_signer::OrchardParseError>,
     T::Error: From<orchard::pczt::ParseError>,
     T::Error: From<transparent::pczt::ParseError>,
 {

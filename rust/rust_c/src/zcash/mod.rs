@@ -33,11 +33,11 @@ use ur_registry::zcash::zcash_sign_batch::{
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
-// Batch memory is intentionally bounded by message count rather than separate
-// byte caps. With the supported pczt-v1 messages, a full 35-message batch used
-// about 35% of RAM on target hardware. Revisit this if new message kinds or
-// substantially larger payload encodings are added.
-const ZCASH_BATCH_MAX_MESSAGES: usize = 35;
+// Batch memory is bounded by message count, not separate byte caps. A 35-message
+// pczt-v1 batch was ~35% of RAM on target; the optional-field v2 messages this
+// build consumes are far smaller per message, so the ceiling is 80 to fit a full
+// migration batch. RAM scales with live batch size — revisit under memory pressure.
+const ZCASH_BATCH_MAX_MESSAGES: usize = 80;
 
 /// Fingerprint of the last Zcash batch that completed the review path
 /// (`parse_zcash_batch_tx_cypherpunk`), which verifies every message before
@@ -308,6 +308,34 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<[u8; 32], RustCError> 
     }
 
     Ok(sha256(&fingerprint_data))
+}
+
+/// Recombines the device's redacted signing response with the full PCZT the device was
+/// asked to sign, reproducing the full signed PCZT before the postflight verifier inspects
+/// it. `app_zcash::sign_pczt` redacts its response (clearing `recipient` and the six derived
+/// Orchard/Ironwood fields to keep the response QR small), so the bare response can no longer
+/// be re-parsed on its own: the verifier's `into_parsed` recompute needs `recipient`. The
+/// pczt `Combiner` refills every redacted field from `unsigned_full` while carrying through
+/// the response's spend authorization signatures and firmware-version stamp, so the
+/// postflight check runs against full (unredacted-equivalent) data. This mirrors what the
+/// wallet does with the response on the other side of the QR.
+#[cfg(feature = "cypherpunk")]
+fn recombine_signed_response(
+    unsigned_full: &[u8],
+    redacted_signed: &[u8],
+) -> app_zcash::errors::Result<Vec<u8>> {
+    use app_zcash::errors::ZcashError;
+    use zcash_vendor::pczt::{roles::combiner::Combiner, Pczt};
+
+    let unsigned_full = Pczt::parse(unsigned_full)
+        .map_err(|_| ZcashError::InvalidPczt("invalid unsigned pczt data".to_string()))?;
+    let redacted_signed = Pczt::parse(redacted_signed)
+        .map_err(|_| ZcashError::InvalidPczt("invalid signed pczt data".to_string()))?;
+    Combiner::new(alloc::vec![unsigned_full, redacted_signed])
+        .combine()
+        .map_err(|e| ZcashError::InvalidPczt(format!("failed to recombine signed pczt: {e:?}")))?
+        .serialize()
+        .map_err(|e| ZcashError::InvalidPczt(format!("failed to serialize recombined pczt: {e:?}")))
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -733,11 +761,23 @@ unsafe fn sign_zcash_tx_cypherpunk_dynamic(
 
                     match app_zcash::sign_pczt(&pczt_data, seed) {
                         Ok(signed_pczt) => {
+                            // Recombine the redacted response with the original full PCZT so
+                            // the postflight check runs on full (unredacted) data; the bare
+                            // response is intentionally not re-parseable on its own. The
+                            // redacted `signed_pczt` is still what gets returned to the wallet.
+                            let combined =
+                                match recombine_signed_response(&pczt_data, &signed_pczt) {
+                                    Ok(combined) => combined,
+                                    Err(e) => {
+                                        seed.zeroize();
+                                        return UREncodeResult::from(e).c_ptr();
+                                    }
+                                };
                             if let Err(e) =
                                 app_zcash::ensure_owned_supported_shielded_actions_are_signed(
                                     &MainNetwork,
                                     &pczt_data,
-                                    &signed_pczt,
+                                    &combined,
                                     &seed_fingerprint,
                                     account_index,
                                 )

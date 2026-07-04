@@ -11,6 +11,7 @@ use keystore::algorithms::{
 };
 use zcash_vendor::{
     pczt::{
+        orchard::MemoKind,
         roles::{
             low_level_signer,
             redactor::{orchard::OrchardRedactor, Redactor},
@@ -77,13 +78,16 @@ pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
     super::validate_supported_pczt(&pczt)?;
     reject_legacy_unsupported_pczt(&pczt)?;
 
+    let request_memo_kinds = RequestMemoKinds::capture(&pczt);
     let signer = low_level_signer::Signer::new(pczt);
 
     #[cfg(feature = "multi_coins")]
     let signer = pczt_ext::sign_transparent(signer, &SeedSigner { seed })
         .map_err(|e| ZcashError::SigningError(e.to_string()))?;
 
-    Ok(stamp_and_redact(signer.finish()).serialize())
+    stamp_and_redact(signer.finish(), &request_memo_kinds)
+        .serialize()
+        .map_err(|e| ZcashError::InvalidPczt(alloc::format!("pczt serialize: {e:?}")))
 }
 
 #[cfg(not(feature = "cypherpunk"))]
@@ -332,12 +336,24 @@ pub(crate) fn sign_batch_pczt_with_seed_fingerprint(
 /// to that one.
 #[cfg(feature = "cypherpunk")]
 fn sign_pczt_with_seed_fingerprint_inner(
-    pczt: Pczt,
+    mut pczt: Pczt,
     seed: &[u8],
     seed_fingerprint: [u8; 32],
     selected_account: Option<zcash_vendor::zip32::AccountId>,
 ) -> crate::Result<Vec<u8>> {
     super::validate_supported_pczt(&pczt)?;
+
+    // Capture the wallet's per-output memo-kind tags before `fill_derived_fields`
+    // consumes them; the response redaction echoes them (see `RequestMemoKinds`).
+    let request_memo_kinds = RequestMemoKinds::capture(&pczt);
+
+    // Recompute and fill any Orchard/Ironwood derived fields a wallet omitted to keep the
+    // request QR small (cv_net, nullifier, rk, cmx, ephemeral_key, enc_ciphertext; an
+    // elided anchor refills as the empty-tree placeholder). The lean sighash below reads
+    // these directly off the PCZT, so they must be present; this is a no-op for a full
+    // PCZT. The redactor strips them again from the response.
+    pczt.fill_derived_fields()
+        .map_err(|e| ZcashError::InvalidPczt(format!("failed to fill derived fields: {e:?}")))?;
 
     #[cfg(zcash_unstable = "nu6.3")]
     let process_ironwood = super::pczt_should_process_ironwood(&pczt);
@@ -384,10 +400,46 @@ fn sign_pczt_with_seed_fingerprint_inner(
         return Err(ZcashError::PcztNoMyInputs);
     }
 
-    Ok(stamp_and_redact(signer.finish()).serialize())
+    stamp_and_redact(signer.finish(), &request_memo_kinds)
+        .serialize()
+        .map_err(|e| ZcashError::InvalidPczt(alloc::format!("pczt serialize: {e:?}")))
 }
 
-fn stamp_and_redact(pczt: Pczt) -> Pczt {
+/// The per-output [`MemoKind`] tags carried by the inbound request's Orchard-shaped
+/// bundles, captured before `fill_derived_fields` consumes them. `orchard[i]` /
+/// `ironwood[i]` is the tag the wallet recorded when it elided action `i`'s
+/// `enc_ciphertext`, or `None` if the request carried the ciphertext.
+///
+/// The response redaction echoes these tags: re-eliding a response ciphertext under
+/// the wallet's own (wallet-verified) tag keeps the response mergeable with the
+/// request (`memo_kind` merges by equality in the pczt `Combiner`, so a differing tag
+/// would make the postflight recombine fail), and the device never invents a tag for
+/// an output whose memo it has not verified.
+struct RequestMemoKinds {
+    orchard: Vec<Option<MemoKind>>,
+    #[cfg(zcash_unstable = "nu6.3")]
+    ironwood: Vec<Option<MemoKind>>,
+}
+
+impl RequestMemoKinds {
+    /// Captures the memo-kind tags of both Orchard-shaped bundles; see the type doc.
+    fn capture(pczt: &Pczt) -> Self {
+        let capture_bundle = |bundle: &zcash_vendor::pczt::orchard::Bundle| {
+            bundle
+                .actions()
+                .iter()
+                .map(|action| *action.output().memo_kind())
+                .collect()
+        };
+        Self {
+            orchard: capture_bundle(pczt.orchard()),
+            #[cfg(zcash_unstable = "nu6.3")]
+            ironwood: capture_bundle(pczt.ironwood()),
+        }
+    }
+}
+
+fn stamp_and_redact(pczt: Pczt, request_memo_kinds: &RequestMemoKinds) -> Pczt {
     // Stamp the firmware version into `global.proprietary` so the wallet can
     // tell exactly which version of Keystone firmware produced this signature.
     // The Redactor below intentionally does not touch `global`, so this value
@@ -404,9 +456,11 @@ fn stamp_and_redact(pczt: Pczt) -> Pczt {
     // Now that we've created the signature, remove optional fields that the
     // signing response does not need. This keeps the QR round trip small while
     // preserving signatures and global proprietary fields for the wallet.
-    let redactor = Redactor::new(stamped_pczt).redact_orchard_with(redact_orchard_bundle);
+    let redactor = Redactor::new(stamped_pczt)
+        .redact_orchard_with(|r| redact_orchard_bundle(r, &request_memo_kinds.orchard));
     #[cfg(zcash_unstable = "nu6.3")]
-    let redactor = redactor.redact_ironwood_with(redact_orchard_bundle);
+    let redactor =
+        redactor.redact_ironwood_with(|r| redact_orchard_bundle(r, &request_memo_kinds.ironwood));
 
     redactor
         .redact_sapling_with(|mut r| {
@@ -453,7 +507,12 @@ fn stamp_and_redact(pczt: Pczt) -> Pczt {
         .finish()
 }
 
-fn redact_orchard_bundle(mut r: OrchardRedactor<'_>) {
+/// Strips the response fields the wallet refills from its own copy. An output's
+/// `enc_ciphertext` is re-elided only under the request's own memo-kind tag
+/// (`request_memo_kinds[i]`, wallet-verified); when the request carried the
+/// ciphertext the response keeps it, since the device cannot attest a tag for a
+/// memo it has not seen. See [`RequestMemoKinds`].
+fn redact_orchard_bundle(mut r: OrchardRedactor<'_>, request_memo_kinds: &[Option<MemoKind>]) {
     r.redact_actions(|mut ar| {
         ar.clear_spend_recipient();
         ar.clear_spend_value();
@@ -471,7 +530,17 @@ fn redact_orchard_bundle(mut r: OrchardRedactor<'_>) {
         ar.clear_output_zip32_derivation();
         ar.clear_output_user_address();
         ar.clear_rcv();
+        ar.clear_cv_net();
+        ar.clear_nullifier();
+        ar.clear_rk();
+        ar.clear_cmx();
+        ar.clear_ephemeral_key();
     });
+    for (index, memo_kind) in request_memo_kinds.iter().enumerate() {
+        if let Some(memo_kind) = *memo_kind {
+            r.redact_action(index, |mut ar| ar.clear_enc_ciphertext(memo_kind));
+        }
+    }
     r.clear_zkproof();
     r.clear_bsk();
 }
@@ -602,6 +671,196 @@ mod tests {
         );
     }
 
+    // End-to-end consume-side proof for elidable-field requests: a migration request
+    // with every derived field, both anchors, and every enc_ciphertext elided (tagged
+    // with the wallet's memo kinds) must check, parse, and sign; the spend
+    // authorization must commit to the same sighash as a never-elided request; the
+    // response must re-elide each ciphertext under the request's own tag; and the
+    // redacted response must recombine with the elided request (the device postflight
+    // path in rust_c).
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_sign_elided_migration_request_echoes_memo_kinds() {
+        use zcash_vendor::pczt::roles::{combiner::Combiner, redactor::orchard::OrchardRedactor};
+
+        let sample = crate::pczt::test_support::sample_migration_pczt();
+        let full = Pczt::parse(&sample.bytes).unwrap();
+        let full_sighash = RoleSigner::new(full.clone())
+            .expect("full migration PCZT signer should initialize")
+            .shielded_sighash();
+
+        // The wallet may only elide an enc_ciphertext it has verified to be the
+        // deterministic encryption under one of the two memo constants: probe each
+        // output by re-eliding a clone under each tag and refilling, keeping the tag
+        // exactly when the reconstruction is byte-identical. In this sample the pure
+        // dummy Orchard output reconstructs under `Zero` and the Ironwood migration
+        // output (built with the ZIP 302 empty memo) under `Empty`, while the
+        // zero-valued output fabricated for the real Orchard spend has a *randomized*
+        // ciphertext and must keep it.
+        fn elidable_memo_kinds(
+            full: &Pczt,
+            bundle_of: fn(&Pczt) -> &zcash_vendor::pczt::orchard::Bundle,
+            redact_with: fn(Redactor, fn(OrchardRedactor<'_>)) -> Redactor,
+        ) -> Vec<Option<MemoKind>> {
+            let original: Vec<_> = bundle_of(full)
+                .actions()
+                .iter()
+                .map(|action| action.output().enc_ciphertext().clone())
+                .collect();
+            let mut tags = alloc::vec![None; original.len()];
+            for (kind, probe_all) in [
+                (
+                    MemoKind::Zero,
+                    (|mut r: OrchardRedactor<'_>| {
+                        r.redact_actions(|mut ar| ar.clear_enc_ciphertext(MemoKind::Zero));
+                    }) as fn(OrchardRedactor<'_>),
+                ),
+                (MemoKind::Empty, |mut r: OrchardRedactor<'_>| {
+                    r.redact_actions(|mut ar| ar.clear_enc_ciphertext(MemoKind::Empty));
+                }),
+            ] {
+                let mut probe = redact_with(Redactor::new(full.clone()), probe_all).finish();
+                probe
+                    .fill_derived_fields()
+                    .expect("probe reconstruction must fill");
+                for (index, action) in bundle_of(&probe).actions().iter().enumerate() {
+                    if tags[index].is_none() && action.output().enc_ciphertext() == &original[index]
+                    {
+                        tags[index] = Some(kind);
+                    }
+                }
+            }
+            tags
+        }
+        let orchard_tags = elidable_memo_kinds(
+            &full,
+            |pczt| pczt.orchard(),
+            |redactor, f| redactor.redact_orchard_with(f),
+        );
+        let ironwood_tags = elidable_memo_kinds(
+            &full,
+            |pczt| pczt.ironwood(),
+            |redactor, f| redactor.redact_ironwood_with(f),
+        );
+        assert!(
+            orchard_tags.contains(&Some(MemoKind::Zero)) && orchard_tags.contains(&None),
+            "sample must cover an elidable zero-memo output and a kept randomized one",
+        );
+        assert_eq!(ironwood_tags, alloc::vec![Some(MemoKind::Empty)]);
+
+        // Elide the request the way the optimizing wallet does: the six derived
+        // fields, the bundle anchor, and each *verified* enc_ciphertext under its tag.
+        fn elide_request_bundle(mut r: OrchardRedactor<'_>, memo_kinds: &[Option<MemoKind>]) {
+            r.redact_actions(|mut ar| {
+                ar.clear_cv_net();
+                ar.clear_nullifier();
+                ar.clear_rk();
+                ar.clear_cmx();
+                ar.clear_ephemeral_key();
+            });
+            for (index, memo_kind) in memo_kinds.iter().enumerate() {
+                if let Some(memo_kind) = *memo_kind {
+                    r.redact_action(index, |mut ar| ar.clear_enc_ciphertext(memo_kind));
+                }
+            }
+            r.clear_anchor();
+        }
+        let elided_request = Redactor::new(full.clone())
+            .redact_orchard_with(|r| elide_request_bundle(r, &orchard_tags))
+            .redact_ironwood_with(|r| elide_request_bundle(r, &ironwood_tags))
+            .finish();
+        let elided_bytes = elided_request
+            .clone()
+            .serialize()
+            .expect("elided request must serialize");
+        assert!(
+            elided_bytes.len() < sample.bytes.len(),
+            "eliding must shrink the request",
+        );
+
+        // The device-side check and parse paths accept the elided request (the fill
+        // recomputes byte-identical fields, so decryption and cv_net checks pass).
+        crate::check_pczt_cypherpunk(
+            &crate::pczt::test_support::Nu6_3Network,
+            &elided_bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("elided migration request must pass the pre-sign checks");
+        crate::parse_pczt_cypherpunk(
+            &crate::pczt::test_support::Nu6_3Network,
+            &elided_bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+        )
+        .expect("elided migration request must parse for display");
+
+        let signed = sign_pczt(elided_request.clone(), &sample.seed)
+            .expect("elided migration request must sign");
+        let response = Pczt::parse(&signed).expect("signed response must parse");
+
+        // The response re-elides each enc_ciphertext under the request's own tag and
+        // keeps the ciphertext the request carried (the randomized one).
+        for (bundle, tags) in [
+            (response.orchard(), &orchard_tags),
+            (response.ironwood(), &ironwood_tags),
+        ] {
+            for (action, tag) in bundle.actions().iter().zip(tags) {
+                assert_eq!(action.output().memo_kind(), tag);
+                assert_eq!(action.output().enc_ciphertext().is_none(), tag.is_some());
+            }
+        }
+
+        // The Orchard spend authorization commits to the never-elided sighash: the
+        // recompute-on-receive fill is byte-identical to the elided values.
+        let mut filled = full;
+        filled
+            .fill_derived_fields()
+            .expect("full migration PCZT should fill");
+        let mut verified = 0;
+        for (action, filled_action) in response
+            .orchard()
+            .actions()
+            .iter()
+            .zip(filled.orchard().actions())
+        {
+            if let Some(sig) = action.spend().spend_auth_sig() {
+                let rk_bytes = filled_action
+                    .spend()
+                    .rk()
+                    .expect("filled PCZT must carry rk");
+                let rk = orchard::primitives::redpallas::VerificationKey::<
+                    orchard::primitives::redpallas::SpendAuth,
+                >::try_from(rk_bytes)
+                .expect("randomized validating key must parse");
+                let sig: orchard::primitives::redpallas::Signature<
+                    orchard::primitives::redpallas::SpendAuth,
+                > = (*sig).into();
+                rk.verify(&full_sighash, &sig)
+                    .expect("elided-request signature must match the full-request sighash");
+                verified += 1;
+            }
+        }
+        assert!(verified > 0, "the Orchard spend must be authorized");
+
+        // The device postflight recombines the redacted response with the (elided)
+        // original request; the echoed tags merge by equality.
+        let combined = Combiner::new(alloc::vec![elided_request, response])
+            .combine()
+            .expect("response must recombine with the elided request")
+            .serialize()
+            .expect("recombined PCZT must serialize");
+        crate::ensure_owned_supported_shielded_actions_are_signed(
+            &crate::pczt::test_support::Nu6_3Network,
+            &elided_bytes,
+            &combined,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("postflight must confirm the signature on the recombined PCZT");
+    }
+
     // End-to-end: an Orchard->Ironwood migration signs the Orchard spend and leaves the
     // output-only Ironwood bundle unsigned.
     #[cfg(zcash_unstable = "nu6.3")]
@@ -638,22 +897,41 @@ mod tests {
         let base_sighash = RoleSigner::new(pczt.clone())
             .expect("Ironwood PCZT signer should initialize")
             .shielded_sighash();
-        let updated_anchor = orchard::Anchor::from_bytes([6u8; 32]).unwrap();
-        let updated_anchor_pczt = Updater::new(pczt.clone())
-            .set_v6_ironwood_anchor(updated_anchor)
-            .expect("v6 Ironwood anchor should be replaceable before proving")
+        // Elide the Ironwood anchor with the Redactor and refill it: the receiver
+        // installs the fixed empty-tree placeholder, which differs from the sample's
+        // real anchor, so this exercises signing with a changed anchor.
+        let mut anchor_swapped_pczt = Redactor::new(pczt.clone())
+            .redact_ironwood_with(|mut r| r.clear_anchor())
             .finish();
+        assert_eq!(anchor_swapped_pczt.ironwood().anchor(), &None);
+        anchor_swapped_pczt
+            .fill_derived_fields()
+            .expect("anchor-elided Ironwood PCZT should refill");
         assert_ne!(
             pczt.ironwood().anchor(),
-            updated_anchor_pczt.ironwood().anchor()
+            anchor_swapped_pczt.ironwood().anchor()
         );
         assert_eq!(
             base_sighash,
-            RoleSigner::new(updated_anchor_pczt)
-                .expect("anchor-updated Ironwood PCZT signer should initialize")
+            RoleSigner::new(anchor_swapped_pczt)
+                .expect("anchor-swapped Ironwood PCZT signer should initialize")
                 .shielded_sighash(),
             "v6 Ironwood spend signatures must not commit to the anchor"
         );
+
+        // The signing response redacts `rk` (see `redact_orchard_bundle`), so source each
+        // action's randomized validating key from the filled unsigned PCZT, matched by
+        // index to the corresponding signed action below.
+        let mut filled = pczt.clone();
+        filled
+            .fill_derived_fields()
+            .expect("derived fields should fill for the sample Ironwood PCZT");
+        let rks: Vec<Option<[u8; 32]>> = filled
+            .ironwood()
+            .actions()
+            .iter()
+            .map(|action| *action.spend().rk())
+            .collect();
 
         let signed_pczt_bytes = sign_pczt(pczt, &sample.seed).expect("Ironwood PCZT should sign");
         let parsed = Pczt::parse(&signed_pczt_bytes).expect("signed PCZT must parse");
@@ -672,11 +950,12 @@ mod tests {
                 .any(|action| action.spend().spend_auth_sig().is_some()),
             "Ironwood spend authorization signature must be present",
         );
-        for action in parsed.ironwood().actions().iter() {
+        for (index, action) in parsed.ironwood().actions().iter().enumerate() {
             if let Some(sig) = action.spend().spend_auth_sig() {
+                let rk_bytes = rks[index].expect("filled unsigned PCZT must carry rk");
                 let rk = orchard::primitives::redpallas::VerificationKey::<
                     orchard::primitives::redpallas::SpendAuth,
-                >::try_from(*action.spend().rk())
+                >::try_from(rk_bytes)
                 .expect("Ironwood randomized validating key must parse");
                 let sig: orchard::primitives::redpallas::Signature<
                     orchard::primitives::redpallas::SpendAuth,
@@ -843,14 +1122,16 @@ mod legacy_tests {
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_signing_rejects_v6_pczt() {
-        let pczt = Creator::new_v6(
+        let pczt = Creator::new(
             BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
             [0; 32],
             [0; 32],
-            [1; 32],
         )
+        .unwrap()
+        .with_ironwood_anchor([1; 32])
+        .unwrap()
         .build();
 
         let result = sign_pczt(pczt, &[7u8; 32]);

@@ -126,13 +126,17 @@ zeroize = { version = "1.8.2", default-features = false }
 # third party dependencies end
 
 [patch.crates-io]
-orchard = { git = "https://github.com/valargroup/orchard", rev = "c8e98aa8a2bcdd365df6915c4056882bea1904d1" }
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
-zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
-zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
-zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
-zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
-zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
-zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "03d6d678d711f7a02a3bab07b3c2fe22570732ec" }
+# Optional-field line, pinned to pushed revs — byte-identical pczt to vizor for QR interop.
+# orchard: zcash/orchard adam/pczt-recompute-fields (0.15.0-pre.x + the pczt recompute module).
+# librustzcash: valargroup/librustzcash adam/pczt-elidable-fields-ironwood-wallet
+# (valargroup 0.9.0 + upstream pczt-elidable-fields + finalized NU6.3 branch id / V6 group id).
+orchard = { git = "https://github.com/zcash/orchard", rev = "0aa06368f2c0d7fab01d2c26d32a1f2df283dccf" }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
+zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
+zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
+zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
+zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
+zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
+zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
 # Use the SDK rev with the compact Zcash signature result registry type until it is published as a crate.
 ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "97c1a5d5df5fb457a169cd66e0f91e40acb18c64" }
