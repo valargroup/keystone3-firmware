@@ -24,6 +24,7 @@
 
 static URParseResult *g_urResult = NULL;
 static URParseMultiResult *g_urMultiResult = NULL;
+static bool g_preserveInputForSigning = false;
 static bool g_isMulti = false;
 
 static uint32_t g_currentTxIndex = 0;
@@ -53,11 +54,10 @@ static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited);
 static bool IsZcashBatchUsbMode(void);
 static void RejectZcashBatchUsbRequest(void);
 static void RespondZcashBatchUsbParseError(const char *errorMessage);
+static void ReleaseZcashBatchInputData(void);
 
-static void ClearPageData(void)
+static void ReleaseZcashBatchReviewData(void)
 {
-    g_currentTxIndex = 0;
-    g_txCount = 0;
     g_currentTransaction = NULL;
     g_displayZcashBatch = NULL;
 
@@ -65,11 +65,30 @@ static void ClearPageData(void)
         free_TransactionParseResult_DisplayZcashBatch(g_parseResult);
         g_parseResult = NULL;
     }
+}
 
+static void ReleaseZcashBatchUrData(void)
+{
     if (g_isMulti) {
         CHECK_FREE_UR_RESULT(g_urMultiResult, true);
     } else {
         CHECK_FREE_UR_RESULT(g_urResult, false);
+    }
+}
+
+static void ReleaseZcashBatchInputData(void)
+{
+    ReleaseZcashBatchReviewData();
+    ReleaseZcashBatchUrData();
+}
+
+static void ClearPageData(void)
+{
+    g_currentTxIndex = 0;
+    g_txCount = 0;
+    ReleaseZcashBatchReviewData();
+    if (!g_preserveInputForSigning) {
+        ReleaseZcashBatchUrData();
     }
 }
 
@@ -82,8 +101,19 @@ void GuiSetZcashBatchUrData(URParseResult *urResult, URParseMultiResult *urMulti
 
 UREncodeResult *GuiGetZcashBatchSignQrCodeData(void)
 {
-    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
-    return SignZcashBatchInternal(data, false);
+    void *data = g_isMulti
+                 ? (g_urMultiResult == NULL ? NULL : g_urMultiResult->data)
+                 : (g_urResult == NULL ? NULL : g_urResult->data);
+    if (data == NULL) {
+        g_preserveInputForSigning = false;
+        ReleaseZcashBatchInputData();
+        return NULL;
+    }
+
+    UREncodeResult *result = SignZcashBatchInternal(data, false);
+    g_preserveInputForSigning = false;
+    ReleaseZcashBatchInputData();
+    return result;
 }
 
 UREncodeResult *GuiGetZcashBatchSignUrDataUnlimited(void)
@@ -175,6 +205,8 @@ void GuiZcashBatchWidgetsVerifyPasswordSuccess(void)
         return;
     }
     uint8_t viewType = ZcashBatchTx;
+    g_preserveInputForSigning = true;
+    GuiCloseCurrentWorkingView();
     GuiFrameOpenViewWithParam(&g_transactionSignatureView, &viewType, sizeof(viewType));
 }
 
