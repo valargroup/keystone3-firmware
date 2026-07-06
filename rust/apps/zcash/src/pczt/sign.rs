@@ -347,6 +347,10 @@ fn sign_pczt_with_seed_fingerprint_inner(
     // consumes them; the response redaction echoes them (see `RequestMemoKinds`).
     let request_memo_kinds = RequestMemoKinds::capture(&pczt);
 
+    if let Some(account_index) = selected_account {
+        fill_selected_account_spend_fvks(&mut pczt, seed, &seed_fingerprint, account_index)?;
+    }
+
     // Recompute and fill any Orchard/Ironwood derived fields a wallet omitted to keep the
     // request QR small (cv_net, nullifier, rk, cmx, ephemeral_key, enc_ciphertext; an
     // elided anchor refills as the empty-tree placeholder). The lean sighash below reads
@@ -403,6 +407,33 @@ fn sign_pczt_with_seed_fingerprint_inner(
     stamp_and_redact(signer.finish(), &request_memo_kinds)
         .serialize()
         .map_err(|e| ZcashError::InvalidPczt(alloc::format!("pczt serialize: {e:?}")))
+}
+
+#[cfg(feature = "cypherpunk")]
+fn fill_selected_account_spend_fvks(
+    pczt: &mut Pczt,
+    seed: &[u8],
+    seed_fingerprint: &[u8; 32],
+    account_index: zcash_vendor::zip32::AccountId,
+) -> crate::Result<()> {
+    const ZCASH_COIN_TYPE: u32 = 133;
+
+    let osk = orchard::keys::SpendingKey::from_zip32_seed(seed, ZCASH_COIN_TYPE, account_index)
+        .map_err(|e| {
+            ZcashError::SigningError(format!(
+                "failed to derive selected account Orchard FVK: {e:?}"
+            ))
+        })?;
+    let fvk = orchard::keys::FullViewingKey::from(&osk).to_bytes();
+    let account_child: zcash_vendor::zip32::ChildIndex = account_index.into();
+    let derivation_path = [
+        zcash_vendor::zip32::ChildIndex::hardened(32).index(),
+        zcash_vendor::zip32::ChildIndex::hardened(ZCASH_COIN_TYPE).index(),
+        account_child.index(),
+    ];
+
+    pczt.fill_missing_spend_fvks_for_zip32_path(seed_fingerprint, &derivation_path, fvk);
+    Ok(())
 }
 
 /// The per-output [`MemoKind`] tags carried by the inbound request's Orchard-shaped

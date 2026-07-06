@@ -71,15 +71,21 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<()> {
-    let pczt = pczt::parse_pczt(pczt)?;
-    check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+    let mut pczt = pczt::parse_pczt(pczt)?;
+    check_parsed_pczt_cypherpunk(
+        params,
+        &mut pczt,
+        ufvk_text,
+        seed_fingerprint,
+        account_index,
+    )?;
     Ok(())
 }
 
 #[cfg(feature = "cypherpunk")]
 fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
-    pczt: &Pczt,
+    pczt: &mut Pczt,
     ufvk_text: &str,
     seed_fingerprint: &[u8; 32],
     account_index: u32,
@@ -91,6 +97,7 @@ fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
     let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
         "transparent xpub is not present".to_string(),
     ))?;
+    fill_missing_spend_fvks_from_ufvk(params, pczt, &ufvk, seed_fingerprint, account_index)?;
     pczt::check::check_pczt_orchard(params, seed_fingerprint, account_index, &ufvk, &pczt)?;
     pczt::check::check_pczt_transparent(
         params,
@@ -101,6 +108,31 @@ fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
         false,
     )?;
     Ok((ufvk, account_index))
+}
+
+#[cfg(feature = "cypherpunk")]
+fn fill_missing_spend_fvks_from_ufvk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &mut Pczt,
+    ufvk: &UnifiedFullViewingKey,
+    seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+) -> Result<()> {
+    if pczt.orchard().actions().is_empty() && pczt.ironwood().actions().is_empty() {
+        return Ok(());
+    }
+
+    let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
+        "orchard fvk is not present".to_string(),
+    ))?;
+    let account_child: zip32::ChildIndex = account_index.into();
+    let derivation_path = [
+        zip32::ChildIndex::hardened(32).index(),
+        zip32::ChildIndex::hardened(params.network_type().coin_type()).index(),
+        account_child.index(),
+    ];
+    pczt.fill_missing_spend_fvks_for_zip32_path(seed_fingerprint, &derivation_path, fvk.to_bytes());
+    Ok(())
 }
 
 #[cfg(feature = "multi_coins")]
@@ -208,7 +240,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<ParsedPczt> {
-    let pczt = pczt::parse_pczt(pczt)?;
+    let mut pczt = pczt::parse_pczt(pczt)?;
     let account_index = zip32::AccountId::try_from(account_index)
         .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
     let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
@@ -216,6 +248,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
         "transparent xpub is not present".to_string(),
     ))?;
+    fill_missing_spend_fvks_from_ufvk(params, &mut pczt, &ufvk, seed_fingerprint, account_index)?;
     let checked_shielded = pczt::check::check_and_parse_pczt_shielded(
         params,
         seed_fingerprint,
@@ -473,9 +506,14 @@ pub fn summarize_batch_migration_pczt_cypherpunk<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<BatchMigrationSummary> {
-    let pczt = pczt::parse_pczt(pczt)?;
-    let (ufvk, account_index) =
-        check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+    let mut pczt = pczt::parse_pczt(pczt)?;
+    let (ufvk, account_index) = check_parsed_pczt_cypherpunk(
+        params,
+        &mut pczt,
+        ufvk_text,
+        seed_fingerprint,
+        account_index,
+    )?;
 
     let signable_actions = signable_shielded_actions(
         params,
@@ -939,6 +977,39 @@ pub fn ensure_pczt_has_signable_shielded_action<P: consensus::Parameters>(
     let pczt = pczt::parse_pczt(pczt)?;
     let account_index = zip32::AccountId::try_from(account_index)
         .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+
+    if signable_shielded_actions(
+        params,
+        pczt,
+        seed_fingerprint,
+        account_index,
+        ShieldedActionPolicy::Batch,
+    )?
+    .is_empty()
+    {
+        Err(ZcashError::PcztNoMyInputs)
+    } else {
+        Ok(())
+    }
+}
+
+/// Checks signability after filling any account FVKs the batch request omitted
+/// from the wire. Use this for batch review paths that also receive the account
+/// UFVK.
+#[cfg(feature = "cypherpunk")]
+pub fn ensure_pczt_has_signable_shielded_action_with_ufvk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &[u8],
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<()> {
+    let mut pczt = pczt::parse_pczt(pczt)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
+        .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
+    fill_missing_spend_fvks_from_ufvk(params, &mut pczt, &ufvk, seed_fingerprint, account_index)?;
 
     if signable_shielded_actions(
         params,

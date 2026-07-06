@@ -122,6 +122,8 @@ num-traits = { version = "0.2.19", default-features = false }
 blake2b_simd = { version = "1.0.2", default-features = false }
 getrandom = "0.2"
 minicbor = { version = "0.19", features = ["alloc"] }
+miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+pczt = { version = "0.7", default-features = false }
 zeroize = { version = "1.8.2", default-features = false }
 # third party dependencies end
 
@@ -130,13 +132,13 @@ zeroize = { version = "1.8.2", default-features = false }
 # orchard: zcash/orchard adam/pczt-recompute-fields (0.15.0-pre.x + the pczt recompute module).
 # librustzcash: valargroup/librustzcash adam/pczt-elidable-fields-ironwood-wallet
 # (valargroup 0.9.0 + upstream pczt-elidable-fields + finalized NU6.3 branch id / V6 group id).
-orchard = { git = "https://github.com/zcash/orchard", rev = "0aa06368f2c0d7fab01d2c26d32a1f2df283dccf" }
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
-zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
-zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
-zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
-zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
-zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
-zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "9e0af8fd6b2a2dadd6baa62bc1c582798bfe0660" }
+orchard = { git = "https://github.com/zcash/orchard", rev = "64a887a5826e14228d1d49d77b92d555e0e807bb" }
+pczt = { git = "https://github.com/valargroup/librustzcash", rev = "adfa99b8d778a885ea98ad38be9144f2c8b83750" }
+zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "adfa99b8d778a885ea98ad38be9144f2c8b83750" }
+zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "adfa99b8d778a885ea98ad38be9144f2c8b83750" }
+zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "adfa99b8d778a885ea98ad38be9144f2c8b83750" }
+zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "adfa99b8d778a885ea98ad38be9144f2c8b83750" }
+zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "adfa99b8d778a885ea98ad38be9144f2c8b83750" }
+zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "adfa99b8d778a885ea98ad38be9144f2c8b83750" }
 # Use the SDK rev with the compact Zcash signature result registry type until it is published as a crate.
 ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "97c1a5d5df5fb457a169cd66e0f91e40acb18c64" }

@@ -10,7 +10,7 @@ use crate::common::{
 };
 use crate::{extract_array, extract_array_mut};
 use crate::{extract_ptr_with_type, make_free_method};
-use alloc::{boxed::Box, format, string::String, string::ToString, vec::Vec};
+use alloc::{boxed::Box, format, string::String, string::ToString, vec, vec::Vec};
 use app_zcash::get_address;
 use core::slice;
 use cryptoxide::hashing::sha256;
@@ -32,6 +32,10 @@ use ur_registry::zcash::zcash_sign_batch::{
 };
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
+
+const ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1: u32 = 2;
+const ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC: &[u8; 4] = b"ZCPZ";
+const ZCASH_COMPRESSED_PCZT_MAX_UNCOMPRESSED_LEN: usize = 256 * 1024;
 
 // Batch memory is bounded by message count, not separate byte caps. A 35-message
 // pczt-v1 batch was ~35% of RAM on target; the optional-field v2 messages this
@@ -72,6 +76,102 @@ fn confirm_batch_reviewed(batch_fingerprint: &[u8; 32]) -> bool {
     REVIEWED_BATCH_FINGERPRINT
         .try_lock()
         .is_some_and(|reviewed| reviewed.as_ref() == Some(batch_fingerprint))
+}
+
+fn compressed_zcash_pczt_payload(payload: &[u8]) -> Result<Vec<u8>, RustCError> {
+    if payload.len() < ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC.len() + 4 {
+        return Err(RustCError::InvalidData(
+            "compressed Zcash PCZT payload is too short".to_string(),
+        ));
+    }
+    if !payload.starts_with(ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC) {
+        return Err(RustCError::InvalidData(
+            "compressed Zcash PCZT payload has wrong marker".to_string(),
+        ));
+    }
+
+    let len_start = ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC.len();
+    let expected_len = u32::from_le_bytes(
+        payload[len_start..len_start + 4]
+            .try_into()
+            .expect("length slice is four bytes"),
+    ) as usize;
+    if expected_len > ZCASH_COMPRESSED_PCZT_MAX_UNCOMPRESSED_LEN {
+        return Err(RustCError::UnsupportedTransaction(format!(
+            "compressed Zcash PCZT expands beyond {ZCASH_COMPRESSED_PCZT_MAX_UNCOMPRESSED_LEN} bytes"
+        )));
+    }
+
+    let compressed = &payload[len_start + 4..];
+    let pczt = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(compressed, expected_len)
+        .map_err(|e| {
+            RustCError::InvalidData(format!("decompress Zcash PCZT payload failed: {e:?}"))
+        })?;
+    if pczt.len() != expected_len {
+        return Err(RustCError::InvalidData(format!(
+            "compressed Zcash PCZT length mismatch: expected {expected_len}, got {}",
+            pczt.len()
+        )));
+    }
+    Ok(pczt)
+}
+
+fn zcash_batch_message_pczt_payload(message: &ZcashSignMessage) -> Result<Vec<u8>, RustCError> {
+    match message.get_kind() {
+        ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 => Ok(message.get_payload().to_vec()),
+        ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1 => {
+            compact_zcash_pczt_payload(message.get_payload())
+        }
+        other => Err(RustCError::UnsupportedTransaction(format!(
+            "unsupported Zcash batch message kind {other}"
+        ))),
+    }
+}
+
+fn zcash_batch_message_pczt_payloads(
+    message: &ZcashSignMessage,
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>, RustCError> {
+    match message.get_kind() {
+        ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 => Ok(vec![(
+            message.get_id().clone(),
+            message.get_payload().to_vec(),
+        )]),
+        ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1 => {
+            if pczt::compact_migration::is_compact_migration_batch_payload(message.get_payload()) {
+                pczt::compact_migration::decode_batch_to_pczt_bytes(message.get_payload()).map_err(
+                    |e| {
+                        RustCError::InvalidData(format!(
+                            "decode compact Zcash migration batch failed: {e:?}"
+                        ))
+                    },
+                )
+            } else {
+                Ok(vec![(
+                    message.get_id().clone(),
+                    compact_zcash_pczt_payload(message.get_payload())?,
+                )])
+            }
+        }
+        other => Err(RustCError::UnsupportedTransaction(format!(
+            "unsupported Zcash batch message kind {other}"
+        ))),
+    }
+}
+
+fn compact_zcash_pczt_payload(payload: &[u8]) -> Result<Vec<u8>, RustCError> {
+    if payload.starts_with(ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC) {
+        compressed_zcash_pczt_payload(payload)
+    } else if pczt::compact_migration::is_compact_migration_child_payload(payload) {
+        pczt::compact_migration::decode_child_to_pczt_bytes(payload).map_err(|e| {
+            RustCError::InvalidData(format!(
+                "decode compact Zcash migration child failed: {e:?}"
+            ))
+        })
+    } else {
+        Err(RustCError::InvalidData(
+            "compact Zcash PCZT payload has unknown marker".to_string(),
+        ))
+    }
 }
 
 #[no_mangle]
@@ -257,14 +357,40 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<[u8; 32], RustCError> 
         )));
     }
 
-    let mut fingerprint_data = Vec::with_capacity(8 + 32 + messages.len() * 64);
+    fn reject_duplicate_message(
+        seen_messages: &mut Vec<(Vec<u8>, [u8; 32])>,
+        message_id: &[u8],
+        digest: [u8; 32],
+        duplicate_id_message: &'static str,
+        duplicate_payload_message: &'static str,
+    ) -> Result<(), RustCError> {
+        for (previous_id, previous_digest) in seen_messages.iter() {
+            if previous_digest == &digest {
+                return Err(RustCError::InvalidData(
+                    duplicate_payload_message.to_string(),
+                ));
+            }
+            if previous_id.as_slice() == message_id {
+                return Err(RustCError::InvalidData(duplicate_id_message.to_string()));
+            }
+        }
+        seen_messages.push((message_id.to_vec(), digest));
+        Ok(())
+    }
+
+    let mut fingerprint_data = Vec::with_capacity(8 + 32 + messages.len() * 128);
     fingerprint_data.extend_from_slice(&batch.get_version().to_le_bytes());
     fingerprint_data.extend_from_slice(&batch.get_network().to_le_bytes());
     fingerprint_data.extend_from_slice(&sha256(batch.get_request_id()));
 
-    let mut seen_messages: Vec<(&[u8], [u8; 32])> = Vec::new();
+    let mut seen_envelope_messages: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
+    let mut seen_signing_messages: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
+    let mut signing_message_count = 0usize;
     for (index, message) in messages.iter().enumerate() {
-        if message.get_kind() != ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 {
+        if !matches!(
+            message.get_kind(),
+            ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 | ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1
+        ) {
             return Err(RustCError::UnsupportedTransaction(format!(
                 "unsupported Zcash batch message kind {}",
                 message.get_kind()
@@ -290,21 +416,57 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<[u8; 32], RustCError> 
             }
         }
 
-        for (previous_id, previous_digest) in &seen_messages {
-            if previous_digest == &digest {
-                return Err(RustCError::InvalidData(
-                    "Zcash batch contains duplicate payloads".to_string(),
-                ));
-            }
-            if *previous_id == message.get_id().as_slice() {
-                return Err(RustCError::InvalidData(
-                    "Zcash batch contains duplicate message ids".to_string(),
-                ));
-            }
-        }
-        seen_messages.push((message.get_id().as_slice(), digest));
+        reject_duplicate_message(
+            &mut seen_envelope_messages,
+            message.get_id(),
+            digest,
+            "Zcash batch contains duplicate message ids",
+            "Zcash batch contains duplicate payloads",
+        )?;
+        fingerprint_data.extend_from_slice(b"E");
         fingerprint_data.extend_from_slice(&sha256(message.get_id()));
+        fingerprint_data.extend_from_slice(&message.get_kind().to_le_bytes());
         fingerprint_data.extend_from_slice(&digest);
+
+        let signing_payloads = zcash_batch_message_pczt_payloads(message)?;
+        signing_message_count = signing_message_count
+            .checked_add(signing_payloads.len())
+            .ok_or_else(|| {
+                RustCError::UnsupportedTransaction(format!(
+                    "Zcash batch expands beyond {ZCASH_BATCH_MAX_MESSAGES} signing messages"
+                ))
+            })?;
+        if signing_message_count > ZCASH_BATCH_MAX_MESSAGES {
+            return Err(RustCError::UnsupportedTransaction(format!(
+                "Zcash batch expands beyond {ZCASH_BATCH_MAX_MESSAGES} signing messages"
+            )));
+        }
+
+        for (signing_id, signing_payload) in signing_payloads {
+            if signing_id.is_empty() {
+                return Err(RustCError::InvalidData(format!(
+                    "Zcash batch message {index} expands to an empty signing id"
+                )));
+            }
+            if signing_payload.is_empty() {
+                return Err(RustCError::InvalidData(format!(
+                    "Zcash batch message {index} expands to an empty signing payload"
+                )));
+            }
+
+            let signing_digest = sha256(&signing_payload);
+            reject_duplicate_message(
+                &mut seen_signing_messages,
+                &signing_id,
+                signing_digest,
+                "Zcash batch contains duplicate signing message ids",
+                "Zcash batch contains duplicate signing payloads",
+            )?;
+            fingerprint_data.extend_from_slice(b"S");
+            fingerprint_data.extend_from_slice(&sha256(&signing_id));
+            fingerprint_data.extend_from_slice(&message.get_kind().to_le_bytes());
+            fingerprint_data.extend_from_slice(&signing_digest);
+        }
     }
 
     Ok(sha256(&fingerprint_data))
@@ -345,19 +507,25 @@ fn check_zcash_batch_message_cypherpunk(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> app_zcash::errors::Result<()> {
-    app_zcash::check_pczt_cypherpunk(
-        &MainNetwork,
-        message.get_payload(),
-        ufvk_text,
-        seed_fingerprint,
-        account_index,
-    )?;
-    app_zcash::ensure_pczt_has_signable_shielded_action(
-        &MainNetwork,
-        message.get_payload(),
-        seed_fingerprint,
-        account_index,
-    )
+    let payloads = zcash_batch_message_pczt_payloads(message)
+        .map_err(|e| app_zcash::errors::ZcashError::InvalidDataError(e.to_string()))?;
+    for (_, payload) in payloads {
+        app_zcash::check_pczt_cypherpunk(
+            &MainNetwork,
+            payload.as_slice(),
+            ufvk_text,
+            seed_fingerprint,
+            account_index,
+        )?;
+        app_zcash::ensure_pczt_has_signable_shielded_action_with_ufvk(
+            &MainNetwork,
+            payload.as_slice(),
+            ufvk_text,
+            seed_fingerprint,
+            account_index,
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -463,15 +631,21 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
 
     let mut display_items = Vec::new();
     for message in batch.get_messages() {
-        match app_zcash::check_and_parse_batch_pczt_cypherpunk(
-            &MainNetwork,
-            message.get_payload(),
-            &ufvk_text,
-            &seed_fingerprint,
-            account_index,
-        ) {
-            Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
+        let payloads = match zcash_batch_message_pczt_payloads(message) {
+            Ok(payloads) => payloads,
             Err(e) => return TransactionParseResult::from(e).c_ptr(),
+        };
+        for (_, payload) in payloads {
+            match app_zcash::check_and_parse_batch_pczt_cypherpunk(
+                &MainNetwork,
+                payload.as_slice(),
+                &ufvk_text,
+                &seed_fingerprint,
+                account_index,
+            ) {
+                Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
+                Err(e) => return TransactionParseResult::from(e).c_ptr(),
+            }
         }
     }
 
@@ -490,9 +664,11 @@ fn parse_zcash_batch_as_split_plus_migrations(
     let mut display_items = Vec::new();
 
     let split_message = &messages[0];
+    let split_payload = zcash_batch_message_pczt_payload(split_message)
+        .map_err(|e| app_zcash::errors::ZcashError::InvalidDataError(e.to_string()))?;
     let split_pczt = app_zcash::check_and_parse_batch_pczt_cypherpunk(
         &MainNetwork,
-        split_message.get_payload(),
+        split_payload.as_slice(),
         ufvk_text,
         &seed_fingerprint,
         account_index,
@@ -501,14 +677,18 @@ fn parse_zcash_batch_as_split_plus_migrations(
 
     let mut summary = app_zcash::BatchMigrationSummary::default();
     for message in messages.iter().skip(1) {
-        let child = app_zcash::summarize_batch_migration_pczt_cypherpunk(
-            &MainNetwork,
-            message.get_payload(),
-            ufvk_text,
-            &seed_fingerprint,
-            account_index,
-        )?;
-        summary.add_child(&child)?;
+        let payloads = zcash_batch_message_pczt_payloads(message)
+            .map_err(|e| app_zcash::errors::ZcashError::InvalidDataError(e.to_string()))?;
+        for (_, payload) in payloads {
+            let child = app_zcash::summarize_batch_migration_pczt_cypherpunk(
+                &MainNetwork,
+                payload.as_slice(),
+                ufvk_text,
+                &seed_fingerprint,
+                account_index,
+            )?;
+            summary.add_child(&child)?;
+        }
     }
 
     let summary_pczt = summary.to_parsed_pczt();
@@ -565,39 +745,46 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
 
                     let mut results = Vec::new();
                     for message in batch.get_messages() {
-                        match app_zcash::sign_batch_pczt_cypherpunk(
-                            message.get_payload(),
-                            seed,
-                            &seed_fingerprint,
-                            account_index,
-                        ) {
-                            Ok(payload) => {
-                                match app_zcash::extract_compact_sigs_from_signed_pczt(&payload) {
-                                    Ok(compact_sigs) => {
-                                        let action_sigs = compact_sigs
-                                            .into_iter()
-                                            .map(|sig| {
-                                                ZcashActionSig::new(
-                                                    sig.pool,
-                                                    sig.action_index,
-                                                    sig.sig,
-                                                )
-                                            })
-                                            .collect();
-                                        results.push(ZcashMsgSig::new(
-                                            message.get_id().clone(),
-                                            action_sigs,
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        seed.zeroize();
-                                        return UREncodeResult::from(e).c_ptr();
-                                    }
-                                }
-                            }
+                        let payloads = match zcash_batch_message_pczt_payloads(message) {
+                            Ok(payloads) => payloads,
                             Err(e) => {
                                 seed.zeroize();
                                 return UREncodeResult::from(e).c_ptr();
+                            }
+                        };
+                        for (message_id, payload) in payloads {
+                            match app_zcash::sign_batch_pczt_cypherpunk(
+                                payload.as_slice(),
+                                seed,
+                                &seed_fingerprint,
+                                account_index,
+                            ) {
+                                Ok(payload) => {
+                                    match app_zcash::extract_compact_sigs_from_signed_pczt(&payload)
+                                    {
+                                        Ok(compact_sigs) => {
+                                            let action_sigs = compact_sigs
+                                                .into_iter()
+                                                .map(|sig| {
+                                                    ZcashActionSig::new(
+                                                        sig.pool,
+                                                        sig.action_index,
+                                                        sig.sig,
+                                                    )
+                                                })
+                                                .collect();
+                                            results.push(ZcashMsgSig::new(message_id, action_sigs));
+                                        }
+                                        Err(e) => {
+                                            seed.zeroize();
+                                            return UREncodeResult::from(e).c_ptr();
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    seed.zeroize();
+                                    return UREncodeResult::from(e).c_ptr();
+                                }
                             }
                         }
                     }
@@ -1146,7 +1333,7 @@ mod tests {
     fn test_validate_zcash_batch_rejects_invalid_message_fields() {
         let unsupported_kind = ZcashSignMessage::new(
             b"one".to_vec(),
-            ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 + 1,
+            999,
             b"pczt-one".to_vec(),
             Some(sha256(b"pczt-one").to_vec()),
         );
