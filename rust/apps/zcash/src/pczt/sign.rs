@@ -725,9 +725,9 @@ mod tests {
         // output by re-eliding a clone under each tag and refilling, keeping the tag
         // exactly when the reconstruction is byte-identical. In this sample the pure
         // dummy Orchard output reconstructs under `Zero` and the Ironwood migration
-        // output (built with the ZIP 302 empty memo) under `Empty`, while the
-        // zero-valued output fabricated for the real Orchard spend has a *randomized*
-        // ciphertext and must keep it.
+        // output (built with the ZIP 302 empty memo) under `Empty`. The migrated
+        // Orchard note is internal-scope, so both Orchard zero-valued outputs
+        // recompute under `Zero`.
         fn elidable_memo_kinds(
             full: &Pczt,
             bundle_of: fn(&Pczt) -> &zcash_vendor::pczt::orchard::Bundle,
@@ -773,9 +773,10 @@ mod tests {
             |pczt| pczt.ironwood(),
             |redactor, f| redactor.redact_ironwood_with(f),
         );
+        assert!(!orchard_tags.is_empty());
         assert!(
-            orchard_tags.contains(&Some(MemoKind::Zero)) && orchard_tags.contains(&None),
-            "sample must cover an elidable zero-memo output and a kept randomized one",
+            orchard_tags.iter().all(|tag| *tag == Some(MemoKind::Zero)),
+            "internal migration Orchard outputs must all recompute under the zero memo"
         );
         assert_eq!(ironwood_tags, alloc::vec![Some(MemoKind::Empty)]);
 
@@ -831,8 +832,7 @@ mod tests {
             .expect("elided migration request must sign");
         let response = Pczt::parse(&signed).expect("signed response must parse");
 
-        // The response re-elides each enc_ciphertext under the request's own tag and
-        // keeps the ciphertext the request carried (the randomized one).
+        // The response re-elides each enc_ciphertext under the request's own tag.
         for (bundle, tags) in [
             (response.orchard(), &orchard_tags),
             (response.ironwood(), &ironwood_tags),

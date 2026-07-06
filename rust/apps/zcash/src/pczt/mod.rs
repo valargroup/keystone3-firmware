@@ -194,10 +194,10 @@ pub(crate) fn pczt_requires_cypherpunk_support(pczt: &zcash_vendor::pczt::Pczt) 
 pub(crate) mod test_support {
     use alloc::{string::String, vec, vec::Vec};
 
-    use ::pczt::roles::{creator::Creator, updater::Updater};
     #[cfg(zcash_unstable = "nu6.3")]
     use incrementalmerkletree::Retention;
     use keystore::algorithms::zcash::{calculate_seed_fingerprint, derive_ufvk};
+    use pczt::roles::{creator::Creator, updater::Updater};
     use rand_core::OsRng;
     #[cfg(zcash_unstable = "nu6.3")]
     use shardtree::{store::memory::MemoryShardStore, ShardTree};
@@ -512,14 +512,13 @@ pub(crate) mod test_support {
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
         let orchard_fvk = ufvk.orchard().unwrap().clone();
-        let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::External);
-        let orchard_ovk = orchard_fvk.to_ovk(orchard::keys::Scope::External);
-        let recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::External);
+        let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::Internal);
+        let orchard_ovk = orchard_fvk.to_ovk(orchard::keys::Scope::Internal);
+        let recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
 
-        // The Orchard note being migrated: output (990_000) + cross-pool fee (15_000:
-        // two padded Orchard actions plus one unpadded Ironwood action), so there is
-        // no change output.
-        let value = orchard::value::NoteValue::from_raw(1_005_000);
+        // The Orchard note being migrated: output (990_000) plus the standard
+        // cross-pool fee, so there is no change output.
+        let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
             let mut orchard_builder = orchard::builder::Builder::new(
                 orchard::builder::BundleType::Coinbase,
@@ -747,11 +746,11 @@ pub(crate) mod legacy_test_support {
         vec::Vec,
     };
 
-    use ::pczt::roles::{creator::Creator, updater::Updater};
     use bitcoin::secp256k1::Secp256k1;
     use keystore::algorithms::{
         secp256k1::get_extended_public_key_by_seed, zcash::calculate_seed_fingerprint,
     };
+    use pczt::roles::{creator::Creator, updater::Updater};
     use rand_core::OsRng;
     use zcash_primitives::transaction::{
         builder::{BuildConfig, Builder, PcztResult},
