@@ -109,6 +109,10 @@ cipher = { version = "0.4.4", default-features = false, features = [
 ] }
 lazy_static = "1.4.0"
 ref-cast = "1.0.16"
+spin = { version = "0.9.8", default-features = false, features = [
+    "mutex",
+    "spin_mutex",
+] }
 tendermint-proto = "0.32"
 prost = { version = "0.11", default-features = false }
 prost-types = { version = "0.11", default-features = false }
@@ -129,5 +133,5 @@ zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "644b1e
 zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
 zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
 zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-# Use the upstream SDK rev with the Zcash batch registry types until they are published as a crate.
-ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust.git", rev = "0884de4b2e927bc3f95a98dff62045e0d492e574" }
+# Use the SDK rev with the compact Zcash signature result registry type until it is published as a crate.
+ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "97c1a5d5df5fb457a169cd66e0f91e40acb18c64" }
