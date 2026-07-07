@@ -8,6 +8,7 @@ pub mod version;
 use errors::{Result, ZcashError};
 
 use alloc::{
+    format,
     string::{String, ToString},
     vec::Vec,
 };
@@ -443,6 +444,19 @@ struct SignableShieldedAction {
 }
 
 #[cfg(feature = "cypherpunk")]
+pub const COMPACT_SIG_POOL_ORCHARD: u32 = 0;
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+pub const COMPACT_SIG_POOL_IRONWOOD: u32 = 1;
+
+#[cfg(feature = "cypherpunk")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactActionSig {
+    pub pool: u32,
+    pub action_index: u32,
+    pub sig: Vec<u8>,
+}
+
+#[cfg(feature = "cypherpunk")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShieldedActionPolicy {
     Batch,
@@ -461,6 +475,38 @@ fn reject_unsupported_batch_pczt(pczt: &Pczt) -> Result<()> {
         return Err(ZcashError::InvalidPczt(
             "Zcash batch PCZT must not contain transparent inputs".to_string(),
         ));
+    }
+
+    Ok(())
+}
+
+/// Requires every action's `enc_ciphertext` to reach the ZIP-244 memo boundary
+/// so the signature-hash slicing in `zcash_vendor::pczt_ext` cannot panic on a
+/// truncated field.
+#[cfg(feature = "cypherpunk")]
+fn require_signature_hash_fields_for_bundle(
+    bundle: &zcash_vendor::pczt::orchard::Bundle,
+    pool: &str,
+) -> Result<()> {
+    for (index, action) in bundle.actions().iter().enumerate() {
+        let enc_ciphertext = action.output().enc_ciphertext();
+        if enc_ciphertext.len() < zcash_vendor::pczt_ext::ENC_CIPHERTEXT_MEMO_END {
+            return Err(ZcashError::InvalidPczt(format!(
+                "invalid {pool} action {index} enc_ciphertext length"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cypherpunk")]
+fn require_signature_hash_fields(pczt: &Pczt) -> Result<()> {
+    require_signature_hash_fields_for_bundle(pczt.orchard(), "Orchard")?;
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    if pczt::pczt_should_process_ironwood(pczt) {
+        require_signature_hash_fields_for_bundle(pczt.ironwood(), "Ironwood")?;
     }
 
     Ok(())
@@ -489,10 +535,10 @@ fn collect_signable_shielded_actions<P: consensus::Parameters>(
                 pool.label(),
             )))
         })?;
-        if value.inner() == 0 {
-            continue;
-        }
 
+        // Ownership decides signability, never the value: restricted bundles pair
+        // change outputs with fabricated wallet-controlled zero-value spends that the
+        // device must sign, so zero value must not short-circuit the account check.
         let matches_account = pczt::matching_seed_supported_orchard_account(
             seed_fingerprint,
             action.spend().zip32_derivation().as_ref(),
@@ -502,6 +548,11 @@ fn collect_signable_shielded_actions<P: consensus::Parameters>(
         .map_err(OrchardError::Custom)?
             == Some(account_index);
         if !matches_account {
+            // Zero-value spends not owned by this account are tolerated dummies
+            // (their signatures travel wallet-side); anything else is foreign.
+            if value.inner() == 0 {
+                continue;
+            }
             if policy == ShieldedActionPolicy::Batch {
                 return Err(OrchardError::Custom(ZcashError::PcztNoMyInputs));
             }
@@ -659,6 +710,29 @@ pub fn ensure_pczt_has_signable_shielded_action<P: consensus::Parameters>(
     }
 }
 
+/// Signs a batch PCZT after applying the batch shielded action policy.
+///
+/// The UI review path already ran the expensive UFVK/output checks before the
+/// user approved the batch. This signer therefore keeps only cheap structural
+/// batch rejections, and the low-level signer itself enforces that any signed
+/// shielded action belongs to the selected account — signing consumes only the
+/// PCZT bytes, the seed material, and the selected account, never network
+/// parameters or the UFVK.
+#[cfg(feature = "cypherpunk")]
+pub fn sign_batch_pczt_cypherpunk(
+    pczt: &[u8],
+    seed: &[u8],
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<Vec<u8>> {
+    let pczt = pczt::parse_pczt(pczt)?;
+    reject_unsupported_batch_pczt(&pczt)?;
+    require_signature_hash_fields(&pczt)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    pczt::sign::sign_batch_pczt_with_seed_fingerprint(pczt, seed, *seed_fingerprint, account_index)
+}
+
 /// Confirms that every signable supported shielded action in `unsigned_pczt`
 /// has a spend authorization signature in the same position in `signed_pczt`.
 #[cfg(feature = "cypherpunk")]
@@ -715,6 +789,42 @@ pub fn ensure_owned_supported_shielded_actions_are_signed<P: consensus::Paramete
             .map_err(|_| ZcashError::InvalidPczt("invalid signed pczt data".to_string()))?;
         ensure_shielded_actions_are_signed(signed_pczt, &signable_actions)
     }
+}
+
+#[cfg(feature = "cypherpunk")]
+pub fn extract_compact_sigs_from_signed_pczt(signed_pczt: &[u8]) -> Result<Vec<CompactActionSig>> {
+    let signed_pczt = pczt::parse_pczt(signed_pczt)
+        .map_err(|_| ZcashError::InvalidPczt("invalid signed pczt data".to_string()))?;
+
+    let mut sigs = Vec::new();
+    for (index, action) in signed_pczt.orchard().actions().iter().enumerate() {
+        if let Some(sig) = action.spend().spend_auth_sig() {
+            sigs.push(CompactActionSig {
+                pool: COMPACT_SIG_POOL_ORCHARD,
+                action_index: index as u32,
+                sig: sig.to_vec(),
+            });
+        }
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    for (index, action) in signed_pczt.ironwood().actions().iter().enumerate() {
+        if let Some(sig) = action.spend().spend_auth_sig() {
+            sigs.push(CompactActionSig {
+                pool: COMPACT_SIG_POOL_IRONWOOD,
+                action_index: index as u32,
+                sig: sig.to_vec(),
+            });
+        }
+    }
+
+    if sigs.is_empty() {
+        return Err(ZcashError::SigningError(
+            "signed PCZT has no spend authorization signatures".to_string(),
+        ));
+    }
+
+    Ok(sigs)
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -1296,6 +1406,206 @@ mod tests {
         .unwrap();
     }
 
+    /// Batch twin of `test_sign_pczt_orchard_change_output_spend`: a post-NU6.3
+    /// restricted Orchard bundle pairs the change output with a fabricated
+    /// wallet-controlled zero-value spend that only this device's spend
+    /// authorizing key can sign, so batch signing must authorize it alongside
+    /// the real spend.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_sign_orchard_change_output_spend() {
+        let sample = pczt::test_support::sample_orchard_change_pczt();
+
+        let signed =
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("Orchard change batch PCZT should sign");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
+
+        let signed_actions = parsed
+            .orchard()
+            .actions()
+            .iter()
+            .filter(|action| action.spend().spend_auth_sig().is_some())
+            .count();
+        assert_eq!(
+            signed_actions, 2,
+            "real spend and wallet controlled zero value spend must be signed",
+        );
+    }
+
+    /// Faithful wire shape of a batch split entry: the wallet's batch redaction
+    /// strips every spend FVK and spend authorization signature before the QR
+    /// round trip. Both the real spend and the fabricated zero-value change
+    /// spend must still come back signed.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_sign_redacted_orchard_change_output_spend() {
+        use zcash_vendor::pczt::roles::redactor::Redactor;
+
+        let sample = pczt::test_support::sample_orchard_change_pczt();
+        let redacted = Redactor::new(Pczt::parse(&sample.bytes).expect("sample PCZT should parse"))
+            .redact_orchard_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_fvk();
+                    ar.clear_spend_auth_sig();
+                });
+            })
+            .finish()
+            .serialize();
+
+        let signed =
+            sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("redacted Orchard change batch PCZT should sign");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
+
+        let signed_actions = parsed
+            .orchard()
+            .actions()
+            .iter()
+            .filter(|action| action.spend().spend_auth_sig().is_some())
+            .count();
+        assert_eq!(
+            signed_actions, 2,
+            "real spend and wallet controlled zero value spend must be signed",
+        );
+    }
+
+    /// Faithful wire shape of a migration child: dummies were signed wallet-side
+    /// by the IO Finalizer and the wallet strips `dummy_sk`, spend FVKs, and the
+    /// dummy signatures before the QR round trip. Batch signing must sign exactly
+    /// the real Orchard spend and tolerate the untagged zero-value actions
+    /// without erroring.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_sign_migration_child_tolerates_redacted_dummies() {
+        use zcash_vendor::pczt::roles::redactor::Redactor;
+
+        let sample = pczt::test_support::sample_migration_pczt();
+        let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT should parse");
+        let real_spend_index = pczt::test_support::orchard_spend_values(&sample.bytes)
+            .iter()
+            .position(|value| matches!(value, Some(value) if *value != 0))
+            .expect("migration child must contain a real Orchard spend");
+        let redacted = Redactor::new(pczt)
+            .redact_orchard_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_dummy_sk();
+                    ar.clear_spend_fvk();
+                    ar.clear_spend_auth_sig();
+                });
+            })
+            .redact_ironwood_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_dummy_sk();
+                    ar.clear_spend_fvk();
+                    ar.clear_spend_auth_sig();
+                });
+            })
+            .finish()
+            .serialize();
+
+        let signed =
+            sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("IO-finalized-shaped migration child should batch-sign");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
+
+        for (index, action) in parsed.orchard().actions().iter().enumerate() {
+            assert_eq!(
+                action.spend().spend_auth_sig().is_some(),
+                index == real_spend_index,
+                "exactly the real Orchard spend must be signed",
+            );
+        }
+        assert!(
+            parsed
+                .ironwood()
+                .actions()
+                .iter()
+                .all(|action| action.spend().spend_auth_sig().is_none()),
+            "output-only Ironwood bundle must stay unsigned",
+        );
+    }
+
+    /// A zero-value spend tagged for a different account of the same seed is
+    /// neither a tolerated dummy nor the selected account's change spend: the
+    /// reviewed batch must fail fast on-device instead of returning a response
+    /// whose extraction is guaranteed to fail on the phone.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_sign_rejects_foreign_account_zero_value_spend() {
+        let sample = pczt::test_support::sample_orchard_change_pczt();
+        let retagged = pczt::test_support::orchard_pczt_with_zero_value_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            pczt::test_support::orchard_spend_path_for_account(1),
+        );
+
+        assert_eq!(
+            sign_batch_pczt_cypherpunk(&retagged, &sample.seed, &sample.seed_fingerprint, 0,)
+                .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    /// The fabricated zero-value change spend counts as signable in the batch
+    /// preflight, so the postflight must reject a response that left it unsigned
+    /// and accept a fully signed one.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_postflight_requires_change_output_spend_signature() {
+        use zcash_vendor::pczt::roles::redactor::Redactor;
+
+        let sample = pczt::test_support::sample_orchard_change_pczt();
+
+        ensure_pczt_has_signable_shielded_action(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .unwrap();
+
+        let signed =
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("Orchard change batch PCZT should sign");
+        ensure_signable_shielded_actions_are_signed(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &signed,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .unwrap();
+
+        // Simulate the pre-fix firmware response: real spend signed, fabricated
+        // zero-value change spend left unsigned.
+        let change_index = pczt::test_support::orchard_spend_values(&sample.bytes)
+            .iter()
+            .position(|value| matches!(value, Some(0)))
+            .expect("change PCZT must contain the fabricated zero-value spend");
+        let missing_change_sig =
+            Redactor::new(Pczt::parse(&signed).expect("signed PCZT must parse"))
+                .redact_orchard_with(|mut r| {
+                    r.redact_action(change_index, |mut ar| {
+                        ar.clear_spend_auth_sig();
+                    });
+                })
+                .finish()
+                .serialize();
+
+        assert!(matches!(
+            ensure_signable_shielded_actions_are_signed(
+                &pczt::test_support::Nu6_3Network,
+                &sample.bytes,
+                &missing_change_sig,
+                &sample.seed_fingerprint,
+                0,
+            ),
+            Err(ZcashError::SigningError(message))
+                if message == "signed PCZT is missing an Orchard spend authorization signature"
+        ));
+    }
+
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_single_postflight_confirms_orchard_signature_when_present() {
@@ -1332,6 +1642,19 @@ mod tests {
         assert_batch_unsupported_sapling_error(ensure_pczt_has_signable_shielded_action(
             &pczt::test_support::Nu6_3Network,
             &sample.bytes,
+            &sample.seed_fingerprint,
+            0,
+        ));
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_sign_rejects_sapling_outputs() {
+        let sample = pczt_with_sapling_output();
+
+        assert_batch_unsupported_sapling_error(sign_batch_pczt_cypherpunk(
+            &sample.bytes,
+            &sample.seed,
             &sample.seed_fingerprint,
             0,
         ));
@@ -1523,6 +1846,36 @@ mod tests {
                 1,
             )
             .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_sign_accepts_ironwood_spend() {
+        let sample = pczt::test_support::sample_ironwood_pczt();
+
+        let signed =
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 0)
+                .expect("Ironwood batch PCZT should sign");
+        let parsed = Pczt::parse(&signed).expect("signed PCZT must parse");
+
+        assert!(
+            parsed
+                .ironwood()
+                .actions()
+                .iter()
+                .any(|action| action.spend().spend_auth_sig().is_some()),
+            "Ironwood spend authorization signature must be present",
+        );
+        let compact_sigs =
+            extract_compact_sigs_from_signed_pczt(&signed).expect("compact sigs should extract");
+        assert!(compact_sigs
+            .iter()
+            .any(|sig| sig.pool == COMPACT_SIG_POOL_IRONWOOD && sig.sig.len() == 64));
+        assert_eq!(
+            sign_batch_pczt_cypherpunk(&sample.bytes, &sample.seed, &sample.seed_fingerprint, 1,)
+                .unwrap_err(),
             ZcashError::PcztNoMyInputs
         );
     }

@@ -9,6 +9,7 @@
 ### Bug Fixes
 
 1. Fixed stalled Zcash signing when response QR generation fails
+2. Fixed Zcash batch signing skipping wallet-controlled zero-value change spends, which made signed batches unextractable
 
 
 ## 2.4.6 (2026-6-12)
