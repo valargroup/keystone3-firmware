@@ -901,18 +901,19 @@ fn collect_signable_shielded_actions<P: consensus::Parameters>(
         // Ownership decides signability, never the value: restricted bundles pair
         // change outputs with fabricated wallet-controlled zero-value spends that the
         // device must sign, so zero value must not short-circuit the account check.
-        let matches_account = pczt::matching_seed_supported_orchard_account(
+        let matched_account = pczt::matching_seed_supported_orchard_account(
             seed_fingerprint,
             action.spend().zip32_derivation().as_ref(),
             params.network_type().coin_type(),
             pool.shielded_pool(),
         )
-        .map_err(OrchardError::Custom)?
-            == Some(account_index);
-        if !matches_account {
-            // Zero-value spends not owned by this account are tolerated dummies
-            // (their signatures travel wallet-side); anything else is foreign.
-            if value.inner() == 0 {
+        .map_err(OrchardError::Custom)?;
+        if matched_account != Some(account_index) {
+            // Zero-value spends not derivable from this seed at all are tolerated
+            // dummies (their signatures travel wallet-side). A spend tagged to a
+            // DIFFERENT account of this seed is refused outright, mirroring the
+            // batch signer, so it can never reach signing tolerated as a dummy.
+            if value.inner() == 0 && matched_account.is_none() {
                 continue;
             }
             if policy == ShieldedActionPolicy::Batch {
@@ -1905,6 +1906,35 @@ mod tests {
         assert_eq!(
             sign_batch_pczt_cypherpunk(&retagged, &sample.seed, &sample.seed_fingerprint, 0,)
                 .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    /// The batch PREFLIGHT must refuse a zero-value spend tagged to a different
+    /// account of the same seed, mirroring the signer: tolerating it as a dummy
+    /// at review time would let it reach signing paths as an approved batch.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_preflight_rejects_foreign_account_zero_value_spend() {
+        let sample = pczt::test_support::sample_orchard_change_pczt();
+        let foreign = pczt::test_support::orchard_pczt_with_zero_value_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            alloc::vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(133).index(),
+                zip32::ChildIndex::hardened(1).index(),
+            ],
+        );
+
+        assert_eq!(
+            ensure_pczt_has_signable_shielded_action(
+                &pczt::test_support::Nu6_3Network,
+                &foreign,
+                &sample.seed_fingerprint,
+                0,
+            )
+            .unwrap_err(),
             ZcashError::PcztNoMyInputs
         );
     }
