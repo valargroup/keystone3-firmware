@@ -70,6 +70,21 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     account_index: u32,
 ) -> Result<()> {
     let pczt = pczt::parse_pczt(pczt)?;
+    check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+    Ok(())
+}
+
+/// The body of [`check_pczt_cypherpunk`] on an already-parsed PCZT, returning
+/// the decoded UFVK and account index so callers that need them afterwards do
+/// not decode them a second time.
+#[cfg(feature = "cypherpunk")]
+fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &Pczt,
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<(UnifiedFullViewingKey, zip32::AccountId)> {
     let account_index = zip32::AccountId::try_from(account_index)
         .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
     let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
@@ -86,7 +101,7 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
         &pczt,
         false,
     )?;
-    Ok(())
+    Ok((ufvk, account_index))
 }
 
 #[cfg(feature = "multi_coins")]
@@ -182,6 +197,60 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
         .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
     let pczt = pczt::parse_pczt(pczt)?;
     pczt::parse::parse_pczt_cypherpunk(params, seed_fingerprint, &ufvk, &pczt)
+}
+
+/// Checks a batch PCZT with the selected account and returns the display data
+/// using the same parsed PCZT and decoded UFVK.
+#[cfg(feature = "cypherpunk")]
+pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &[u8],
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<ParsedPczt> {
+    let pczt = pczt::parse_pczt(pczt)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
+        .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
+    let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
+        "transparent xpub is not present".to_string(),
+    ))?;
+    let checked_shielded = pczt::check::check_and_parse_pczt_shielded(
+        params,
+        seed_fingerprint,
+        account_index,
+        &ufvk,
+        &pczt,
+    )?;
+    pczt::check::check_pczt_transparent(
+        params,
+        seed_fingerprint,
+        account_index,
+        xpub,
+        &pczt,
+        false,
+    )?;
+    let signable_actions = signable_shielded_actions(
+        params,
+        pczt.clone(),
+        seed_fingerprint,
+        account_index,
+        ShieldedActionPolicy::Batch,
+    )?;
+
+    if signable_actions.is_empty() {
+        Err(ZcashError::PcztNoMyInputs)
+    } else {
+        pczt::parse::parse_pczt_cypherpunk_with_checked_shielded(
+            params,
+            seed_fingerprint,
+            &pczt,
+            checked_shielded.orchard,
+            checked_shielded.ironwood,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1266,6 +1335,72 @@ mod tests {
             &sample.seed_fingerprint,
             0,
         ));
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_check_and_parse_accepts_ironwood_spend() {
+        let sample = pczt::test_support::sample_ironwood_pczt();
+
+        let parsed = check_and_parse_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("Ironwood batch PCZT should parse");
+        assert!(parsed.get_orchard().is_some() || parsed.get_ironwood().is_some());
+
+        assert_eq!(
+            check_and_parse_batch_pczt_cypherpunk(
+                &pczt::test_support::Nu6_3Network,
+                &sample.bytes,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                1,
+            )
+            .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_check_and_parse_accepts_orchard_to_ironwood_migration() {
+        let sample = pczt::test_support::sample_migration_pczt();
+
+        let parsed = check_and_parse_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("migration batch PCZT should parse");
+        assert!(!parsed
+            .get_orchard()
+            .expect("migration must show Orchard inputs")
+            .get_from()
+            .is_empty());
+        assert!(!parsed
+            .get_ironwood()
+            .expect("migration must show Ironwood outputs")
+            .get_to()
+            .is_empty());
+        assert_eq!(parsed.get_fee_value(), "0.0002 ZEC");
+
+        assert_eq!(
+            check_and_parse_batch_pczt_cypherpunk(
+                &pczt::test_support::Nu6_3Network,
+                &sample.bytes,
+                &sample.ufvk_text,
+                &sample.seed_fingerprint,
+                1,
+            )
+            .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
     }
 
     #[cfg(zcash_unstable = "nu6.3")]

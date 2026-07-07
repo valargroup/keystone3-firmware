@@ -361,19 +361,14 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
 
     let mut display_items = Vec::new();
     for message in batch.get_messages() {
-        if let Err(e) = check_zcash_batch_message_cypherpunk(
-            message,
-            &ufvk_text,
-            seed_fingerprint,
-            account_index,
-        ) {
-            return TransactionParseResult::from(e).c_ptr();
-        }
-        match app_zcash::parse_pczt_cypherpunk(
+        // One pass per message: the shielded validation and the display decode
+        // used to run as check-then-reparse, decrypting every output twice.
+        match app_zcash::check_and_parse_batch_pczt_cypherpunk(
             &MainNetwork,
             message.get_payload(),
             &ufvk_text,
-            seed_fingerprint,
+            &seed_fingerprint,
+            account_index,
         ) {
             Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
             Err(e) => return TransactionParseResult::from(e).c_ptr(),
