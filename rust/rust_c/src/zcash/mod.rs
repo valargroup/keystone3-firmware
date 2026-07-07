@@ -33,11 +33,13 @@ use ur_registry::zcash::zcash_sign_batch::{
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
-// Batch memory is bounded by message count, not separate byte caps. A 35-message
-// pczt-v1 batch was ~35% of RAM on target; the optional-field v2 messages this
-// build consumes are far smaller per message, so the ceiling is 80 to fit a full
-// migration batch. RAM scales with live batch size — revisit under memory pressure.
+// Batch memory is bounded by message count AND total payload bytes. A 35-message
+// full pczt-v1 batch was ~35% of RAM on target; the optional-field v2 messages
+// this build consumes are far smaller per message, so the message ceiling rises
+// to 80 (a full migration batch) while the byte bound keeps 80 full-size
+// payloads from exceeding what the old 35-message cap admitted in practice.
 const ZCASH_BATCH_MAX_MESSAGES: usize = 80;
+const ZCASH_BATCH_MAX_TOTAL_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
 
 /// Fingerprint of the last Zcash batch that completed the review path
 /// (`parse_zcash_batch_tx_cypherpunk`), which verifies every message before
@@ -263,6 +265,7 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<[u8; 32], RustCError> 
     fingerprint_data.extend_from_slice(&sha256(batch.get_request_id()));
 
     let mut seen_messages: Vec<(&[u8], [u8; 32])> = Vec::new();
+    let mut total_payload_bytes = 0usize;
     for (index, message) in messages.iter().enumerate() {
         if message.get_kind() != ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 {
             return Err(RustCError::UnsupportedTransaction(format!(
@@ -278,6 +281,12 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<[u8; 32], RustCError> 
         if message.get_payload().is_empty() {
             return Err(RustCError::InvalidData(format!(
                 "Zcash batch message {index} has no payload"
+            )));
+        }
+        total_payload_bytes = total_payload_bytes.saturating_add(message.get_payload().len());
+        if total_payload_bytes > ZCASH_BATCH_MAX_TOTAL_PAYLOAD_BYTES {
+            return Err(RustCError::UnsupportedTransaction(format!(
+                "Zcash batch payloads exceed {ZCASH_BATCH_MAX_TOTAL_PAYLOAD_BYTES} bytes"
             )));
         }
 
@@ -1148,6 +1157,25 @@ mod tests {
             validate_zcash_batch(&batch),
             Err(RustCError::UnsupportedTransaction(message))
                 if message.contains("supports at most")
+        ));
+    }
+
+    #[test]
+    fn test_validate_zcash_batch_rejects_oversized_total_payload() {
+        // Three messages whose summed payloads cross the byte bound: the count
+        // cap alone no longer bounds RAM, so the byte bound must reject this.
+        let big = vec![0xAB; ZCASH_BATCH_MAX_TOTAL_PAYLOAD_BYTES / 2];
+        let batch = test_zcash_batch(vec![
+            test_zcash_message(b"one", &big),
+            test_zcash_message(b"two", &[big.as_slice(), &[0x01]].concat()),
+            test_zcash_message(b"three", b"pczt-three"),
+        ]);
+
+        let error = validate_zcash_batch(&batch).unwrap_err();
+        assert!(matches!(
+            error,
+            RustCError::UnsupportedTransaction(message)
+                if message.contains("payloads exceed")
         ));
     }
 
