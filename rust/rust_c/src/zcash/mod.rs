@@ -379,7 +379,7 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
         }
     }
 
-    let mut display_items = Vec::new();
+    let mut parsed_items = Vec::new();
     for message in batch.get_messages() {
         // One pass per message: the shielded validation and the display decode
         // used to run as check-then-reparse, decrypting every output twice.
@@ -390,10 +390,13 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
             &seed_fingerprint,
             account_index,
         ) {
-            Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
+            Ok(pczt) => parsed_items.push(pczt),
             Err(e) => return TransactionParseResult::from(e).c_ptr(),
         }
     }
+    // FFI display structs leak if dropped (freed via free_TransactionParseResult_*,
+    // not Drop), so build them only after every message has parsed.
+    let display_items: Vec<DisplayPczt> = parsed_items.iter().map(DisplayPczt::from).collect();
 
     TransactionParseResult::success(DisplayZcashBatch::from(display_items).c_ptr()).c_ptr()
 }
@@ -424,7 +427,6 @@ fn parse_zcash_batch_as_split_plus_migrations(
         &seed_fingerprint,
         account_index,
     )?;
-    display_items.push(DisplayPczt::from(&split_pczt));
 
     let mut summary = app_zcash::BatchMigrationSummary::default();
     for message in messages.iter().skip(1) {
@@ -437,8 +439,13 @@ fn parse_zcash_batch_as_split_plus_migrations(
         )?;
         summary.add_child(&child)?;
     }
-
     let summary_pczt = summary.to_parsed_pczt();
+
+    // Materialize the FFI display structs only after every fallible step: their
+    // nested C-side allocations are freed through free_TransactionParseResult_*,
+    // not Drop, so building one before an Err (which sends the caller down the
+    // per-message fallback) would leak it on every non-migration batch review.
+    display_items.push(DisplayPczt::from(&split_pczt));
     display_items.push(DisplayPczt::from(&summary_pczt));
 
     Ok(display_items)
