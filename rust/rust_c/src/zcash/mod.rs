@@ -359,6 +359,26 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
         return TransactionParseResult::from(e).c_ptr();
     }
 
+    #[cfg(zcash_unstable = "nu6.3")]
+    if batch.get_messages().len() > 1 {
+        match parse_zcash_batch_as_split_plus_migrations(
+            batch,
+            &ufvk_text,
+            seed_fingerprint,
+            account_index,
+        ) {
+            Ok(display_items) => {
+                return TransactionParseResult::success(
+                    DisplayZcashBatch::from(display_items).c_ptr(),
+                )
+                .c_ptr();
+            }
+            // Not a split-plus-migrations batch: fall through to the
+            // per-message review, which re-checks every message itself.
+            Err(_) => {}
+        }
+    }
+
     let mut display_items = Vec::new();
     for message in batch.get_messages() {
         // One pass per message: the shielded validation and the display decode
@@ -376,6 +396,52 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
     }
 
     TransactionParseResult::success(DisplayZcashBatch::from(display_items).c_ptr()).c_ptr()
+}
+
+/// Renders a multi-message batch as the split transaction (message 0, full
+/// per-output review) plus ONE aggregate migration summary covering the
+/// remaining messages, instead of one full page per child. Every child is
+/// still fully verified (`summarize_batch_migration_pczt_cypherpunk` runs the
+/// complete check pass per message and enforces the strict one-spend,
+/// one-wallet-owned-output migration shape); only the display is aggregated.
+/// Errors mean "not a split-plus-migrations batch" and the caller falls back
+/// to the ordinary per-message review.
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+fn parse_zcash_batch_as_split_plus_migrations(
+    batch: &ZcashSignBatch,
+    ufvk_text: &str,
+    seed_fingerprint: [u8; 32],
+    account_index: u32,
+) -> app_zcash::errors::Result<Vec<DisplayPczt>> {
+    let messages = batch.get_messages();
+    let mut display_items = Vec::new();
+
+    let split_message = &messages[0];
+    let split_pczt = app_zcash::check_and_parse_batch_pczt_cypherpunk(
+        &MainNetwork,
+        split_message.get_payload(),
+        ufvk_text,
+        &seed_fingerprint,
+        account_index,
+    )?;
+    display_items.push(DisplayPczt::from(&split_pczt));
+
+    let mut summary = app_zcash::BatchMigrationSummary::default();
+    for message in messages.iter().skip(1) {
+        let child = app_zcash::summarize_batch_migration_pczt_cypherpunk(
+            &MainNetwork,
+            message.get_payload(),
+            ufvk_text,
+            &seed_fingerprint,
+            account_index,
+        )?;
+        summary.add_child(&child)?;
+    }
+
+    let summary_pczt = summary.to_parsed_pczt();
+    display_items.push(DisplayPczt::from(&summary_pczt));
+
+    Ok(display_items)
 }
 
 #[cfg(feature = "cypherpunk")]
