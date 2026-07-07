@@ -1403,6 +1403,92 @@ mod tests {
         );
     }
 
+    /// A PCZT whose single non-zero Ironwood output carries a valid note
+    /// commitment and a genuinely wallet-owned recipient, but an
+    /// `enc_ciphertext` that no key (wallet OVK or direct decryption) can
+    /// recover, must be REJECTED by the check path — exactly as the
+    /// parse/display path (`parse_orchard_output`) already rejects it. Before
+    /// the shared-output-validation fix, `check_action_output` tried only the
+    /// wallet OVKs and silently accepted an output nothing could decrypt, so a
+    /// check-only review path would approve a migration whose funds the
+    /// receiving wallet can never detect by chain-scan.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_check_rejects_undecryptable_ironwood_output() {
+        use zcash_vendor::pczt::Pczt;
+
+        /// Flips a byte inside the first verbatim occurrence of `needle`.
+        fn corrupt_first_occurrence(haystack: &mut [u8], needle: &[u8]) -> bool {
+            if needle.is_empty() || needle.len() > haystack.len() {
+                return false;
+            }
+            for start in 0..=haystack.len() - needle.len() {
+                if &haystack[start..start + needle.len()] == needle {
+                    haystack[start + needle.len() / 2] ^= 0xff;
+                    return true;
+                }
+            }
+            false
+        }
+
+        let sample = pczt::test_support::sample_migration_pczt();
+
+        // The non-zero Ironwood output's ciphertext, as it appears on the wire.
+        let enc_ciphertext = {
+            let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT should parse");
+            pczt.ironwood()
+                .actions()
+                .iter()
+                .find(|action| matches!(action.output().value(), Some(value) if *value != 0))
+                .expect("migration child must contain a non-zero Ironwood output")
+                .output()
+                .enc_ciphertext()
+                .to_vec()
+        };
+
+        // Corrupt only the ciphertext: cmx, cv_net, the value balance, and the
+        // plaintext recipient are all untouched, so every other check still
+        // passes and only decryption/recoverability fails.
+        let mut corrupted = sample.bytes.clone();
+        assert!(
+            corrupt_first_occurrence(&mut corrupted, &enc_ciphertext),
+            "sample must embed the Ironwood output enc_ciphertext verbatim"
+        );
+        assert!(
+            Pczt::parse(&corrupted).is_ok(),
+            "corruption must keep the PCZT structurally well-formed"
+        );
+
+        let check_err = check_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &corrupted,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect_err("check must reject a PCZT with an undecryptable output");
+        assert!(
+            matches!(&check_err, ZcashError::InvalidPczt(message) if message.contains("undecryptable")),
+            "expected an undecryptable-output rejection, got {check_err:?}"
+        );
+
+        // Parity: the single-pass batch review path must agree — no weaker
+        // review path can approve what the display path rejects.
+        assert!(
+            matches!(
+                check_and_parse_batch_pczt_cypherpunk(
+                    &pczt::test_support::Nu6_3Network,
+                    &corrupted,
+                    &sample.ufvk_text,
+                    &sample.seed_fingerprint,
+                    0,
+                ),
+                Err(ZcashError::InvalidPczt(message)) if message.contains("undecryptable")
+            ),
+            "single-pass batch review must also reject the undecryptable output"
+        );
+    }
+
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_batch_postflight_rejects_sapling_outputs() {
