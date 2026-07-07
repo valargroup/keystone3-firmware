@@ -521,13 +521,13 @@ fn check_action_spend<P: consensus::Parameters>(
     let pool_label = pool.label();
     // We can only verify the `nullifier` and `rk` fields of a spend if we know its FVK.
     let can_verify_nf_rk = match (spend.value(), spend.fvk(), spend.zip32_derivation()) {
-        // Dummy notes use randomly-generated FVKs, so if one is already present then
-        // don't validate using the account's FVK.
-        (Some(value), Some(_), _) if value.inner() == 0 => Some(None),
-        // If the spend is marked as matching the selected account's FVK, verify with it.
-        (Some(value), _, Some(zip32_derivation))
-            if value.inner() != 0
-                && zip32_derivation.seed_fingerprint() == seed_fingerprint
+        // If the spend is marked as matching the selected account, verify with the
+        // account's FVK regardless of value: restricted-bundle change spends are
+        // wallet-controlled zero-value spends the signer authorizes with the account
+        // key, so their nullifier/rk must bind to the account at review time rather
+        // than being self-checked like dummies.
+        (Some(_), _, Some(zip32_derivation))
+            if zip32_derivation.seed_fingerprint() == seed_fingerprint
                 && zip32_derivation.derivation_path()
                     == &[
                         zip32::ChildIndex::hardened(32),
@@ -537,6 +537,9 @@ fn check_action_spend<P: consensus::Parameters>(
         {
             Some(Some(fvk))
         }
+        // Dummy notes use randomly-generated FVKs, so if one is already present then
+        // don't validate using the account's FVK.
+        (Some(value), Some(_), _) if value.inner() == 0 => Some(None),
         // Don't verify `nullifier` or `rk` for spends that lack value data.
         _ => None,
     };
