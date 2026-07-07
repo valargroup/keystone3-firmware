@@ -33,10 +33,6 @@ use ur_registry::zcash::zcash_sign_batch::{
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
-const ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1: u32 = 2;
-const ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC: &[u8; 4] = b"ZCPZ";
-const ZCASH_COMPRESSED_PCZT_MAX_UNCOMPRESSED_LEN: usize = 256 * 1024;
-
 // Batch memory is bounded by message count, not separate byte caps. A 35-message
 // pczt-v1 batch was ~35% of RAM on target; the optional-field v2 messages this
 // build consumes are far smaller per message, so the ceiling is 80 to fit a full
@@ -78,50 +74,9 @@ fn confirm_batch_reviewed(batch_fingerprint: &[u8; 32]) -> bool {
         .is_some_and(|reviewed| reviewed.as_ref() == Some(batch_fingerprint))
 }
 
-fn compressed_zcash_pczt_payload(payload: &[u8]) -> Result<Vec<u8>, RustCError> {
-    if payload.len() < ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC.len() + 4 {
-        return Err(RustCError::InvalidData(
-            "compressed Zcash PCZT payload is too short".to_string(),
-        ));
-    }
-    if !payload.starts_with(ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC) {
-        return Err(RustCError::InvalidData(
-            "compressed Zcash PCZT payload has wrong marker".to_string(),
-        ));
-    }
-
-    let len_start = ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC.len();
-    let expected_len = u32::from_le_bytes(
-        payload[len_start..len_start + 4]
-            .try_into()
-            .expect("length slice is four bytes"),
-    ) as usize;
-    if expected_len > ZCASH_COMPRESSED_PCZT_MAX_UNCOMPRESSED_LEN {
-        return Err(RustCError::UnsupportedTransaction(format!(
-            "compressed Zcash PCZT expands beyond {ZCASH_COMPRESSED_PCZT_MAX_UNCOMPRESSED_LEN} bytes"
-        )));
-    }
-
-    let compressed = &payload[len_start + 4..];
-    let pczt = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(compressed, expected_len)
-        .map_err(|e| {
-            RustCError::InvalidData(format!("decompress Zcash PCZT payload failed: {e:?}"))
-        })?;
-    if pczt.len() != expected_len {
-        return Err(RustCError::InvalidData(format!(
-            "compressed Zcash PCZT length mismatch: expected {expected_len}, got {}",
-            pczt.len()
-        )));
-    }
-    Ok(pczt)
-}
-
 fn zcash_batch_message_pczt_payload(message: &ZcashSignMessage) -> Result<Vec<u8>, RustCError> {
     match message.get_kind() {
         ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 => Ok(message.get_payload().to_vec()),
-        ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1 => {
-            compact_zcash_pczt_payload(message.get_payload())
-        }
         other => Err(RustCError::UnsupportedTransaction(format!(
             "unsupported Zcash batch message kind {other}"
         ))),
@@ -136,41 +91,9 @@ fn zcash_batch_message_pczt_payloads(
             message.get_id().clone(),
             message.get_payload().to_vec(),
         )]),
-        ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1 => {
-            if pczt::compact_migration::is_compact_migration_batch_payload(message.get_payload()) {
-                pczt::compact_migration::decode_batch_to_pczt_bytes(message.get_payload()).map_err(
-                    |e| {
-                        RustCError::InvalidData(format!(
-                            "decode compact Zcash migration batch failed: {e:?}"
-                        ))
-                    },
-                )
-            } else {
-                Ok(vec![(
-                    message.get_id().clone(),
-                    compact_zcash_pczt_payload(message.get_payload())?,
-                )])
-            }
-        }
         other => Err(RustCError::UnsupportedTransaction(format!(
             "unsupported Zcash batch message kind {other}"
         ))),
-    }
-}
-
-fn compact_zcash_pczt_payload(payload: &[u8]) -> Result<Vec<u8>, RustCError> {
-    if payload.starts_with(ZCASH_COMPRESSED_PCZT_PAYLOAD_MAGIC) {
-        compressed_zcash_pczt_payload(payload)
-    } else if pczt::compact_migration::is_compact_migration_child_payload(payload) {
-        pczt::compact_migration::decode_child_to_pczt_bytes(payload).map_err(|e| {
-            RustCError::InvalidData(format!(
-                "decode compact Zcash migration child failed: {e:?}"
-            ))
-        })
-    } else {
-        Err(RustCError::InvalidData(
-            "compact Zcash PCZT payload has unknown marker".to_string(),
-        ))
     }
 }
 
@@ -387,10 +310,7 @@ fn validate_zcash_batch(batch: &ZcashSignBatch) -> Result<[u8; 32], RustCError> 
     let mut seen_signing_messages: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
     let mut signing_message_count = 0usize;
     for (index, message) in messages.iter().enumerate() {
-        if !matches!(
-            message.get_kind(),
-            ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 | ZCASH_SIGN_MESSAGE_KIND_MIGRATION_COMPACT_V1
-        ) {
+        if message.get_kind() != ZCASH_SIGN_MESSAGE_KIND_PCZT_V1 {
             return Err(RustCError::UnsupportedTransaction(format!(
                 "unsupported Zcash batch message kind {}",
                 message.get_kind()
@@ -952,14 +872,14 @@ unsafe fn sign_zcash_tx_cypherpunk_dynamic(
                             // the postflight check runs on full (unredacted) data; the bare
                             // response is intentionally not re-parseable on its own. The
                             // redacted `signed_pczt` is still what gets returned to the wallet.
-                            let combined =
-                                match recombine_signed_response(&pczt_data, &signed_pczt) {
-                                    Ok(combined) => combined,
-                                    Err(e) => {
-                                        seed.zeroize();
-                                        return UREncodeResult::from(e).c_ptr();
-                                    }
-                                };
+                            let combined = match recombine_signed_response(&pczt_data, &signed_pczt)
+                            {
+                                Ok(combined) => combined,
+                                Err(e) => {
+                                    seed.zeroize();
+                                    return UREncodeResult::from(e).c_ptr();
+                                }
+                            };
                             if let Err(e) =
                                 app_zcash::ensure_owned_supported_shielded_actions_are_signed(
                                     &MainNetwork,

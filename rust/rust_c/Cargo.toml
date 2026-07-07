@@ -26,7 +26,6 @@ aes = { workspace = true }
 cbc = { workspace = true }
 cipher = { workspace = true }
 minicbor = { workspace = true }
-miniz_oxide = { workspace = true }
 pczt = { workspace = true, features = ["orchard"] }
 spin = { workspace = true, optional = true }
 #keystone owned

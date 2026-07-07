@@ -3878,7 +3878,6 @@ dependencies = [
  "itertools 0.13.0",
  "keystore",
  "minicbor",
- "miniz_oxide",
  "no_std_io2",
  "pczt",
  "rand_core 0.6.4",

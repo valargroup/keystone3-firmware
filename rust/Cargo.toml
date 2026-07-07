@@ -122,7 +122,6 @@ num-traits = { version = "0.2.19", default-features = false }
 blake2b_simd = { version = "1.0.2", default-features = false }
 getrandom = "0.2"
 minicbor = { version = "0.19", features = ["alloc"] }
-miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
 pczt = { version = "0.7", default-features = false }
 zeroize = { version = "1.8.2", default-features = false }
 # third party dependencies end
