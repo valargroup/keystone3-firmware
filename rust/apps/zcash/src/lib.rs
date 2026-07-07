@@ -2015,12 +2015,13 @@ mod tests {
             .iter()
             .position(|value| matches!(value, Some(0)))
             .expect("change PCZT must contain the fabricated zero-value spend");
-        let nullifier = *Pczt::parse(&sample.bytes)
+        let nullifier = (*Pczt::parse(&sample.bytes)
             .expect("sample PCZT should parse")
             .orchard()
             .actions()[change_index]
             .spend()
-            .nullifier();
+            .nullifier())
+        .expect("full sample carries the change spend nullifier");
 
         let mut corrupted = sample.bytes.clone();
         let start = corrupted
