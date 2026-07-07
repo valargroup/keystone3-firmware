@@ -5,6 +5,7 @@ on:
       - rust/zcash_vendor/**
       - rust/rust_c/src/zcash/**
       - rust/rust_c/src/common/ur.rs
+      - rust/rust_c/src/common/ur_ext.rs
 
 name: Zcash Checks
 

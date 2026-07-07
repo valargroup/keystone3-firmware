@@ -896,7 +896,9 @@ fn decode_memo(memo_bytes: [u8; 512]) -> Option<String> {
         }
         result.reverse();
 
-        return Some(String::from_utf8(result).unwrap());
+        // Display-only decoding shared by the check path: memo bytes are
+        // host-controlled, so invalid UTF-8 must not panic; render it lossily.
+        return Some(String::from_utf8_lossy(&result).into_owned());
     }
 
     if first == 0xF6 {
@@ -925,6 +927,19 @@ mod tests {
     };
 
     extern crate std;
+
+    /// Memo bytes are host-controlled; a text-tagged memo (first byte <= 0xF4)
+    /// whose contents are not valid UTF-8 must decode lossily, not panic, since
+    /// the shared output validation on the check path reaches this decoding.
+    #[test]
+    fn test_decode_memo_tolerates_invalid_utf8() {
+        let mut memo = [0u8; 512];
+        memo[0] = 0xC3; // start of a 2-byte UTF-8 sequence...
+        memo[1] = 0x28; // ...followed by an invalid continuation byte
+
+        let decoded = decode_memo(memo).expect("text-tagged memo must decode");
+        assert!(decoded.contains('\u{FFFD}'));
+    }
 
     fn p2sh_output_with_matching_seed_fingerprint(
         seed_fingerprint: [u8; 32],
