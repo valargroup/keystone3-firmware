@@ -1830,6 +1830,54 @@ mod tests {
         );
     }
 
+    /// A zero-value change spend tagged to the selected account must have its
+    /// nullifier verified against the account FVK at review time: the signer
+    /// will authorize it with the account key, so a tampered nullifier has to
+    /// be caught by the check instead of surfacing as an invalid transaction
+    /// after signing.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_check_rejects_tampered_zero_value_change_spend_nullifier() {
+        use zcash_vendor::pczt::Pczt;
+
+        let sample = pczt::test_support::sample_orchard_change_pczt();
+
+        let change_index = pczt::test_support::orchard_spend_values(&sample.bytes)
+            .iter()
+            .position(|value| matches!(value, Some(0)))
+            .expect("change PCZT must contain the fabricated zero-value spend");
+        let nullifier = *Pczt::parse(&sample.bytes)
+            .expect("sample PCZT should parse")
+            .orchard()
+            .actions()[change_index]
+            .spend()
+            .nullifier();
+
+        let mut corrupted = sample.bytes.clone();
+        let start = corrupted
+            .windows(nullifier.len())
+            .position(|window| window == nullifier)
+            .expect("sample must embed the change spend nullifier verbatim");
+        corrupted[start + nullifier.len() / 2] ^= 0xff;
+        assert!(
+            Pczt::parse(&corrupted).is_ok(),
+            "corruption must keep the PCZT structurally well-formed"
+        );
+
+        let err = check_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &corrupted,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect_err("check must reject a tampered change spend nullifier");
+        assert!(
+            matches!(&err, ZcashError::InvalidPczt(message) if message.contains("nullifier")),
+            "expected a nullifier rejection, got {err:?}"
+        );
+    }
+
     /// The fabricated zero-value change spend counts as signable in the batch
     /// preflight, so the postflight must reject a response that left it unsigned
     /// and accept a fully signed one.
