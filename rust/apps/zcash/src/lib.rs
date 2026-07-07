@@ -520,8 +520,31 @@ pub fn summarize_batch_migration_pczt_cypherpunk<P: consensus::Parameters>(
     account_index: u32,
 ) -> Result<BatchMigrationSummary> {
     let pczt = pczt::parse_pczt(pczt)?;
-    let (ufvk, account_index) =
-        check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
+        .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
+    let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
+        "transparent xpub is not present".to_string(),
+    ))?;
+    // Run the check pass through the row-producing variant so the display data
+    // the per-message review would have shown is available to the shape gate.
+    let checked_shielded = pczt::check::check_and_parse_pczt_shielded(
+        params,
+        seed_fingerprint,
+        account_index,
+        &ufvk,
+        &pczt,
+    )?;
+    pczt::check::check_pczt_transparent(
+        params,
+        seed_fingerprint,
+        account_index,
+        xpub,
+        &pczt,
+        false,
+    )?;
+    require_migration_display_shape(&checked_shielded)?;
 
     let signable_actions = signable_shielded_actions(
         params,
@@ -535,6 +558,62 @@ pub fn summarize_batch_migration_pczt_cypherpunk<P: consensus::Parameters>(
     }
 
     summarize_migration_actions(&ufvk, &pczt)
+}
+
+/// Display parity for the aggregate migration summary: a child may only fold
+/// into the summary when its full per-message review would show nothing beyond
+/// what the summary renders — one Orchard spend row and one Ironwood output
+/// row, with no memo text anywhere. An extra displayable row (e.g. a non-dummy
+/// zero-value output smuggled next to the real one) or a decodable memo fails
+/// the shape, so the caller falls back to the ordinary per-message review,
+/// which shows it. Amount/ownership arithmetic is enforced separately by
+/// [`summarize_migration_actions`]; this gate is purely about what the user
+/// would have seen.
+#[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
+fn require_migration_display_shape(checked: &pczt::check::CheckedShieldedParse) -> Result<()> {
+    let reject = |what: &str| {
+        Err(ZcashError::InvalidPczt(format!(
+            "migration summary cannot represent {what}; use the per-message review"
+        )))
+    };
+
+    let no_memo = |to: &ParsedTo| matches!(to.get_memo().as_deref(), None | Some(""));
+
+    let orchard_from = checked
+        .orchard
+        .as_ref()
+        .map(|rows| rows.get_from())
+        .unwrap_or_default();
+    let orchard_to = checked
+        .orchard
+        .as_ref()
+        .map(|rows| rows.get_to())
+        .unwrap_or_default();
+    let ironwood_from = checked
+        .ironwood
+        .as_ref()
+        .map(|rows| rows.get_from())
+        .unwrap_or_default();
+    let ironwood_to = checked
+        .ironwood
+        .as_ref()
+        .map(|rows| rows.get_to())
+        .unwrap_or_default();
+
+    if orchard_from.len() != 1 || !ironwood_from.is_empty() {
+        return reject("this spend shape");
+    }
+    // The migrated note is the only Orchard row; a displayable Orchard output
+    // (beyond builder dummies, which the row pass already drops) means the
+    // per-message review had something to show.
+    if !orchard_to.is_empty() {
+        return reject("Orchard outputs");
+    }
+    match ironwood_to.as_slice() {
+        [only] if only.get_amount() != 0 && no_memo(only) => Ok(()),
+        [only] if only.get_amount() != 0 => reject("an output memo"),
+        _ => reject("this output shape"),
+    }
 }
 
 #[cfg(test)]
@@ -822,18 +901,19 @@ fn collect_signable_shielded_actions<P: consensus::Parameters>(
         // Ownership decides signability, never the value: restricted bundles pair
         // change outputs with fabricated wallet-controlled zero-value spends that the
         // device must sign, so zero value must not short-circuit the account check.
-        let matches_account = pczt::matching_seed_supported_orchard_account(
+        let matched_account = pczt::matching_seed_supported_orchard_account(
             seed_fingerprint,
             action.spend().zip32_derivation().as_ref(),
             params.network_type().coin_type(),
             pool.shielded_pool(),
         )
-        .map_err(OrchardError::Custom)?
-            == Some(account_index);
-        if !matches_account {
-            // Zero-value spends not owned by this account are tolerated dummies
-            // (their signatures travel wallet-side); anything else is foreign.
-            if value.inner() == 0 {
+        .map_err(OrchardError::Custom)?;
+        if matched_account != Some(account_index) {
+            // Zero-value spends not derivable from this seed at all are tolerated
+            // dummies (their signatures travel wallet-side). A spend tagged to a
+            // DIFFERENT account of this seed is refused outright, mirroring the
+            // batch signer, so it can never reach signing tolerated as a dummy.
+            if value.inner() == 0 && matched_account.is_none() {
                 continue;
             }
             if policy == ShieldedActionPolicy::Batch {
@@ -1830,6 +1910,35 @@ mod tests {
         );
     }
 
+    /// The batch PREFLIGHT must refuse a zero-value spend tagged to a different
+    /// account of the same seed, mirroring the signer: tolerating it as a dummy
+    /// at review time would let it reach signing paths as an approved batch.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_preflight_rejects_foreign_account_zero_value_spend() {
+        let sample = pczt::test_support::sample_orchard_change_pczt();
+        let foreign = pczt::test_support::orchard_pczt_with_zero_value_spend_derivation(
+            &sample.bytes,
+            sample.seed_fingerprint,
+            alloc::vec![
+                zip32::ChildIndex::hardened(32).index(),
+                zip32::ChildIndex::hardened(133).index(),
+                zip32::ChildIndex::hardened(1).index(),
+            ],
+        );
+
+        assert_eq!(
+            ensure_pczt_has_signable_shielded_action(
+                &pczt::test_support::Nu6_3Network,
+                &foreign,
+                &sample.seed_fingerprint,
+                0,
+            )
+            .unwrap_err(),
+            ZcashError::PcztNoMyInputs
+        );
+    }
+
     /// A zero-value change spend tagged to the selected account must have its
     /// nullifier verified against the account FVK at review time: the signer
     /// will authorize it with the account key, so a tampered nullifier has to
@@ -2225,6 +2334,51 @@ mod tests {
             .unwrap_err(),
             ZcashError::PcztNoMyInputs
         );
+    }
+
+    /// A migration child whose real Ironwood output carries memo text must not
+    /// fold into the aggregate summary (which renders amounts only): the shape
+    /// gate rejects it, and the ordinary per-message review — the fallback the
+    /// batch parse path takes — displays the memo instead.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_batch_migration_summary_rejects_memo_carrying_output() {
+        use zcash_vendor::zcash_protocol::memo::MemoBytes;
+
+        let sample = pczt::test_support::sample_migration_pczt_with_output_memo(
+            MemoBytes::from_bytes(b"covert note").expect("memo text fits"),
+        );
+
+        let summary_err = summarize_batch_migration_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect_err("summary must refuse a memo it cannot render");
+        assert!(
+            matches!(&summary_err, ZcashError::InvalidPczt(message) if message.contains("per-message review")),
+            "expected a display-shape rejection, got {summary_err:?}"
+        );
+
+        // Parity: the fallback per-message review shows the memo.
+        let parsed = check_and_parse_batch_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )
+        .expect("per-message review must accept the memo-carrying child");
+        let shown_memo = parsed
+            .get_ironwood()
+            .expect("migration must show Ironwood outputs")
+            .get_to()
+            .first()
+            .expect("migration must show the real output")
+            .get_memo();
+        assert_eq!(shown_memo.as_deref(), Some("covert note"));
     }
 
     /// A migration child whose single non-zero Ironwood output carries a valid
