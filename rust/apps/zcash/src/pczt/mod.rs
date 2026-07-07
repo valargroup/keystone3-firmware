@@ -295,6 +295,7 @@ pub(crate) mod test_support {
             .unwrap()
             .finish()
             .serialize()
+            .expect("updated PCZT must serialize")
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -331,6 +332,7 @@ pub(crate) mod test_support {
             .unwrap()
             .finish()
             .serialize()
+            .expect("updated PCZT must serialize")
     }
 
     /// Per-action Orchard spend values of `bytes`, read through the Verifier's
@@ -397,6 +399,7 @@ pub(crate) mod test_support {
             .unwrap()
             .finish()
             .serialize()
+            .expect("updated PCZT must serialize")
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -462,11 +465,23 @@ pub(crate) mod test_support {
         builder
             .add_ironwood_spend::<zip317::FeeRule>(orchard_fvk.clone(), note, merkle_path)
             .unwrap();
+        // Two outputs against one spend: the builder pads the second action with a
+        // dummy (zero-value) spend, which the dummy-spend ZIP 32 metadata tests rely
+        // on (Ironwood bundles are otherwise unpadded). Two actions keep the ZIP 317
+        // fee at 10_000.
+        builder
+            .add_ironwood_output::<zip317::FeeRule>(
+                Some(orchard_ovk.clone()),
+                recipient,
+                Zatoshis::const_from_u64(500_000),
+                MemoBytes::empty(),
+            )
+            .unwrap();
         builder
             .add_ironwood_output::<zip317::FeeRule>(
                 Some(orchard_ovk),
                 recipient,
-                Zatoshis::const_from_u64(990_000),
+                Zatoshis::const_from_u64(490_000),
                 MemoBytes::empty(),
             )
             .unwrap();
@@ -499,7 +514,7 @@ pub(crate) mod test_support {
             .finish();
 
         SamplePczt {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().expect("sample PCZT must serialize"),
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
@@ -516,13 +531,13 @@ pub(crate) mod test_support {
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
         let orchard_fvk = ufvk.orchard().unwrap().clone();
-        let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::External);
-        let orchard_ovk = orchard_fvk.to_ovk(orchard::keys::Scope::External);
-        let recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::External);
+        let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::Internal);
+        let orchard_ovk = orchard_fvk.to_ovk(orchard::keys::Scope::Internal);
+        let recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
 
-        // The Orchard note being migrated: output (990_000) + cross-pool fee (20_000),
-        // so there is no change output.
-        let value = orchard::value::NoteValue::from_raw(1_010_000);
+        // The Orchard note being migrated: output (990_000) plus the standard
+        // cross-pool fee, so there is no change output.
+        let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
             let mut orchard_builder = orchard::builder::Builder::new(
                 orchard::builder::BundleType::Coinbase,
@@ -611,7 +626,7 @@ pub(crate) mod test_support {
             .finish();
 
         SamplePczt {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().expect("sample PCZT must serialize"),
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
@@ -733,7 +748,7 @@ pub(crate) mod test_support {
             .finish();
 
         SamplePczt {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().expect("sample PCZT must serialize"),
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
@@ -809,6 +824,7 @@ pub(crate) mod legacy_test_support {
             .unwrap()
             .finish()
             .serialize()
+            .expect("updated PCZT must serialize")
     }
 
     pub(crate) fn legacy_transparent_sample() -> LegacyTransparentSample {
@@ -888,7 +904,7 @@ pub(crate) mod legacy_test_support {
             .to_string();
 
         LegacyTransparentSample {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().expect("sample PCZT must serialize"),
             seed: seed.to_vec(),
             seed_fingerprint,
             xpub,

@@ -71,8 +71,14 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<()> {
-    let pczt = pczt::parse_pczt(pczt)?;
-    check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+    let mut pczt = pczt::parse_pczt(pczt)?;
+    check_parsed_pczt_cypherpunk(
+        params,
+        &mut pczt,
+        ufvk_text,
+        seed_fingerprint,
+        account_index,
+    )?;
     Ok(())
 }
 
@@ -82,7 +88,7 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
 #[cfg(feature = "cypherpunk")]
 fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
-    pczt: &Pczt,
+    pczt: &mut Pczt,
     ufvk_text: &str,
     seed_fingerprint: &[u8; 32],
     account_index: u32,
@@ -94,6 +100,7 @@ fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
     let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
         "transparent xpub is not present".to_string(),
     ))?;
+    fill_missing_spend_fvks_from_ufvk(params, pczt, &ufvk, seed_fingerprint, account_index)?;
     pczt::check::check_pczt_orchard(params, seed_fingerprint, account_index, &ufvk, &pczt)?;
     pczt::check::check_pczt_transparent(
         params,
@@ -104,6 +111,36 @@ fn check_parsed_pczt_cypherpunk<P: consensus::Parameters>(
         false,
     )?;
     Ok((ufvk, account_index))
+}
+
+/// Fills any spend `fvk` the wallet omitted from the wire, using the account
+/// UFVK the review paths already hold. The checks re-derive and verify
+/// everything they consume, so a filled FVK is trusted exactly as far as the
+/// UFVK it came from; see `pczt::sign::fill_selected_account_spend_fvks` for
+/// the seed-side twin the signer uses.
+#[cfg(feature = "cypherpunk")]
+fn fill_missing_spend_fvks_from_ufvk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &mut Pczt,
+    ufvk: &UnifiedFullViewingKey,
+    seed_fingerprint: &[u8; 32],
+    account_index: zip32::AccountId,
+) -> Result<()> {
+    if pczt.orchard().actions().is_empty() && pczt.ironwood().actions().is_empty() {
+        return Ok(());
+    }
+
+    let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
+        "orchard fvk is not present".to_string(),
+    ))?;
+    let account_child: zip32::ChildIndex = account_index.into();
+    let derivation_path = [
+        zip32::ChildIndex::hardened(32).index(),
+        zip32::ChildIndex::hardened(params.network_type().coin_type()).index(),
+        account_child.index(),
+    ];
+    pczt.fill_missing_spend_fvks_for_zip32_path(seed_fingerprint, &derivation_path, fvk.to_bytes());
+    Ok(())
 }
 
 #[cfg(feature = "multi_coins")]
@@ -211,7 +248,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<ParsedPczt> {
-    let pczt = pczt::parse_pczt(pczt)?;
+    let mut pczt = pczt::parse_pczt(pczt)?;
     let account_index = zip32::AccountId::try_from(account_index)
         .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
     let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
@@ -219,6 +256,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
         "transparent xpub is not present".to_string(),
     ))?;
+    fill_missing_spend_fvks_from_ufvk(params, &mut pczt, &ufvk, seed_fingerprint, account_index)?;
     let checked_shielded = pczt::check::check_and_parse_pczt_shielded(
         params,
         seed_fingerprint,
@@ -362,11 +400,14 @@ impl BatchMigrationSummary {
     }
 }
 
-/// Requires an action value to be present, returning it (zero is a valid
-/// value; callers classify zero themselves).
+/// Requires an action value to be present on the wire, returning it (zero is a
+/// valid value; callers classify zero themselves).
 #[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
-fn require_action_value(value: Option<u64>, label: &str) -> Result<u64> {
-    value.ok_or_else(|| ZcashError::InvalidPczt(format!("missing {label} value")))
+fn require_action_value(value: &Option<u64>, label: &str) -> Result<u64> {
+    value
+        .as_ref()
+        .copied()
+        .ok_or_else(|| ZcashError::InvalidPczt(format!("missing {label} value")))
 }
 
 #[cfg(all(feature = "cypherpunk", zcash_unstable = "nu6.3"))]
@@ -374,8 +415,6 @@ fn summarize_migration_actions(
     ufvk: &UnifiedFullViewingKey,
     pczt: &Pczt,
 ) -> Result<BatchMigrationSummary> {
-    use zcash_vendor::pczt::roles::verifier::{OrchardError, Verifier};
-
     if !pczt.transparent().outputs().is_empty() {
         return Err(ZcashError::InvalidPczt(
             "migration summary does not support transparent outputs".to_string(),
@@ -389,103 +428,59 @@ fn summarize_migration_actions(
     let mut total_input = 0u64;
     let mut total_output = 0u64;
 
-    let map_verifier_error = |error: OrchardError<ZcashError>| match error {
-        OrchardError::Custom(error) => error,
-        error => ZcashError::InvalidDataError(format!("{error:?}")),
-    };
+    for action in pczt.orchard().actions() {
+        let spend_value = require_action_value(action.spend().value(), "Orchard spend")?;
+        if spend_value != 0 {
+            orchard_spends = orchard_spends.checked_add(1).ok_or_else(|| {
+                ZcashError::InvalidPczt("Orchard spend count overflow".to_string())
+            })?;
+            total_input = total_input
+                .checked_add(spend_value)
+                .ok_or_else(|| ZcashError::InvalidPczt("migration input overflow".to_string()))?;
+        }
 
-    // Values are read through the Verifier's parsed view; the wire structs of
-    // the pinned pczt revision expose no spend-value getter.
-    let verifier = Verifier::new(pczt.clone())
-        .with_orchard(|bundle| {
-            for action in bundle.actions().iter() {
-                let spend_value = require_action_value(
-                    action.spend().value().map(|v| v.inner()),
-                    "Orchard spend",
-                )
-                .map_err(OrchardError::Custom)?;
-                if spend_value != 0 {
-                    orchard_spends = orchard_spends.checked_add(1).ok_or_else(|| {
-                        OrchardError::Custom(ZcashError::InvalidPczt(
-                            "Orchard spend count overflow".to_string(),
-                        ))
-                    })?;
-                    total_input = total_input.checked_add(spend_value).ok_or_else(|| {
-                        OrchardError::Custom(ZcashError::InvalidPczt(
-                            "migration input overflow".to_string(),
-                        ))
-                    })?;
-                }
+        let output_value = require_action_value(action.output().value(), "Orchard output")?;
+        if output_value != 0 {
+            orchard_outputs = orchard_outputs.checked_add(1).ok_or_else(|| {
+                ZcashError::InvalidPczt("Orchard output count overflow".to_string())
+            })?;
+        }
+    }
 
-                let output_value = require_action_value(
-                    action.output().value().map(|v| v.inner()),
-                    "Orchard output",
-                )
-                .map_err(OrchardError::Custom)?;
-                if output_value != 0 {
-                    orchard_outputs = orchard_outputs.checked_add(1).ok_or_else(|| {
-                        OrchardError::Custom(ZcashError::InvalidPczt(
-                            "Orchard output count overflow".to_string(),
-                        ))
-                    })?;
-                }
-            }
-            Ok(())
-        })
-        .map_err(map_verifier_error)?;
+    for action in pczt.ironwood().actions() {
+        let spend_value = require_action_value(action.spend().value(), "Ironwood spend")?;
+        if spend_value != 0 {
+            ironwood_spends = ironwood_spends.checked_add(1).ok_or_else(|| {
+                ZcashError::InvalidPczt("Ironwood spend count overflow".to_string())
+            })?;
+        }
 
-    verifier
-        .with_ironwood(|bundle| {
-            for action in bundle.actions().iter() {
-                let spend_value = require_action_value(
-                    action.spend().value().map(|v| v.inner()),
-                    "Ironwood spend",
-                )
-                .map_err(OrchardError::Custom)?;
-                if spend_value != 0 {
-                    ironwood_spends = ironwood_spends.checked_add(1).ok_or_else(|| {
-                        OrchardError::Custom(ZcashError::InvalidPczt(
-                            "Ironwood spend count overflow".to_string(),
-                        ))
-                    })?;
-                }
+        let output_value = require_action_value(action.output().value(), "Ironwood output")?;
+        if output_value == 0 {
+            continue;
+        }
 
-                let output_value = require_action_value(
-                    action.output().value().map(|v| v.inner()),
-                    "Ironwood output",
-                )
-                .map_err(OrchardError::Custom)?;
-                if output_value == 0 {
-                    continue;
-                }
+        let recipient = action.output().recipient().ok_or_else(|| {
+            ZcashError::InvalidPczt("missing Ironwood output recipient".to_string())
+        })?;
+        let recipient = zcash_vendor::orchard::Address::from_raw_address_bytes(&recipient)
+            .into_option()
+            .ok_or_else(|| {
+                ZcashError::InvalidPczt("invalid Ironwood output recipient".to_string())
+            })?;
+        if !pczt::parse::is_wallet_orchard_address(ufvk, &recipient)? {
+            return Err(ZcashError::InvalidPczt(
+                "migration Ironwood output is not wallet-owned".to_string(),
+            ));
+        }
 
-                let recipient = action.output().recipient().ok_or_else(|| {
-                    OrchardError::Custom(ZcashError::InvalidPczt(
-                        "missing Ironwood output recipient".to_string(),
-                    ))
-                })?;
-                if !pczt::parse::is_wallet_orchard_address(ufvk, &recipient)
-                    .map_err(OrchardError::Custom)?
-                {
-                    return Err(OrchardError::Custom(ZcashError::InvalidPczt(
-                        "migration Ironwood output is not wallet-owned".to_string(),
-                    )));
-                }
-
-                ironwood_outputs = ironwood_outputs.checked_add(1).ok_or_else(|| {
-                    OrchardError::Custom(ZcashError::InvalidPczt(
-                        "Ironwood output count overflow".to_string(),
-                    ))
-                })?;
-                total_output = total_output.checked_add(output_value).ok_or_else(|| {
-                    OrchardError::Custom(ZcashError::InvalidPczt(
-                        "migration output overflow".to_string(),
-                    ))
-                })?;
-            }
-            Ok(())
-        })
-        .map_err(map_verifier_error)?;
+        ironwood_outputs = ironwood_outputs
+            .checked_add(1)
+            .ok_or_else(|| ZcashError::InvalidPczt("Ironwood output count overflow".to_string()))?;
+        total_output = total_output
+            .checked_add(output_value)
+            .ok_or_else(|| ZcashError::InvalidPczt("migration output overflow".to_string()))?;
+    }
 
     if orchard_spends != 1 || orchard_outputs != 0 || ironwood_spends != 0 || ironwood_outputs != 1
     {
@@ -519,9 +514,14 @@ pub fn summarize_batch_migration_pczt_cypherpunk<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<BatchMigrationSummary> {
-    let pczt = pczt::parse_pczt(pczt)?;
-    let (ufvk, account_index) =
-        check_parsed_pczt_cypherpunk(params, &pczt, ufvk_text, seed_fingerprint, account_index)?;
+    let mut pczt = pczt::parse_pczt(pczt)?;
+    let (ufvk, account_index) = check_parsed_pczt_cypherpunk(
+        params,
+        &mut pczt,
+        ufvk_text,
+        seed_fingerprint,
+        account_index,
+    )?;
 
     let signable_actions = signable_shielded_actions(
         params,
@@ -654,19 +654,21 @@ mod legacy_tests {
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_check_rejects_v6_pczt() {
-        let pczt = Creator::new_v6(
+        let pczt = Creator::new(
             BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
             [0; 32],
             [0; 32],
-            [1; 32],
         )
+        .unwrap()
+        .with_ironwood_anchor([1; 32])
+        .unwrap()
         .build();
 
         let result = check_pczt_multi_coins(
             &MainNetwork,
-            &pczt.serialize(),
+            &pczt.serialize().unwrap(),
             "not-an-xpub",
             &[7u8; 32],
             0,
@@ -763,17 +765,23 @@ fn reject_unsupported_batch_pczt(pczt: &Pczt) -> Result<()> {
     Ok(())
 }
 
-/// Requires every action's `enc_ciphertext` to reach the ZIP-244 memo boundary
-/// so the signature-hash slicing in `zcash_vendor::pczt_ext` cannot panic on a
-/// truncated field.
+/// Requires every wire-carried `enc_ciphertext` to reach the ZIP-244 memo
+/// boundary so the signature-hash slicing in `zcash_vendor::pczt_ext` cannot
+/// panic on a truncated field. An elided (`None`) ciphertext is exempt: the
+/// signer's `fill_derived_fields` recomputes it at full length before the
+/// sighash reads it, or fails signing if it cannot.
 #[cfg(feature = "cypherpunk")]
 fn require_signature_hash_fields_for_bundle(
     bundle: &zcash_vendor::pczt::orchard::Bundle,
     pool: &str,
 ) -> Result<()> {
     for (index, action) in bundle.actions().iter().enumerate() {
-        let enc_ciphertext = action.output().enc_ciphertext();
-        if enc_ciphertext.len() < zcash_vendor::pczt_ext::ENC_CIPHERTEXT_MEMO_END {
+        if action
+            .output()
+            .enc_ciphertext()
+            .as_ref()
+            .is_some_and(|e| e.len() < zcash_vendor::pczt_ext::ENC_CIPHERTEXT_MEMO_END)
+        {
             return Err(ZcashError::InvalidPczt(format!(
                 "invalid {pool} action {index} enc_ciphertext length"
             )));
@@ -993,6 +1001,39 @@ pub fn ensure_pczt_has_signable_shielded_action<P: consensus::Parameters>(
     }
 }
 
+/// Checks signability after filling any account FVKs the batch request omitted
+/// from the wire. Use this for batch review paths that also receive the account
+/// UFVK.
+#[cfg(feature = "cypherpunk")]
+pub fn ensure_pczt_has_signable_shielded_action_with_ufvk<P: consensus::Parameters>(
+    params: &P,
+    pczt: &[u8],
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+    account_index: u32,
+) -> Result<()> {
+    let mut pczt = pczt::parse_pczt(pczt)?;
+    let account_index = zip32::AccountId::try_from(account_index)
+        .map_err(|_e| ZcashError::InvalidDataError("invalid account index".to_string()))?;
+    let ufvk = UnifiedFullViewingKey::decode(params, ufvk_text)
+        .map_err(|e| ZcashError::InvalidDataError(e.to_string()))?;
+    fill_missing_spend_fvks_from_ufvk(params, &mut pczt, &ufvk, seed_fingerprint, account_index)?;
+
+    if signable_shielded_actions(
+        params,
+        pczt,
+        seed_fingerprint,
+        account_index,
+        ShieldedActionPolicy::Batch,
+    )?
+    .is_empty()
+    {
+        Err(ZcashError::PcztNoMyInputs)
+    } else {
+        Ok(())
+    }
+}
+
 /// Signs a batch PCZT after applying the batch shielded action policy.
 ///
 /// The UI review path already ran the expensive UFVK/output checks before the
@@ -1126,11 +1167,23 @@ mod tests {
     #[derive(Serialize, Deserialize)]
     struct PcztMirror {
         global: GlobalMirror,
-        transparent: ::pczt::transparent::Bundle,
-        sapling: SaplingBundleMirror,
-        orchard: ::pczt::orchard::Bundle,
-        #[cfg(zcash_unstable = "nu6.3")]
-        ironwood: ::pczt::orchard::Bundle,
+        transparent: Option<::pczt::transparent::Bundle>,
+        sapling: Option<SaplingBundleMirror>,
+        orchard: Option<OrchardBundleMirror>,
+        ironwood: Option<OrchardBundleMirror>,
+    }
+
+    /// The canonical empty Sapling bundle, as reconstructed by the v2 decoder for an
+    /// omitted (`None`) Sapling slot. Tests that need to tamper with an empty bundle
+    /// materialize it first so the mutation has somewhere to land.
+    fn empty_sapling_mirror() -> SaplingBundleMirror {
+        SaplingBundleMirror {
+            spends: Vec::new(),
+            outputs: Vec::new(),
+            value_sum: 0,
+            anchor: [0; 32],
+            bsk: None,
+        }
     }
 
     #[derive(Serialize, Deserialize)]
@@ -1184,12 +1237,93 @@ mod tests {
         derivation_path: Vec<u32>,
     }
 
+    // Mirror of the pczt crate's `v2` Orchard-shaped bundle wire format (the encoding
+    // `Pczt::serialize` emits). It is kept in lock-step with that wire layout by hand
+    // because postcard encodes struct fields positionally with no names, so the mirror
+    // used to splice raw bytes must match field-for-field. In the v2 encoding the
+    // derived fields (`cv_net`, `nullifier`, `rk`, `cmx`, `ephemeral_key`,
+    // `enc_ciphertext`) and the bundle `anchor` are `Option`s, each output carries an
+    // optional `MemoKind` tag, and the bundle carries a note-plaintext version.
+    // `NoteVersionMirror` below mirrors the crate-private `SerializedNoteVersion`
+    // (postcard encodes the variant index: V2 = 0, V3 = 1); `MemoKind` is the real
+    // public type.
+    #[derive(Serialize, Deserialize)]
+    struct OrchardBundleMirror {
+        actions: Vec<OrchardActionMirror>,
+        flags: u8,
+        value_sum: (u64, bool),
+        anchor: Option<[u8; 32]>,
+        note_version: NoteVersionMirror,
+        zkproof: Option<Vec<u8>>,
+        bsk: Option<[u8; 32]>,
+    }
+
+    /// Mirror of the pczt crate's private `SerializedNoteVersion`; see
+    /// [`OrchardBundleMirror`].
+    #[derive(Serialize, Deserialize)]
+    enum NoteVersionMirror {
+        V2,
+        V3,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct OrchardActionMirror {
+        cv_net: Option<[u8; 32]>,
+        spend: OrchardSpendMirror,
+        output: OrchardOutputMirror,
+        rcv: Option<[u8; 32]>,
+    }
+
+    #[serde_with::serde_as]
+    #[derive(Serialize, Deserialize)]
+    struct OrchardSpendMirror {
+        nullifier: Option<[u8; 32]>,
+        rk: Option<[u8; 32]>,
+        #[serde_as(as = "Option<[_; 64]>")]
+        spend_auth_sig: Option<[u8; 64]>,
+        #[serde_as(as = "Option<[_; 43]>")]
+        recipient: Option<[u8; 43]>,
+        value: Option<u64>,
+        rho: Option<[u8; 32]>,
+        rseed: Option<[u8; 32]>,
+        #[serde_as(as = "Option<[_; 96]>")]
+        fvk: Option<[u8; 96]>,
+        witness: Option<(u32, [[u8; 32]; 32])>,
+        alpha: Option<[u8; 32]>,
+        zip32_derivation: Option<Zip32DerivationMirror>,
+        dummy_sk: Option<[u8; 32]>,
+        proprietary: BTreeMap<String, Vec<u8>>,
+    }
+
+    #[serde_with::serde_as]
+    #[derive(Serialize, Deserialize)]
+    struct OrchardOutputMirror {
+        cmx: Option<[u8; 32]>,
+        ephemeral_key: Option<[u8; 32]>,
+        enc_ciphertext: Option<Vec<u8>>,
+        memo_kind: Option<::pczt::orchard::MemoKind>,
+        out_ciphertext: Vec<u8>,
+        #[serde_as(as = "Option<[_; 43]>")]
+        recipient: Option<[u8; 43]>,
+        value: Option<u64>,
+        rseed: Option<[u8; 32]>,
+        ock: Option<[u8; 32]>,
+        zip32_derivation: Option<Zip32DerivationMirror>,
+        user_address: Option<String>,
+        proprietary: BTreeMap<String, Vec<u8>>,
+    }
+
     #[cfg(zcash_unstable = "nu6.3")]
     fn v5_pczt_with_ironwood_actions() -> Vec<u8> {
         let sample = pczt::test_support::sample_ironwood_pczt();
         let mut bytes = sample.bytes;
         let mut pczt: PcztMirror = postcard::from_bytes(&bytes[8..]).unwrap();
-        assert!(!pczt.ironwood.actions().is_empty());
+        assert!(!pczt
+            .ironwood
+            .as_ref()
+            .expect("sample carries an Ironwood bundle")
+            .actions
+            .is_empty());
 
         pczt.global.tx_version = constants::V5_TX_VERSION;
         pczt.global.version_group_id = constants::V5_VERSION_GROUP_ID;
@@ -1216,13 +1350,18 @@ mod tests {
             [0; 32],
             [0; 32],
         )
+        .unwrap()
         .build()
-        .serialize();
+        .serialize()
+        .unwrap();
         let mut pczt: PcztMirror = postcard::from_bytes(&bytes[8..]).unwrap();
-        assert!(pczt.sapling.spends.is_empty());
-        assert!(pczt.sapling.outputs.is_empty());
+        // The empty Sapling bundle is omitted from the v2 encoding; materialize the
+        // canonical empty bundle so the tampered value sum has somewhere to land.
+        let sapling = pczt.sapling.get_or_insert_with(empty_sapling_mirror);
+        assert!(sapling.spends.is_empty());
+        assert!(sapling.outputs.is_empty());
 
-        pczt.sapling.value_sum = 1;
+        sapling.value_sum = 1;
 
         bytes.truncate(8);
         postcard::to_extend(&pczt, bytes).unwrap()
@@ -1338,7 +1477,10 @@ mod tests {
         let PcztResult { pczt_parts, .. } = builder
             .build_for_pczt(OsRng, &zip317::FeeRule::standard())
             .unwrap();
-        let pczt_bytes = Creator::build_from_parts(pczt_parts).unwrap().serialize();
+        let pczt_bytes = Creator::build_from_parts(pczt_parts)
+            .unwrap()
+            .serialize()
+            .expect("PCZT must serialize");
         let seed_fingerprint = calculate_seed_fingerprint(&victim_seed).unwrap();
 
         let expected =
@@ -1617,9 +1759,29 @@ mod tests {
 
     #[cfg(zcash_unstable = "nu6.3")]
     fn pczt_with_sapling_output() -> pczt::test_support::SamplePczt {
-        let mut sample = pczt::test_support::sample_orchard_change_pczt();
-        let mut pczt: PcztMirror = postcard::from_bytes(&sample.bytes[8..]).unwrap();
-        pczt.sapling.outputs.push(SaplingOutputMirror {
+        let seed = [7u8; 32];
+        let ufvk_text =
+            derive_ufvk(&pczt::test_support::Nu6_3Network, &seed, "m/32'/133'/0'").unwrap();
+        let seed_fingerprint = calculate_seed_fingerprint(&seed).unwrap();
+        let mut bytes = ::pczt::roles::creator::Creator::new(
+            zcash_vendor::zcash_protocol::consensus::BranchId::Nu6_3.into(),
+            10_000_000,
+            1,
+            [0; 32],
+            [0; 32],
+        )
+        .unwrap()
+        .with_ironwood_anchor([0; 32])
+        .unwrap()
+        .build()
+        .serialize()
+        .unwrap();
+
+        let mut pczt: PcztMirror = postcard::from_bytes(&bytes[8..]).unwrap();
+        // See malformed_pczt_with_empty_sapling_bundle_and_nonzero_value_sum: the
+        // omitted empty Sapling bundle must be materialized before tampering.
+        let sapling = pczt.sapling.get_or_insert_with(empty_sapling_mirror);
+        sapling.outputs.push(SaplingOutputMirror {
             cv: [0; 32],
             cmu: [0; 32],
             ephemeral_key: [0; 32],
@@ -1635,11 +1797,16 @@ mod tests {
             user_address: None,
             proprietary: BTreeMap::new(),
         });
-        pczt.sapling.value_sum = -1;
+        sapling.value_sum = -1;
 
-        sample.bytes.truncate(8);
-        sample.bytes = postcard::to_extend(&pczt, sample.bytes).unwrap();
-        sample
+        bytes.truncate(8);
+        let bytes = postcard::to_extend(&pczt, bytes).unwrap();
+        pczt::test_support::SamplePczt {
+            bytes,
+            seed: seed.to_vec(),
+            ufvk_text,
+            seed_fingerprint,
+        }
     }
 
     fn assert_batch_unsupported_sapling_error<T: core::fmt::Debug>(result: Result<T>) {
@@ -1734,7 +1901,8 @@ mod tests {
                 });
             })
             .finish()
-            .serialize();
+            .serialize()
+            .expect("redacted PCZT must serialize");
 
         let signed =
             sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
@@ -1785,7 +1953,8 @@ mod tests {
                 });
             })
             .finish()
-            .serialize();
+            .serialize()
+            .expect("redacted PCZT must serialize");
 
         let signed =
             sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
@@ -1874,7 +2043,8 @@ mod tests {
                     });
                 })
                 .finish()
-                .serialize();
+                .serialize()
+                .expect("redacted PCZT must serialize");
 
         assert!(matches!(
             ensure_signable_shielded_actions_are_signed(
@@ -1994,7 +2164,7 @@ mod tests {
             .expect("migration must show Ironwood outputs")
             .get_to()
             .is_empty());
-        assert_eq!(parsed.get_fee_value(), "0.0002 ZEC");
+        assert_eq!(parsed.get_fee_value(), "0.0001 ZEC");
 
         assert_eq!(
             check_and_parse_batch_pczt_cypherpunk(
@@ -2049,6 +2219,8 @@ mod tests {
                 .expect("migration child must contain a non-zero Ironwood output")
                 .output()
                 .enc_ciphertext()
+                .as_ref()
+                .expect("full sample must carry the output enc_ciphertext")
                 .to_vec()
         };
 
@@ -2113,20 +2285,20 @@ mod tests {
             summary,
             BatchMigrationSummary {
                 migrations: 1,
-                total_input: 1_010_000,
+                total_input: 1_000_000,
                 total_output: 990_000,
-                total_fee: 20_000,
+                total_fee: 10_000,
                 children: vec![BatchMigrationChildSummary {
-                    input: 1_010_000,
+                    input: 1_000_000,
                     output: 990_000,
-                    fee: 20_000,
+                    fee: 10_000,
                 }],
             }
         );
 
         let parsed = summary.to_parsed_pczt();
         assert_eq!(parsed.get_total_transfer_value(), "0.0099 ZEC");
-        assert_eq!(parsed.get_fee_value(), "0.0002 ZEC");
+        assert_eq!(parsed.get_fee_value(), "0.0001 ZEC");
         assert_eq!(
             parsed
                 .get_orchard()
@@ -2220,6 +2392,8 @@ mod tests {
                 .expect("migration child must contain a non-zero Ironwood output")
                 .output()
                 .enc_ciphertext()
+                .as_ref()
+                .expect("full sample must carry the output enc_ciphertext")
                 .to_vec()
         };
 
@@ -2286,7 +2460,8 @@ mod tests {
                 });
             })
             .finish()
-            .serialize();
+            .serialize()
+            .expect("redacted PCZT must serialize");
 
         let summary = summarize_batch_migration_pczt_cypherpunk(
             &pczt::test_support::Nu6_3Network,
@@ -2298,9 +2473,9 @@ mod tests {
         .expect("redacted migration child should summarize");
 
         assert_eq!(summary.migrations, 1);
-        assert_eq!(summary.total_input, 1_010_000);
+        assert_eq!(summary.total_input, 1_000_000);
         assert_eq!(summary.total_output, 990_000);
-        assert_eq!(summary.total_fee, 20_000);
+        assert_eq!(summary.total_fee, 10_000);
 
         let signed =
             sign_batch_pczt_cypherpunk(&redacted, &sample.seed, &sample.seed_fingerprint, 0)
@@ -2383,6 +2558,81 @@ mod tests {
             ZcashError::PcztNoMyInputs
         );
     }
+
+    /// Guards the hand-maintained postcard mirrors against drift from the live v2
+    /// wire layout: postcard encodes positionally with no field names, so a mirror
+    /// mismatch silently corrupts spliced bytes. Decoding a real serialized PCZT
+    /// through the mirror and re-encoding it must be byte-identical, both for a
+    /// fully-populated PCZT and for one with elided derived fields, an elided
+    /// anchor, and memo-kind tags (covering every `Option` field in both states).
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn test_mirror_matches_live_v2_wire_layout() {
+        use ::pczt::{
+            orchard::MemoKind,
+            roles::redactor::{orchard::OrchardRedactor, Redactor},
+        };
+
+        fn assert_mirror_roundtrip(bytes: &[u8]) -> PcztMirror {
+            let mirror: PcztMirror =
+                postcard::from_bytes(&bytes[8..]).expect("mirror must decode the live v2 encoding");
+            let reencoded = postcard::to_extend(&mirror, bytes[..8].to_vec()).unwrap();
+            assert_eq!(
+                reencoded, bytes,
+                "mirror re-encode must be byte-identical to the live encoding",
+            );
+            mirror
+        }
+
+        fn elide_bundle(mut r: OrchardRedactor<'_>) {
+            r.redact_actions(|mut ar| {
+                ar.clear_cv_net();
+                ar.clear_nullifier();
+                ar.clear_rk();
+                ar.clear_cmx();
+                ar.clear_ephemeral_key();
+                ar.clear_enc_ciphertext(MemoKind::Empty);
+            });
+            r.clear_anchor();
+        }
+
+        // A dual-pool (Orchard spend -> Ironwood output) sample exercises both
+        // Orchard-shaped slots. Fully populated first.
+        let sample = pczt::test_support::sample_migration_pczt();
+        let full = assert_mirror_roundtrip(&sample.bytes);
+        let full_orchard = full.orchard.as_ref().expect("orchard bundle present");
+        assert!(full_orchard.anchor.is_some());
+        assert!(full_orchard.actions.iter().all(|action| {
+            action.output.enc_ciphertext.is_some() && action.output.memo_kind.is_none()
+        }));
+
+        // Then with every derived field, the anchors, and the ciphertexts elided the
+        // way an optimizing wallet redacts a migration request.
+        let elided_bytes = Redactor::new(Pczt::parse(&sample.bytes).unwrap())
+            .redact_orchard_with(elide_bundle)
+            .redact_ironwood_with(elide_bundle)
+            .finish()
+            .serialize()
+            .expect("elided PCZT must serialize");
+        let elided = assert_mirror_roundtrip(&elided_bytes);
+        for bundle in [
+            elided.orchard.as_ref().expect("orchard bundle present"),
+            elided.ironwood.as_ref().expect("ironwood bundle present"),
+        ] {
+            assert!(bundle.anchor.is_none());
+            assert!(!bundle.actions.is_empty());
+            assert!(bundle.actions.iter().all(|action| {
+                action.cv_net.is_none()
+                    && action.spend.nullifier.is_none()
+                    && action.spend.rk.is_none()
+                    && action.output.cmx.is_none()
+                    && action.output.ephemeral_key.is_none()
+                    && action.output.enc_ciphertext.is_none()
+                    && action.output.memo_kind == Some(MemoKind::Empty)
+            }));
+        }
+    }
+
 
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]

@@ -33,11 +33,11 @@ use ur_registry::zcash::zcash_sign_batch::{
 use zcash_vendor::zcash_protocol::consensus::MainNetwork;
 use zeroize::Zeroize;
 
-// Batch memory is intentionally bounded by message count rather than separate
-// byte caps. With the supported pczt-v1 messages, a full 35-message batch used
-// about 35% of RAM on target hardware. Revisit this if new message kinds or
-// substantially larger payload encodings are added.
-const ZCASH_BATCH_MAX_MESSAGES: usize = 35;
+// Batch memory is bounded by message count, not separate byte caps. A 35-message
+// pczt-v1 batch was ~35% of RAM on target; the optional-field v2 messages this
+// build consumes are far smaller per message, so the ceiling is 80 to fit a full
+// migration batch. RAM scales with live batch size — revisit under memory pressure.
+const ZCASH_BATCH_MAX_MESSAGES: usize = 80;
 
 /// Fingerprint of the last Zcash batch that completed the review path
 /// (`parse_zcash_batch_tx_cypherpunk`), which verifies every message before
@@ -325,9 +325,10 @@ fn check_zcash_batch_message_cypherpunk(
         seed_fingerprint,
         account_index,
     )?;
-    app_zcash::ensure_pczt_has_signable_shielded_action(
+    app_zcash::ensure_pczt_has_signable_shielded_action_with_ufvk(
         &MainNetwork,
         message.get_payload(),
+        ufvk_text,
         seed_fingerprint,
         account_index,
     )

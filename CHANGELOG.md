@@ -8,6 +8,7 @@
 2. Zcash migration batches review as one split transaction plus a single migration summary instead of one page per child
 3. The device no longer auto-locks while a long Zcash batch review is loading
 4. Zcash batch signing returns a compact signatures-only QR (far fewer frames) and only signs the exact batch that was reviewed
+5. Zcash migration requests can omit recomputable PCZT fields; the device refills them, shrinking the request QR (batch cap raised to 80 messages)
 
 ### Bug Fixes
 
