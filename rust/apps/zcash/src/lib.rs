@@ -287,6 +287,8 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
         "transparent xpub is not present".to_string(),
     ))?;
+
+    // Validate shielded actions while collecting their display rows.
     let (checked_shielded, pczt) = pczt::check::check_and_parse_pczt_shielded(
         params,
         seed_fingerprint,
@@ -294,6 +296,8 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
         &ufvk,
         pczt,
     )?;
+
+    // Check the remaining transparent bundle against the same account.
     pczt::check::check_pczt_transparent(
         params,
         seed_fingerprint,
@@ -302,6 +306,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
         &pczt,
         false,
     )?;
+
     // Reuse the PCZT returned by signability validation for display assembly.
     let (signable_actions, pczt) = signable_shielded_actions(
         params,
@@ -314,6 +319,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     if signable_actions.is_empty() {
         Err(ZcashError::PcztNoMyInputs)
     } else {
+        // Assemble the display from the shielded rows collected above.
         pczt::parse::parse_pczt_cypherpunk_with_checked_shielded(
             params,
             seed_fingerprint,

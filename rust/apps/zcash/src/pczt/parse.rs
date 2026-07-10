@@ -260,6 +260,7 @@ pub(crate) fn parse_pczt_cypherpunk_with_checked_shielded<P: consensus::Paramete
     super::validate_supported_pczt(pczt)?;
     let mut parsed_transparent = None;
 
+    // Parse the remaining transparent rows.
     Verifier::new(pczt.clone())
         .with_transparent(|bundle| {
             parsed_transparent = parse_transparent(params, seed_fingerprint, bundle)
@@ -268,6 +269,7 @@ pub(crate) fn parse_pczt_cypherpunk_with_checked_shielded<P: consensus::Paramete
         })
         .map_err(map_transparent_verifier_error)?;
 
+    // Combine all checked rows and calculate the display totals.
     assemble_parsed_pczt(pczt, parsed_transparent, parsed_orchard, parsed_ironwood)
 }
 
@@ -286,6 +288,7 @@ fn assemble_parsed_pczt(
     //total_input_value = total_output_value + fee_value
     //total_output_value = total_transfer_value + total_change_value
 
+    // Fold each decoded pool into the display totals.
     if let Some(orchard) = &parsed_orchard {
         total_change_value += orchard
             .get_to()
@@ -353,6 +356,7 @@ fn assemble_parsed_pczt(
         total_input_value = total_input_value.saturating_add(sapling_value_sum as u64)
     };
 
+    // Derive the transfer and fee values shown during confirmation.
     let total_transfer_value = format_zec_value((total_output_value - total_change_value) as f64);
     let fee_value = format_zec_value((total_input_value - total_output_value) as f64);
 

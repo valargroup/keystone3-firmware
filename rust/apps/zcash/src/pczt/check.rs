@@ -110,6 +110,7 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
     let mut parsed_ironwood = None;
     let should_process_ironwood = super::pczt_should_process_ironwood(&pczt);
 
+    // Validate Orchard while collecting the rows shown during review.
     let verifier = Verifier::new(pczt)
         .with_orchard(|bundle| {
             parsed_orchard = check_and_parse_shielded_bundle(
@@ -125,6 +126,7 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
         })
         .map_err(map_orchard_verifier_error)?;
 
+    // Continue through Ironwood when this transaction version enables it.
     let verifier = if should_process_ironwood {
         verifier
             .with_ironwood(|bundle| {
@@ -144,6 +146,7 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
         verifier
     };
 
+    // Return the verifier-owned PCZT for the remaining checks.
     Ok((
         CheckedShieldedParse {
             orchard: parsed_orchard,
@@ -414,6 +417,7 @@ fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
     ))?;
 
     let mut parsed_orchard = ParsedOrchard::new(vec![], vec![]);
+    // Validate and decode each action in the canonical order.
     bundle.actions().iter().try_for_each(|action| {
         action.verify_cv_net().map_err(|e| {
             ZcashError::InvalidPczt(format!("invalid cv_net in {pool_label} action: {e:?}"))
@@ -434,6 +438,7 @@ fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
                 ZcashError::InvalidPczt(format!("invalid {pool_label} action cmx: {e:?}"))
             })?;
 
+        // Add only real spends to the review.
         if let Some(value) = action.spend().value() {
             if value.inner() != 0 {
                 let parsed_from =
@@ -442,6 +447,7 @@ fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
             }
         }
 
+        // Require every real output to be recoverable for review.
         let parsed_to = super::parse::parse_orchard_output(params, ufvk, action, pool)?;
         if !parsed_to.get_is_dummy() {
             parsed_orchard.add_to(parsed_to);
@@ -450,6 +456,7 @@ fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
         Ok::<_, ZcashError>(())
     })?;
 
+    // Recompute the bundle balance from the values just reviewed.
     let calculated_value_balance = bundle
         .actions()
         .iter()
