@@ -648,7 +648,7 @@ pub(crate) fn parse_orchard_spend(
 }
 
 #[cfg(feature = "cypherpunk")]
-fn is_wallet_orchard_address(
+pub(crate) fn is_wallet_orchard_address(
     ufvk: &UnifiedFullViewingKey,
     address: &Address,
 ) -> Result<bool, ZcashError> {

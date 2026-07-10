@@ -367,7 +367,15 @@ fn check_shielded_bundle<P: consensus::Parameters>(
 ) -> Result<(), ZcashError> {
     let pool_label = pool.label();
     bundle.actions().iter().try_for_each(|action| {
-        check_action(params, seed_fingerprint, account_index, ufvk, action, pool)?;
+        check_action(
+            params,
+            seed_fingerprint,
+            account_index,
+            ufvk,
+            action,
+            bundle.flags(),
+            pool,
+        )?;
         Ok::<_, ZcashError>(())
     })?;
 
@@ -438,6 +446,7 @@ fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
 
         // Require every real output to be recoverable for review.
         let parsed_to = super::parse::parse_orchard_output(params, ufvk, action, pool)?;
+        check_restricted_zero_value_output(ufvk, action, bundle.flags(), pool)?;
         if !parsed_to.get_is_dummy() {
             parsed_orchard.add_to(parsed_to);
         }
@@ -476,6 +485,7 @@ fn check_action<P: consensus::Parameters>(
     account_index: zip32::AccountId,
     ufvk: &UnifiedFullViewingKey,
     action: &orchard::pczt::Action,
+    flags: &orchard::bundle::Flags,
     pool: ShieldedPool,
 ) -> Result<(), ZcashError> {
     let pool_label = pool.label();
@@ -496,7 +506,7 @@ fn check_action<P: consensus::Parameters>(
         action.spend(),
         pool,
     )?;
-    check_action_output(params, ufvk, action, pool)?;
+    check_action_output(params, ufvk, action, flags, pool)?;
     Ok(())
 }
 
@@ -550,6 +560,7 @@ fn check_action_output<P: consensus::Parameters>(
     params: &P,
     ufvk: &UnifiedFullViewingKey,
     action: &orchard::pczt::Action,
+    flags: &orchard::bundle::Flags,
     pool: ShieldedPool,
 ) -> Result<(), ZcashError> {
     let pool_label = pool.label();
@@ -560,6 +571,38 @@ fn check_action_output<P: consensus::Parameters>(
 
     // Decode and validate the recipient, rejecting non-zero outputs the device cannot review.
     super::parse::parse_orchard_output(params, ufvk, action, pool)?;
+    check_restricted_zero_value_output(ufvk, action, flags, pool)?;
+
+    Ok(())
+}
+
+#[cfg(feature = "cypherpunk")]
+fn check_restricted_zero_value_output(
+    ufvk: &UnifiedFullViewingKey,
+    action: &orchard::pczt::Action,
+    flags: &orchard::bundle::Flags,
+    pool: ShieldedPool,
+) -> Result<(), ZcashError> {
+    // A restricted action binds its spend and output to the same expanded receiver.
+    // A funded output paired with a zero-valued spend must therefore be ours.
+    let is_zero_spend = matches!(action.spend().value(), Some(value) if value.inner() == 0);
+    let is_funded_output = matches!(action.output().value(), Some(value) if value.inner() != 0);
+    if flags.cross_address_enabled() || !is_zero_spend || !is_funded_output {
+        return Ok(());
+    }
+
+    let recipient = action.output().recipient().ok_or_else(|| {
+        ZcashError::InvalidPczt(format!(
+            "missing recipient for funded {} output",
+            pool.label()
+        ))
+    })?;
+    if !super::parse::is_wallet_orchard_address(ufvk, &recipient)? {
+        return Err(ZcashError::InvalidPczt(format!(
+            "funded {} output paired with a zero-value spend does not belong to the selected account",
+            pool.label()
+        )));
+    }
 
     Ok(())
 }
