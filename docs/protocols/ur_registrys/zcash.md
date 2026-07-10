@@ -61,12 +61,12 @@ an opaque `data` field containing the PCZT-owned batch message. The matching
 compact response uses `zcash-batch-sig-result`, echoes the request id, and
 carries the PCZT-owned response in its own opaque `data` field.
 
-Version 1 is supported by cypherpunk firmware and currently accepts up to 80
-PCZT messages with at most 2 MiB of PCZT payload data in total. The operation is
-atomic. If any message is invalid or cannot be signed, Keystone returns an error
-instead of a partial result. Batch PCZT entries must be fully Keystone-owned
-spends from supported shielded pools, currently Orchard or Ironwood.
-Transparent inputs and Sapling spends or outputs are rejected.
+Batch version 1 is supported by cypherpunk firmware and currently accepts up to
+80 PCZTs whose individually serialized payloads total at most 2 MiB. The
+operation is atomic. If any PCZT is invalid or cannot be signed, Keystone
+returns an error instead of a partial result. Batch PCZT entries must be unique,
+fully Keystone-owned spends from supported shielded pools, currently Orchard or
+Ironwood. Transparent inputs and Sapling spends or outputs are rejected.
 
 #### Outer UR/CBOR envelopes
 
@@ -90,18 +90,21 @@ zcash-batch-sig-result = {
 
 The request `data` encoding is
 `"PCZB" || batch_version_le || pczt_version_le || postcard_body`. Its Postcard
-body contains the PCZTs in request order.
+body contains the PCZTs in request order. Both version fields are four-byte
+little-endian integers. Current encoders emit batch version 1 and PCZT version
+2. The shared PCZT version applies to every headerless PCZT wire value in the
+body.
 
 ```rust
-const VERSION: u32 = 1;
-
-struct BatchSignRequest {
-    pczts: Vec<Pczt>,
+struct BatchSignRequestBody {
+    pczts: Vec<PcztV2Wire>,
 }
 ```
 
-PCZT entries are correlated by position. PCZT payloads must be unique within the
-request.
+The exact PCZT wire value is owned by the pinned
+[`pczt::roles::signer::batch`](https://github.com/zcash/librustzcash/blob/878db2074ae8ac2682d3e6c61c00f7018b6adc0c/pczt/src/roles/signer/batch.rs)
+implementation. There are no request or message ids in the inner payload. PCZT
+entries are correlated by position and must be unique within the request.
 
 #### PCZT batch signature response
 
@@ -109,18 +112,25 @@ The response `data` encoding is `"PCZS" || batch_version_le || postcard_body`.
 Entry `i` contains the signatures produced for PCZT `i` in the request.
 
 ```rust
-struct BatchSignResponse {
+struct BatchSignResponseBody {
     signatures: Vec<Vec<SpendAuthSignature>>,
 }
 
 struct SpendAuthSignature {
-    value_pool: u8,          // Orchard = 0, Ironwood = 1
+    value_pool: ValuePool,
     action_index: u32,
     signature: [u8; 64],
 }
+
+enum ValuePool {
+    Orchard,
+    Ironwood,
+}
 ```
 
-The outer response echoes the request id. Each signature is correlated to an
-action by its Orchard-protocol value pool and action index, so the client can
-apply it to the corresponding unsigned PCZT without transporting a second copy
-of the full PCZT.
+Postcard encodes integer fields inside each body as varints; `ValuePool` uses
+the enum indexes Orchard = 0 and Ironwood = 1. Response entry `i` contains the
+signatures for request PCZT `i`. Each signature selects an action by value pool
+and action index, so the client can apply it to the corresponding unsigned PCZT
+without transporting another full PCZT. The outer response echoes the request
+id so the application can correlate it with the outstanding batch.
