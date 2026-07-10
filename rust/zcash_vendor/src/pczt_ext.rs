@@ -192,7 +192,8 @@ fn hash_transparent_tx_id(t_digests: Option<TransparentDigests>) -> Hash {
 /// 52 (compact) | 512 (memo) | 16 (non-compact).
 const ORCHARD_ENC_CIPHERTEXT_SIZE: usize = 580;
 
-/// Byte layout of a Sapling/Orchard `enc_ciphertext` as the ZIP-244 digests consume it:
+/// Byte layout of Sapling, Orchard, and Ironwood `enc_ciphertext` fields used by
+/// the transaction digests:
 /// the first [`ENC_CIPHERTEXT_COMPACT_LEN`] bytes are the compact note ciphertext (the
 /// `*CHash` digests), bytes up to [`ENC_CIPHERTEXT_MEMO_END`] are the encrypted memo (the
 /// `*MHash` digests), and the remainder is hashed with the non-compact fields. For
