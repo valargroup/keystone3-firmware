@@ -418,6 +418,7 @@ static void *GuiParseZcashBatchData(void)
 
 void GuiZcashBatchWidgetsTransactionParseSuccess(void)
 {
+    ClearLockScreenTime();
     g_displayZcashBatch = g_parseResult->data;
     g_txCount = g_displayZcashBatch->txs->size;
     g_currentTxIndex = 0;
@@ -426,6 +427,7 @@ void GuiZcashBatchWidgetsTransactionParseSuccess(void)
 
 void GuiZcashBatchWidgetsTransactionParseFail(void)
 {
+    ClearLockScreenTime();
     printf("GuiZcashBatchWidgetsTransactionParseFail\n");
     // A failed check leaves g_parseResult NULL but records its message in
     // g_batchCheckError; prefer whichever carries the real reason.

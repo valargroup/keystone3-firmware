@@ -388,7 +388,21 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
     let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
     let seed_fingerprint = seed_fingerprint.try_into().unwrap();
 
-    let mut display_items = Vec::new();
+    if batch.get_messages().len() > 1 {
+        // The normalized bytes were already validated in preflight, so this only
+        // re-shapes the display: the split transaction plus one aggregate
+        // migration summary. Any error means "not a split-plus-migrations batch";
+        // fall through to the per-message review below, which renders each
+        // already-checked message individually.
+        if let Ok(display_items) =
+            parse_zcash_batch_as_split_plus_migrations(&batch, &ufvk_text, seed_fingerprint)
+        {
+            return TransactionParseResult::success(DisplayZcashBatch::from(display_items).c_ptr())
+                .c_ptr();
+        }
+    }
+
+    let mut parsed_items = Vec::new();
     for message in batch.get_messages() {
         match app_zcash::parse_pczt_cypherpunk(
             &MainNetwork,
@@ -396,12 +410,66 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
             &ufvk_text,
             seed_fingerprint,
         ) {
-            Ok(pczt) => display_items.push(DisplayPczt::from(&pczt)),
+            Ok(pczt) => parsed_items.push(pczt),
             Err(e) => return TransactionParseResult::from(e).c_ptr(),
         }
     }
+    // FFI display structs leak if dropped (freed via free_TransactionParseResult_*,
+    // not Drop), so build them only after every message has parsed.
+    let display_items: Vec<DisplayPczt> = parsed_items.iter().map(DisplayPczt::from).collect();
 
     TransactionParseResult::success(DisplayZcashBatch::from(display_items).c_ptr()).c_ptr()
+}
+
+/// Renders a multi-message batch as the split transaction (message 0, full
+/// per-output review) plus ONE aggregate migration summary covering the
+/// remaining messages, instead of one full page per child. Operates on the
+/// normalized bytes already validated in preflight: message 0 is parsed for
+/// display, and each remaining child is folded into the summary by
+/// [`app_zcash::summarize_batch_migration_pczt_cypherpunk`], which enforces the
+/// strict one-spend, one-wallet-owned-output migration shape. Errors mean "not
+/// a split-plus-migrations batch" and the caller falls back to the ordinary
+/// per-message review.
+#[cfg(feature = "cypherpunk")]
+fn parse_zcash_batch_as_split_plus_migrations(
+    batch: &ZcashSignBatch,
+    ufvk_text: &str,
+    seed_fingerprint: &[u8; 32],
+) -> app_zcash::errors::Result<Vec<DisplayPczt>> {
+    let messages = batch.get_messages();
+    // The only caller gates this behind `messages.len() > 1`, so message 0
+    // (the split transaction) is always present.
+    debug_assert!(messages.len() > 1);
+    let mut display_items = Vec::new();
+
+    let split_message = &messages[0];
+    let split_pczt = app_zcash::parse_pczt_cypherpunk(
+        &MainNetwork,
+        split_message.get_payload(),
+        ufvk_text,
+        seed_fingerprint,
+    )?;
+
+    let mut summary = app_zcash::BatchMigrationSummary::default();
+    for message in messages.iter().skip(1) {
+        let child = app_zcash::summarize_batch_migration_pczt_cypherpunk(
+            &MainNetwork,
+            message.get_payload(),
+            ufvk_text,
+            seed_fingerprint,
+        )?;
+        summary.add_child(&child)?;
+    }
+    let summary_pczt = summary.to_parsed_pczt();
+
+    // Materialize the FFI display structs only after every fallible step: their
+    // nested C-side allocations are freed through free_TransactionParseResult_*,
+    // not Drop, so building one before an Err (which sends the caller down the
+    // per-message fallback) would leak it on every non-migration batch review.
+    display_items.push(DisplayPczt::from(&split_pczt));
+    display_items.push(DisplayPczt::from(&summary_pczt));
+
+    Ok(display_items)
 }
 
 #[cfg(feature = "cypherpunk")]

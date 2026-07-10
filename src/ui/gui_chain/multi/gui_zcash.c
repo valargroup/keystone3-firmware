@@ -389,6 +389,7 @@ UREncodeResult *GuiSignZcashCypherpunkWithSeed(void *data,
 
     memset_s(seed, sizeof(seed), 0, sizeof(seed));
     ClearSecretCache();
+    ClearLockScreenTime();
     SetLockScreen(enable);
     return encodeResult;
 }

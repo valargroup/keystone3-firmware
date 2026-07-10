@@ -427,6 +427,13 @@ pub(crate) mod test_support {
     // the real batch uses (and the one never exercised on-device). Mirrors
     // sample_ironwood_pczt but the *spent* note is an Orchard note.
     pub(crate) fn sample_migration_pczt() -> SamplePczt {
+        sample_migration_pczt_with_output_memo(MemoBytes::empty())
+    }
+
+    /// [`sample_migration_pczt`] with a caller-chosen memo on the real Ironwood
+    /// output; the display-shape gate tests use a text memo to prove the
+    /// aggregate summary refuses what it cannot render.
+    pub(crate) fn sample_migration_pczt_with_output_memo(output_memo: MemoBytes) -> SamplePczt {
         let params = Nu6_3Network;
         let seed = [7u8; 32];
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
@@ -496,7 +503,7 @@ pub(crate) mod test_support {
                 Some(orchard_ovk),
                 recipient,
                 Zatoshis::const_from_u64(990_000),
-                MemoBytes::empty(),
+                output_memo,
             )
             .unwrap();
         let PcztResult {
