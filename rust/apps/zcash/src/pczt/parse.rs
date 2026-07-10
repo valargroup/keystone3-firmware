@@ -728,7 +728,7 @@ pub(crate) fn parse_orchard_output<P: consensus::Parameters>(
         match decode_output_enc_ciphertext(action, vk.as_ref(), pool)? {
             Some((note, address, memo)) => {
                 let zec_value = format_zec_value(note.value().inner() as f64);
-                let memo = decode_memo(memo);
+                let memo = decode_memo(memo)?;
 
                 // Check output recipient with decoded address here to save CPU
                 // if the address is not match, return error
@@ -883,7 +883,7 @@ mod legacy_tests {
 }
 
 #[cfg(feature = "cypherpunk")]
-fn decode_memo(memo_bytes: [u8; 512]) -> Option<String> {
+fn decode_memo(memo_bytes: [u8; 512]) -> Result<Option<String>, ZcashError> {
     let first = memo_bytes[0];
 
     //decode as utf8.
@@ -902,23 +902,24 @@ fn decode_memo(memo_bytes: [u8; 512]) -> Option<String> {
         }
         result.reverse();
 
-        // Display-only decoding shared by the check path: memo bytes are
-        // host-controlled, so invalid UTF-8 must not panic; render it lossily.
-        return Some(String::from_utf8_lossy(&result).into_owned());
+        // ZIP 302 requires text-tagged memos to contain valid UTF-8.
+        return String::from_utf8(result)
+            .map(Some)
+            .map_err(|_| ZcashError::InvalidPczt("text memo is not valid UTF-8".to_string()));
     }
 
     if first == 0xF6 {
         let temp_memo = memo_bytes.to_vec();
         let result = temp_memo[1..].iter().find(|&&v| v != 0);
         match result {
-            Some(_v) => return Some(hex::encode(memo_bytes)),
+            Some(_v) => return Ok(Some(hex::encode(memo_bytes))),
             None => {
-                return None;
+                return Ok(None);
             }
         }
     }
 
-    Some(hex::encode(memo_bytes))
+    Ok(Some(hex::encode(memo_bytes)))
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -934,17 +935,16 @@ mod tests {
 
     extern crate std;
 
-    /// Memo bytes are host-controlled; a text-tagged memo (first byte <= 0xF4)
-    /// whose contents are not valid UTF-8 must decode lossily, not panic, since
-    /// the shared output validation on the check path reaches this decoding.
     #[test]
-    fn test_decode_memo_tolerates_invalid_utf8() {
+    fn test_decode_memo_rejects_invalid_utf8() {
         let mut memo = [0u8; 512];
         memo[0] = 0xC3; // start of a 2-byte UTF-8 sequence...
         memo[1] = 0x28; // ...followed by an invalid continuation byte
 
-        let decoded = decode_memo(memo).expect("text-tagged memo must decode");
-        assert!(decoded.contains('\u{FFFD}'));
+        assert!(matches!(
+            decode_memo(memo),
+            Err(ZcashError::InvalidPczt(msg)) if msg == "text memo is not valid UTF-8"
+        ));
     }
 
     fn p2sh_output_with_matching_seed_fingerprint(
@@ -988,12 +988,12 @@ mod tests {
         {
             let mut memo = [0u8; 512];
             memo[0] = 0xF6;
-            let result = decode_memo(memo);
+            let result = decode_memo(memo).unwrap();
             assert_eq!(result, None);
         }
         {
             let memo = hex::decode("74657374206b657973746f6e65206d656d6f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap().try_into().unwrap();
-            let result = decode_memo(memo);
+            let result = decode_memo(memo).unwrap();
             assert!(result.is_some());
             assert_eq!(result.unwrap(), "test keystone memo");
         }
@@ -1066,7 +1066,7 @@ mod tests {
             let mut memo = [0u8; 512];
             memo[0] = 0xF6;
             memo[1] = 0x01;
-            let result = decode_memo(memo);
+            let result = decode_memo(memo).unwrap();
             assert!(result.is_some());
             let hex_str = result.unwrap();
             assert!(hex_str.starts_with("f6"));
@@ -1074,7 +1074,7 @@ mod tests {
         {
             let mut memo = [0u8; 512];
             memo[0] = 0xF5;
-            let result = decode_memo(memo);
+            let result = decode_memo(memo).unwrap();
             assert!(result.is_some());
         }
     }
@@ -1125,7 +1125,7 @@ mod tests {
     #[test]
     fn test_decode_memo_empty() {
         let memo = [0u8; 512];
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         let decoded = result.unwrap();
         assert!(decoded.is_empty());
@@ -1134,7 +1134,7 @@ mod tests {
     #[test]
     fn test_decode_memo_full_text() {
         let memo = [b'A'; 512];
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         let decoded = result.unwrap();
         assert_eq!(decoded.len(), 512);
@@ -1145,7 +1145,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Hello World";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Hello World");
     }
@@ -1155,7 +1155,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = "测试中文".as_bytes();
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "测试中文");
     }
@@ -1167,14 +1167,14 @@ mod tests {
         memo[0] = b'A';
         memo[1] = b'B';
         memo[2] = b'C';
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "ABC");
 
         // Test with 0xF5 (should use hex encoding)
         let mut memo = [0u8; 512];
         memo[0] = 0xF5;
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         let hex_str = result.unwrap();
         assert!(hex_str.starts_with("f5"));
@@ -1185,7 +1185,7 @@ mod tests {
         // Test 0xF6 marker with all zeros after it (should return None)
         let mut memo = [0u8; 512];
         memo[0] = 0xF6;
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert_eq!(result, None);
     }
 
@@ -1196,7 +1196,7 @@ mod tests {
         memo[0] = 0xF6;
         memo[1] = 0xFF;
         memo[2] = 0xAB;
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         let hex_str = result.unwrap();
         assert!(hex_str.starts_with("f6ff"));
@@ -1207,7 +1207,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Test!@#$%^&*()_+-=[]{}|;:',.<>?/`~";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Test!@#$%^&*()_+-=[]{}|;:',.<>?/`~");
     }
@@ -1245,7 +1245,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Line1\nLine2\tTabbed";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Line1\nLine2\tTabbed");
     }
@@ -1257,7 +1257,7 @@ mod tests {
         for i in 32..=126 {
             memo[i - 32] = i as u8;
         }
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         let decoded = result.unwrap();
         // Should decode all printable ASCII
@@ -1281,7 +1281,7 @@ mod tests {
         let mut memo = [0u8; 512];
         let text = b"Test123!@# ZEC Payment";
         memo[..text.len()].copy_from_slice(text);
-        let result = decode_memo(memo);
+        let result = decode_memo(memo).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), "Test123!@# ZEC Payment");
     }
