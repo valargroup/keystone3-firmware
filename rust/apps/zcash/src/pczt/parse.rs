@@ -106,65 +106,79 @@ pub(crate) fn decode_output_enc_ciphertext(
     ovk: Option<&OutgoingViewingKey>,
     pool: ShieldedPool,
 ) -> Result<Option<(Note, Address, [u8; 512])>, ZcashError> {
-    macro_rules! decode_with_domain {
-        ($domain_ty:ty) => {{
-            let domain = <$domain_ty>::for_pczt_action(action);
+    if let Some(ovk) = ovk {
+        let out_ciphertext = &action.output().encrypted_note().out_ciphertext;
+        Ok(match pool {
+            ShieldedPool::Orchard => try_output_recovery_with_ovk(
+                &OrchardDomain::for_pczt_action(action),
+                ovk,
+                action,
+                action.cv_net(),
+                out_ciphertext,
+            ),
+            ShieldedPool::Ironwood => try_output_recovery_with_ovk(
+                &IronwoodDomain::for_pczt_action(action),
+                ovk,
+                action,
+                action.cv_net(),
+                out_ciphertext,
+            ),
+        })
+    } else {
+        // If we reached here, none of our OVKs matched; recover directly as the fallback.
+        let pool_label = pool.label();
 
-            if let Some(ovk) = ovk {
-                Ok(try_output_recovery_with_ovk(
-                    &domain,
-                    ovk,
+        let recipient = action.output().recipient().ok_or_else(|| {
+            ZcashError::InvalidPczt(format!("Missing recipient field for {pool_label} action"))
+        })?;
+        let value = action.output().value().ok_or_else(|| {
+            ZcashError::InvalidPczt(format!("Missing value field for {pool_label} action"))
+        })?;
+        let rho = orchard::note::Rho::from_bytes(&action.spend().nullifier().to_bytes())
+            .into_option()
+            .ok_or_else(|| {
+                ZcashError::InvalidPczt(format!("Missing rho field for {pool_label} action"))
+            })?;
+        let rseed = action.output().rseed().ok_or_else(|| {
+            ZcashError::InvalidPczt(format!("Missing rseed field for {pool_label} action"))
+        })?;
+
+        let note = orchard::Note::from_parts(
+            recipient,
+            value,
+            rho,
+            rseed,
+            (*action.output().note_version()).into(),
+        )
+        .into_option()
+        .ok_or_else(|| {
+            ZcashError::InvalidPczt(format!("{pool_label} action contains invalid note"))
+        })?;
+
+        Ok(match pool {
+            ShieldedPool::Orchard => {
+                let pk_d = OrchardDomain::get_pk_d(&note);
+                let esk = OrchardDomain::derive_esk(&note)
+                    .expect("Orchard-shaped notes are post-ZIP 212");
+                try_output_recovery_with_pkd_esk(
+                    &OrchardDomain::for_pczt_action(action),
+                    pk_d,
+                    esk,
                     action,
-                    action.cv_net(),
-                    &action.output().encrypted_note().out_ciphertext,
-                ))
-            } else {
-                // If we reached here, none of our OVKs matched; recover directly as the fallback.
-                let pool_label = pool.label();
-
-                let recipient = action.output().recipient().ok_or_else(|| {
-                    ZcashError::InvalidPczt(format!(
-                        "Missing recipient field for {pool_label} action"
-                    ))
-                })?;
-                let value = action.output().value().ok_or_else(|| {
-                    ZcashError::InvalidPczt(format!("Missing value field for {pool_label} action"))
-                })?;
-                let rho = orchard::note::Rho::from_bytes(&action.spend().nullifier().to_bytes())
-                    .into_option()
-                    .ok_or_else(|| {
-                        ZcashError::InvalidPczt(format!(
-                            "Missing rho field for {pool_label} action"
-                        ))
-                    })?;
-                let rseed = action.output().rseed().ok_or_else(|| {
-                    ZcashError::InvalidPczt(format!("Missing rseed field for {pool_label} action"))
-                })?;
-
-                let note = orchard::Note::from_parts(
-                    recipient,
-                    value,
-                    rho,
-                    rseed,
-                    (*action.output().note_version()).into(),
                 )
-                .into_option()
-                .ok_or_else(|| {
-                    ZcashError::InvalidPczt(format!("{pool_label} action contains invalid note"))
-                })?;
-
-                let pk_d = <$domain_ty>::get_pk_d(&note);
-                let esk =
-                    <$domain_ty>::derive_esk(&note).expect("Orchard-shaped notes are post-ZIP 212");
-
-                Ok(try_output_recovery_with_pkd_esk(&domain, pk_d, esk, action))
             }
-        }};
-    }
-
-    match pool {
-        ShieldedPool::Orchard => decode_with_domain!(OrchardDomain),
-        ShieldedPool::Ironwood => decode_with_domain!(IronwoodDomain),
+            ShieldedPool::Ironwood => {
+                let pk_d = IronwoodDomain::get_pk_d(&note);
+                let esk = IronwoodDomain::derive_esk(&note)
+                    .expect("Orchard-shaped notes are post-ZIP 212");
+                try_output_recovery_with_pkd_esk(
+                    &IronwoodDomain::for_pczt_action(action),
+                    pk_d,
+                    esk,
+                    action,
+                )
+            }
+        })
     }
 }
 
