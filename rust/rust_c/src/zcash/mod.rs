@@ -13,6 +13,8 @@ use crate::{extract_ptr_with_type, make_free_method};
 use alloc::{boxed::Box, format, string::String, string::ToString, vec::Vec};
 use app_zcash::get_address;
 #[cfg(feature = "cypherpunk")]
+use app_zcash::pczt::structs::ParsedPczt;
+#[cfg(feature = "cypherpunk")]
 use app_zcash::{BatchSignRequest, BatchSignResponse};
 use core::slice;
 use cryptoxide::hashing::sha256;
@@ -21,6 +23,8 @@ use keystore::algorithms::{
     ed25519::slip10_ed25519::get_private_key_by_seed,
     zcash::{calculate_seed_fingerprint, derive_ufvk},
 };
+#[cfg(feature = "cypherpunk")]
+use structs::BatchDisplayCache;
 use structs::DisplayPczt;
 use structs::DisplayZcashBatch;
 use structs::ZcashCheckedPczt;
@@ -340,16 +344,27 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
         Err(e) => return TransactionCheckResult::from(e).c_ptr(),
     };
 
+    // The check pass is the ONLY decode sweep now: per message it returns the
+    // normalized bytes, the display rows, and (opportunistically) the migration
+    // child summary, all from one trial-decrypt pass. Parse converts the cached
+    // rows instead of decrypting again.
     let mut checked_pczts = Vec::with_capacity(payloads.len());
+    let mut rows: Vec<ParsedPczt> = Vec::with_capacity(payloads.len());
+    let mut child_summaries: Vec<Option<app_zcash::BatchMigrationSummary>> =
+        Vec::with_capacity(payloads.len());
+    // One check context for the whole batch: the UFVK decode and the wallet
+    // Orchard key derivation depend only on the device UFVK, so they run once
+    // here instead of once per message (see BatchCheckContext).
+    let check_ctx = app_zcash::BatchCheckContext::new(&ufvk_text);
     for payload in payloads {
-        match app_zcash::check_batch_pczt_cypherpunk(
+        match app_zcash::check_batch_pczt_with_display(
             &MainNetwork,
             &payload,
-            &ufvk_text,
+            &check_ctx,
             seed_fingerprint,
             account_index,
         ) {
-            Ok(normalized) => {
+            Ok((normalized, parsed, child_summary)) => {
                 let pczt = match Pczt::parse(&normalized) {
                     Ok(pczt) => pczt,
                     Err(e) => {
@@ -360,10 +375,28 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
                     }
                 };
                 checked_pczts.push(pczt);
+                rows.push(parsed);
+                child_summaries.push(child_summary);
             }
             Err(e) => return TransactionCheckResult::from(e).c_ptr(),
         }
     }
+
+    // Decide the display exactly as the old parse-side aggregate did: a
+    // multi-message batch whose messages[1..] are all summarizable migration
+    // children shows message 0 (the split tx, full per-output review) plus ONE
+    // aggregate migration summary; otherwise it shows one row per message.
+    // Message 0 is never summarized (its child summary is collected but ignored).
+    let display = match try_aggregate_migration_summary(&child_summaries) {
+        Some(summary) if rows.len() > 1 => {
+            let mut rows = rows.into_iter();
+            let split = rows
+                .next()
+                .expect("messages.len() > 1 guarantees the split message");
+            BatchDisplayCache::SplitPlusSummary { split, summary }
+        }
+        _ => BatchDisplayCache::PerMessage(rows),
+    };
 
     // Rebuild the Postcard request around the normalized PCZTs so parse/sign
     // consume exactly what was checked, then preserve the outer request id for
@@ -381,8 +414,27 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
         Ok(bytes) => bytes,
         Err(e) => return TransactionCheckResult::from(e).c_ptr(),
     };
-    *checked_batch = ZcashCheckedPczt::new(normalized_batch).c_ptr();
+    *checked_batch = ZcashCheckedPczt::new_with_display(normalized_batch, display).c_ptr();
     TransactionCheckResult::new().c_ptr()
+}
+
+/// Folds messages[1..]'s migration child summaries into one aggregate and returns
+/// its display rows, or `None` when this is not a split-plus-migrations batch:
+/// fewer than two messages, any child that was not a summarizable migration, or
+/// an arithmetic overflow while folding. These are exactly the conditions under
+/// which the old parse-side aggregate fell back to the per-message review.
+#[cfg(feature = "cypherpunk")]
+fn try_aggregate_migration_summary(
+    child_summaries: &[Option<app_zcash::BatchMigrationSummary>],
+) -> Option<ParsedPczt> {
+    if child_summaries.len() <= 1 {
+        return None;
+    }
+    let mut summary = app_zcash::BatchMigrationSummary::default();
+    for child in &child_summaries[1..] {
+        summary.add_child(child.as_ref()?).ok()?;
+    }
+    Some(summary.to_parsed_pczt())
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -405,109 +457,41 @@ pub unsafe extern "C" fn parse_zcash_batch_tx_cypherpunk(
         ))
         .c_ptr();
     }
+    // `ufvk` and `seed_fingerprint` are retained for ABI/signature stability but
+    // unused now that parse converts the display rows the check pass cached
+    // instead of re-decrypting every output.
+    let _ = (ufvk, seed_fingerprint);
     let checked = extract_ptr_with_type!(checked_batch, ZcashCheckedPczt);
-    let bytes = match checked.checked_bytes() {
-        Ok(bytes) => bytes,
-        Err(e) => return TransactionParseResult::from(e).c_ptr(),
-    };
-    let batch = match parse_checked_zcash_batch(bytes) {
-        Ok((_, batch)) => batch,
-        Err(e) => return TransactionParseResult::from(e).c_ptr(),
-    };
-    let ufvk_text = unsafe { recover_c_char(ufvk) };
-    let seed_fingerprint = extract_array!(seed_fingerprint, u8, 32);
-    let seed_fingerprint = seed_fingerprint.try_into().unwrap();
-
-    if batch.pczts().len() > 1 {
-        // The normalized bytes were already validated in preflight, so this only
-        // re-shapes the display: the split transaction plus one aggregate
-        // migration summary. Any error means "not a split-plus-migrations batch";
-        // fall through to the per-message review below, which renders each
-        // already-checked message individually.
-        if let Ok(display_items) =
-            parse_zcash_batch_as_split_plus_migrations(&batch, &ufvk_text, seed_fingerprint)
-        {
-            return TransactionParseResult::success(DisplayZcashBatch::from(display_items).c_ptr())
-                .c_ptr();
-        }
+    if let Err(e) = checked.checked_bytes() {
+        return TransactionParseResult::from(e).c_ptr();
     }
-
-    let mut parsed_items = Vec::new();
-    for pczt in batch.pczts() {
-        let payload = match serialize_batch_pczt(pczt) {
-            Ok(payload) => payload,
-            Err(e) => return TransactionParseResult::from(e).c_ptr(),
-        };
-        match app_zcash::parse_pczt_cypherpunk(&MainNetwork, &payload, &ufvk_text, seed_fingerprint)
-        {
-            Ok(pczt) => parsed_items.push(pczt),
-            Err(e) => return TransactionParseResult::from(e).c_ptr(),
-        }
+    if checked.display.is_null() {
+        // Can't happen for a batch checked container (the batch check always
+        // stores a cache), but fail closed rather than silently re-deriving.
+        return TransactionParseResult::from(RustCError::InvalidData(
+            "no checked Zcash batch display available".to_string(),
+        ))
+        .c_ptr();
     }
-    // FFI display structs leak if dropped (freed via free_TransactionParseResult_*,
-    // not Drop), so build them only after every message has parsed.
-    let display_items: Vec<DisplayPczt> = parsed_items.iter().map(DisplayPczt::from).collect();
+    // Convert the cached rows into fresh owned FFI structs. There is no fallible
+    // step after the first `DisplayPczt` is built, so the "materialize only after
+    // all fallible steps" leak-safety is trivially preserved.
+    let display_items = batch_display_items(&*checked.display);
 
     TransactionParseResult::success(DisplayZcashBatch::from(display_items).c_ptr()).c_ptr()
 }
 
-/// Renders a multi-message batch as the split transaction (message 0, full
-/// per-output review) plus ONE aggregate migration summary covering the
-/// remaining messages, instead of one full page per child. Operates on the
-/// normalized bytes already validated in preflight: message 0 is parsed for
-/// display, and each remaining child is folded into the summary by
-/// [`app_zcash::summarize_batch_migration_pczt_cypherpunk`], which enforces the
-/// strict one-spend, one-wallet-owned-output migration shape. Errors mean "not
-/// a split-plus-migrations batch" and the caller falls back to the ordinary
-/// per-message review.
+/// Converts a stored [`BatchDisplayCache`] into freshly owned FFI display structs:
+/// the split transaction plus the aggregate migration summary for the split-plus-
+/// summary shape, or one [`DisplayPczt`] per message for the per-message shape.
 #[cfg(feature = "cypherpunk")]
-fn parse_zcash_batch_as_split_plus_migrations(
-    batch: &BatchSignRequest,
-    ufvk_text: &str,
-    seed_fingerprint: &[u8; 32],
-) -> app_zcash::errors::Result<Vec<DisplayPczt>> {
-    let pczts = batch.pczts();
-    // The only caller gates this behind `pczts.len() > 1`, so PCZT 0
-    // (the split transaction) is always present.
-    debug_assert!(pczts.len() > 1);
-    let mut display_items = Vec::new();
-
-    let serialize = |pczt: &Pczt| {
-        pczt.clone().serialize().map_err(|e| {
-            app_zcash::errors::ZcashError::InvalidPczt(format!(
-                "encode checked PCZT in batch request: {e:?}"
-            ))
-        })
-    };
-    let split_payload = serialize(&pczts[0])?;
-    let split_pczt = app_zcash::parse_pczt_cypherpunk(
-        &MainNetwork,
-        &split_payload,
-        ufvk_text,
-        seed_fingerprint,
-    )?;
-
-    let mut summary = app_zcash::BatchMigrationSummary::default();
-    for pczt in pczts.iter().skip(1) {
-        let payload = serialize(pczt)?;
-        let child = app_zcash::summarize_batch_migration_pczt_cypherpunk(
-            &MainNetwork,
-            &payload,
-            ufvk_text,
-            seed_fingerprint,
-        )?;
-        summary.add_child(&child)?;
+fn batch_display_items(cache: &BatchDisplayCache) -> Vec<DisplayPczt> {
+    match cache {
+        BatchDisplayCache::SplitPlusSummary { split, summary } => {
+            alloc::vec![DisplayPczt::from(split), DisplayPczt::from(summary)]
+        }
+        BatchDisplayCache::PerMessage(rows) => rows.iter().map(DisplayPczt::from).collect(),
     }
-    let summary_pczt = summary.to_parsed_pczt();
-
-    // Materialize the FFI display structs only after every fallible step: their
-    // nested C-side allocations are freed through free_TransactionParseResult_*,
-    // not Drop, so building one before an Err (which sends the caller down the
-    // per-message fallback) would leak it on every non-migration batch review.
-    display_items.push(DisplayPczt::from(&split_pczt));
-    display_items.push(DisplayPczt::from(&summary_pczt));
-
-    Ok(display_items)
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -549,6 +533,10 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
 
                     let mut results = Vec::new();
                     let mut error = None;
+                    // One spend-auth cache for the whole batch: the account key
+                    // depends only on (seed, account), so derive it once here
+                    // instead of once per message (see SpendAuthCache).
+                    let ask_cache = app_zcash::SpendAuthCache::new();
                     for pczt in batch.pczts() {
                         let payload = match serialize_batch_pczt(pczt) {
                             Ok(payload) => payload,
@@ -557,12 +545,13 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                                 break;
                             }
                         };
-                        match app_zcash::sign_checked_batch_pczt(
+                        match app_zcash::sign_checked_batch_pczt_with_cache(
                             &MainNetwork,
                             &payload,
                             seed,
                             &seed_fingerprint,
                             account_index,
+                            &ask_cache,
                         ) {
                             Ok(payload) => {
                                 match app_zcash::extract_compact_sigs_from_signed_pczt(&payload) {
@@ -1121,5 +1110,73 @@ mod tests {
         let pt = decrypter.decrypt_padded_vec_mut::<Pkcs7>(&ct).unwrap();
 
         assert_eq!(String::from_utf8(pt).unwrap(), "hello world");
+    }
+
+    /// A minimal display row; the real content parity is covered by the app-level
+    /// tests, so this only exercises the rust_c cache plumbing.
+    #[cfg(feature = "cypherpunk")]
+    fn sample_parsed_pczt() -> ParsedPczt {
+        ParsedPczt::new(
+            None,
+            None,
+            None,
+            "1 ZEC".to_string(),
+            "0.0001 ZEC".to_string(),
+            false,
+        )
+    }
+
+    /// The batch parse FFI reads the display cache the check stored and returns one
+    /// display per cached row without re-deriving anything. The item count is
+    /// asserted through the conversion helper (`TransactionParseResult::data` is
+    /// private), then the full FFI is driven end-to-end for the no-crash path.
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_parse_zcash_batch_reads_display_cache() {
+        let items = batch_display_items(&BatchDisplayCache::PerMessage(vec![
+            sample_parsed_pczt(),
+            sample_parsed_pczt(),
+            sample_parsed_pczt(),
+        ]));
+        assert_eq!(
+            items.len(),
+            3,
+            "a per-message cache must yield one display per row"
+        );
+        for item in &items {
+            unsafe { item.free() };
+        }
+
+        let cache = BatchDisplayCache::PerMessage(vec![sample_parsed_pczt(), sample_parsed_pczt()]);
+        let checked_ptr =
+            ZcashCheckedPczt::new_with_display(b"normalized-batch-bytes".to_vec(), cache).c_ptr();
+        let result = unsafe {
+            parse_zcash_batch_tx_cypherpunk(
+                checked_ptr,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                false,
+            )
+        };
+        assert!(
+            !result.is_null(),
+            "parse must produce a result for a cache-bearing container"
+        );
+        unsafe {
+            Box::from_raw(result).free();
+            free_zcash_checked_pczt(checked_ptr);
+        }
+    }
+
+    /// Freeing a checked container that carries a display cache must free both the
+    /// bytes and the cache exactly once (reaching the end without an allocator
+    /// abort is the assertion).
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_free_cache_bearing_container_is_clean() {
+        let cache = BatchDisplayCache::PerMessage(vec![sample_parsed_pczt(), sample_parsed_pczt()]);
+        let checked_ptr =
+            ZcashCheckedPczt::new_with_display(b"normalized-batch-bytes".to_vec(), cache).c_ptr();
+        unsafe { free_zcash_checked_pczt(checked_ptr) };
     }
 }

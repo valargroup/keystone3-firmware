@@ -102,6 +102,40 @@ fn reject_legacy_unsupported_pczt(pczt: &Pczt) -> Result<(), ZcashError> {
     Ok(())
 }
 
+/// Per-account spend authorizing key cache, shared across every message of a
+/// batch signing call (and across the Orchard and Ironwood signers — the ZIP 32
+/// derivation `SpendingKey::from_zip32_seed(seed, 133, account)` is
+/// pool-independent). Each miss costs a full ZIP 32 hardened-derivation chain
+/// whose per-level validity checks derive the entire key family (ak, nk, rivk,
+/// ivk), so a 31-message batch that re-derived per message spent ~70% of its
+/// signing time here. The cache holds live key material; keep it scoped to a
+/// single signing call, like the `seed` it is derived from. Interior mutability
+/// because the `PcztSigner` trait signs through `&self`.
+#[cfg(feature = "cypherpunk")]
+pub struct SpendAuthCache(
+    RefCell<
+        Vec<(
+            zcash_vendor::zip32::AccountId,
+            orchard::keys::SpendAuthorizingKey,
+        )>,
+    >,
+);
+
+#[cfg(feature = "cypherpunk")]
+impl SpendAuthCache {
+    /// Creates an empty cache; see the type doc for scoping guidance.
+    pub fn new() -> Self {
+        SpendAuthCache(RefCell::new(Vec::new()))
+    }
+}
+
+#[cfg(feature = "cypherpunk")]
+impl Default for SpendAuthCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Lean signer for the cypherpunk path. Drives the shallow `low_level_signer` and
 /// derives keys / signs each action in place, instead of materializing a full
 /// `RoleSigner` (which reconstructs the whole transaction to compute the sighash and
@@ -113,16 +147,9 @@ struct SeedSigner<'a> {
     seed: &'a [u8],
     seed_fingerprint: [u8; 32],
     pool: ShieldedPool,
-    /// Per-account spend authorizing key cache. The seed fingerprint and the account
-    /// key depend only on (seed, account), not on the action, so a bundle with many
-    /// actions for one account derives once. Interior mutability because the
-    /// `PcztSigner` trait signs through `&self`.
-    ask_cache: RefCell<
-        Vec<(
-            zcash_vendor::zip32::AccountId,
-            orchard::keys::SpendAuthorizingKey,
-        )>,
-    >,
+    /// See [`SpendAuthCache`]; borrowed so a batch shares one cache across
+    /// messages and pools.
+    ask_cache: &'a SpendAuthCache,
     /// Number of authorizations produced, so `sign_pczt` can distinguish "nothing of
     /// ours to sign" (`PcztNoMyInputs`) from a successful signing.
     signed: Cell<usize>,
@@ -130,12 +157,17 @@ struct SeedSigner<'a> {
 
 #[cfg(feature = "cypherpunk")]
 impl<'a> SeedSigner<'a> {
-    fn new(seed: &'a [u8], seed_fingerprint: [u8; 32], pool: ShieldedPool) -> Self {
+    fn new(
+        seed: &'a [u8],
+        seed_fingerprint: [u8; 32],
+        pool: ShieldedPool,
+        ask_cache: &'a SpendAuthCache,
+    ) -> Self {
         Self {
             seed,
             seed_fingerprint,
             pool,
-            ask_cache: RefCell::new(Vec::new()),
+            ask_cache,
             signed: Cell::new(0),
         }
     }
@@ -146,6 +178,7 @@ impl<'a> SeedSigner<'a> {
     ) -> Result<orchard::keys::SpendAuthorizingKey, ZcashError> {
         if let Some((_, ask)) = self
             .ask_cache
+            .0
             .borrow()
             .iter()
             .find(|(cached, _)| *cached == account_index)
@@ -161,6 +194,7 @@ impl<'a> SeedSigner<'a> {
             })?;
         let ask = orchard::keys::SpendAuthorizingKey::from(&osk);
         self.ask_cache
+            .0
             .borrow_mut()
             .push((account_index, ask.clone()));
         Ok(ask)
@@ -256,9 +290,22 @@ pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
 
 /// `sign_pczt`, but returns the stamped, redacted PCZT without serializing it,
 /// so callers that still need the parsed value (in-memory post-sign
-/// verification) avoid a byte round trip.
+/// verification) avoid a byte round trip. Derives keys into a fresh
+/// [`SpendAuthCache`]; batch callers should use [`sign_and_redact_pczt_with_cache`]
+/// so all messages share one derivation.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_and_redact_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Pczt> {
+    sign_and_redact_pczt_with_cache(pczt, seed, &SpendAuthCache::new())
+}
+
+/// [`sign_and_redact_pczt`] with a caller-provided [`SpendAuthCache`], so a batch
+/// derives each account's spend authorizing key once instead of per message.
+#[cfg(feature = "cypherpunk")]
+pub fn sign_and_redact_pczt_with_cache(
+    pczt: Pczt,
+    seed: &[u8],
+    ask_cache: &SpendAuthCache,
+) -> crate::Result<Pczt> {
     super::validate_supported_pczt(&pczt)?;
 
     let seed_fingerprint =
@@ -268,7 +315,7 @@ pub fn sign_and_redact_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Pczt> {
 
     // The orchard signer handles both the transparent inputs and the Orchard bundle
     // (the pool only changes error labels for shielded actions). Ironwood gets its own.
-    let orchard_signer = SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Orchard);
+    let orchard_signer = SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Orchard, ask_cache);
 
     // Propagate the signer error directly (it is already a ZcashError): the strict
     // validation in SeedSigner::sign_orchard returns ZcashError::InvalidPczt for bad
@@ -277,7 +324,8 @@ pub fn sign_and_redact_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Pczt> {
     let signer = pczt_ext::sign_transparent(signer, &orchard_signer)?;
     let signer = pczt_ext::sign_orchard(signer, &orchard_signer)?;
 
-    let ironwood_signer = SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Ironwood);
+    let ironwood_signer =
+        SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Ironwood, ask_cache);
     let signer = if process_ironwood {
         pczt_ext::sign_ironwood(signer, &ironwood_signer)?
     } else {
