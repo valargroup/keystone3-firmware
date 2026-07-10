@@ -269,7 +269,7 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
 /// Checks a batch PCZT with the selected account and returns the display data
 /// from the same single-pass Verifier sweep that validates it.
 ///
-/// The check-and-parse twin of [`preflight_batch_pczt_cypherpunk`]: the preflight
+/// The check-and-parse twin of [`check_batch_pczt_cypherpunk`]: the check
 /// validates and returns the normalized bytes C stores, while this validates and
 /// returns the [`ParsedPczt`] display rows, decrypting every output once (via
 /// [`pczt::check::check_and_parse_pczt_shielded`]) instead of checking and then
@@ -286,7 +286,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
 ) -> Result<ParsedPczt> {
     let mut pczt = pczt::parse_pczt(pczt_bytes)?;
     // Resolve compact field representations up front so the single-pass check
-    // sees complete actions, matching `preflight_batch_pczt_cypherpunk`.
+    // sees complete actions, matching `check_batch_pczt_cypherpunk`.
     pczt.resolve_fields().map_err(|e| {
         ZcashError::InvalidPczt(alloc::format!("resolve compact PCZT fields: {e:?}"))
     })?;
@@ -2144,7 +2144,7 @@ mod tests {
         );
 
         assert_eq!(
-            preflight_batch_pczt_cypherpunk(
+            check_batch_pczt_cypherpunk(
                 &pczt::test_support::Nu6_3Network,
                 &foreign,
                 &sample.ufvk_text,
