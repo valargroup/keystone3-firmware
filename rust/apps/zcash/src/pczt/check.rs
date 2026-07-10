@@ -107,9 +107,7 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
 ) -> Result<(CheckedShieldedParse, Pczt), ZcashError> {
     super::validate_supported_pczt(&pczt)?;
     let mut parsed_orchard = None;
-    #[cfg(zcash_unstable = "nu6.3")]
     let mut parsed_ironwood = None;
-    #[cfg(zcash_unstable = "nu6.3")]
     let should_process_ironwood = super::pczt_should_process_ironwood(&pczt);
 
     let verifier = Verifier::new(pczt)
@@ -127,7 +125,6 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
         })
         .map_err(map_orchard_verifier_error)?;
 
-    #[cfg(zcash_unstable = "nu6.3")]
     let verifier = if should_process_ironwood {
         verifier
             .with_ironwood(|bundle| {
@@ -146,9 +143,6 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
     } else {
         verifier
     };
-
-    #[cfg(not(zcash_unstable = "nu6.3"))]
-    let parsed_ironwood = None;
 
     Ok((
         CheckedShieldedParse {

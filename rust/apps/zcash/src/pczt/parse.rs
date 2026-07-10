@@ -167,7 +167,6 @@ pub(crate) fn decode_output_enc_ciphertext(
 
     match pool {
         ShieldedPool::Orchard => decode_with_domain!(OrchardDomain),
-        #[cfg(zcash_unstable = "nu6.3")]
         ShieldedPool::Ironwood => decode_with_domain!(IronwoodDomain),
     }
 }
@@ -243,9 +242,6 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
             Ok(())
         })
         .map_err(map_transparent_verifier_error)?;
-
-    #[cfg(not(zcash_unstable = "nu6.3"))]
-    let parsed_ironwood = None;
 
     assemble_parsed_pczt(pczt, parsed_transparent, parsed_orchard, parsed_ironwood)
 }

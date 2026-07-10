@@ -1564,7 +1564,6 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_batch_check_and_parse_accepts_orchard_to_ironwood_migration() {
         let sample = pczt::test_support::sample_migration_pczt();
@@ -1602,7 +1601,6 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_check_rejects_undecryptable_ironwood_output() {
         use zcash_vendor::pczt::Pczt;
@@ -1680,7 +1678,6 @@ mod tests {
         );
     }
 
-    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_check_resolves_compact_pczt_and_signs() {
         use zcash_vendor::pczt::roles::redactor::Redactor;
