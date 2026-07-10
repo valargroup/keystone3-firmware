@@ -558,7 +558,7 @@ fn check_action_output<P: consensus::Parameters>(
         .verify_note_commitment(action.spend())
         .map_err(|e| ZcashError::InvalidPczt(format!("invalid {pool_label} action cmx: {e:?}")))?;
 
-    // Keep check-only and display review aligned on output recoverability.
+    // Decode and validate the recipient, rejecting non-zero outputs the device cannot review.
     super::parse::parse_orchard_output(params, ufvk, action, pool)?;
 
     Ok(())
