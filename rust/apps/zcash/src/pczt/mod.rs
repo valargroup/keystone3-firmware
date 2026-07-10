@@ -295,6 +295,7 @@ pub(crate) mod test_support {
             .unwrap()
             .finish()
             .serialize()
+            .unwrap()
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -331,6 +332,7 @@ pub(crate) mod test_support {
             .unwrap()
             .finish()
             .serialize()
+            .unwrap()
     }
 
     /// Per-action Orchard spend values of `bytes`, read through the Verifier's
@@ -397,6 +399,7 @@ pub(crate) mod test_support {
             .unwrap()
             .finish()
             .serialize()
+            .unwrap()
     }
 
     #[cfg(zcash_unstable = "nu6.3")]
@@ -457,6 +460,7 @@ pub(crate) mod test_support {
                 sapling_anchor: None,
                 orchard_anchor: None,
                 ironwood_anchor: Some(anchor),
+                orchard_pool_bundle_type: orchard::builder::BundleType::DEFAULT,
             },
         );
         builder
@@ -499,7 +503,7 @@ pub(crate) mod test_support {
             .finish();
 
         SamplePczt {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().unwrap(),
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
@@ -569,6 +573,7 @@ pub(crate) mod test_support {
                 sapling_anchor: None,
                 orchard_anchor: Some(anchor),
                 ironwood_anchor: Some(orchard::Anchor::empty_tree()),
+                orchard_pool_bundle_type: orchard::builder::BundleType::DEFAULT,
             },
         );
         builder
@@ -611,7 +616,7 @@ pub(crate) mod test_support {
             .finish();
 
         SamplePczt {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().unwrap(),
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
@@ -733,7 +738,7 @@ pub(crate) mod test_support {
             .finish();
 
         SamplePczt {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().unwrap(),
             seed: seed.to_vec(),
             ufvk_text,
             seed_fingerprint,
@@ -809,6 +814,7 @@ pub(crate) mod legacy_test_support {
             .unwrap()
             .finish()
             .serialize()
+            .unwrap()
     }
 
     pub(crate) fn legacy_transparent_sample() -> LegacyTransparentSample {
@@ -846,6 +852,7 @@ pub(crate) mod legacy_test_support {
                 sapling_anchor: None,
                 orchard_anchor: None,
                 ironwood_anchor: None,
+                orchard_pool_bundle_type: orchard::builder::BundleType::DEFAULT,
             },
         );
         builder
@@ -888,7 +895,7 @@ pub(crate) mod legacy_test_support {
             .to_string();
 
         LegacyTransparentSample {
-            bytes: pczt.serialize(),
+            bytes: pczt.serialize().unwrap(),
             seed: seed.to_vec(),
             seed_fingerprint,
             xpub,
