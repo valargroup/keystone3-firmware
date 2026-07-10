@@ -85,7 +85,7 @@ pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
 
     stamp_and_redact(signer.finish())
         .serialize()
-        .map_err(|e| ZcashError::InvalidPczt(alloc::format!("pczt serialize: {e:?}")))
+        .map_err(|e| ZcashError::SigningError(format!("serialize signed PCZT: {e:?}")))
 }
 
 #[cfg(not(feature = "cypherpunk"))]
@@ -114,11 +114,6 @@ struct SeedSigner<'a> {
     seed: &'a [u8],
     seed_fingerprint: [u8; 32],
     pool: ShieldedPool,
-    /// Batch mode restricts signing to a single account. `Some(account)`
-    /// (`for_batch_account`): only spends tagged for that account are signed;
-    /// spends tagged for a different account of the same seed are refused. `None`
-    /// (`new`): ordinary signing — any account derivable from the seed.
-    selected_account: Option<zcash_vendor::zip32::AccountId>,
     /// Per-account spend authorizing key cache. The seed fingerprint and the account
     /// key depend only on (seed, account), not on the action, so a bundle with many
     /// actions for one account derives once. Interior mutability because the
@@ -141,23 +136,6 @@ impl<'a> SeedSigner<'a> {
             seed,
             seed_fingerprint,
             pool,
-            selected_account: None,
-            ask_cache: RefCell::new(Vec::new()),
-            signed: Cell::new(0),
-        }
-    }
-
-    fn for_batch_account(
-        seed: &'a [u8],
-        seed_fingerprint: [u8; 32],
-        pool: ShieldedPool,
-        selected_account: zcash_vendor::zip32::AccountId,
-    ) -> Self {
-        Self {
-            seed,
-            seed_fingerprint,
-            pool,
-            selected_account: Some(selected_account),
             ask_cache: RefCell::new(Vec::new()),
             signed: Cell::new(0),
         }
@@ -238,19 +216,9 @@ impl PcztSigner for SeedSigner<'_> {
                 }
             }
         }
-        let Some(value) = action.spend().value() else {
-            return if self.selected_account.is_some() {
-                Err(ZcashError::InvalidPczt(format!(
-                    "missing {pool_label} spend value"
-                )))
-            } else {
-                Ok(())
-            };
-        };
-        // Ownership decides signing, never the value: post-NU6.3 restricted bundles
-        // pair each change output with a fabricated wallet-controlled zero-value spend
-        // that must be signed by the account spend authorizing key (see
-        // pczt_ext::sign_orchard_action: we "must NOT pre-filter by value").
+        if action.spend().value().is_none() {
+            return Ok(());
+        }
         let Some(account_index) = super::matching_seed_supported_orchard_account(
             &self.seed_fingerprint,
             action.spend().zip32_derivation().as_ref(),
@@ -258,21 +226,9 @@ impl PcztSigner for SeedSigner<'_> {
             self.pool,
         )?
         else {
-            // Not derivable from this seed. Ordinary PCZT signing ignores it. A
-            // reviewed batch tolerates untagged zero-value spends (IO Finalizer-signed
-            // dummies whose signatures the wallet strips for the QR round trip) but
-            // must otherwise contain only selected-account spends.
-            return if self.selected_account.is_some() && value.inner() != 0 {
-                Err(ZcashError::PcztNoMyInputs)
-            } else {
-                Ok(())
-            };
+            // Not derivable from this seed; not ours to sign.
+            return Ok(());
         };
-        if let Some(selected_account) = self.selected_account {
-            if account_index != selected_account {
-                return Err(ZcashError::PcztNoMyInputs);
-            }
-        }
 
         let ask = self.spend_authorizing_key(account_index)?;
         action
@@ -289,80 +245,32 @@ impl PcztSigner for SeedSigner<'_> {
     }
 }
 
-// Ordinary and batch signing share one core, `sign_pczt_with_seed_fingerprint_inner`,
-// which threads an optional selected account (None = ordinary, Some = batch/restricted).
-// The three wrappers exist so callers can enter at the right level:
-//   sign_pczt                          -> public ordinary entry; computes the seed fingerprint
-//   sign_pczt_with_seed_fingerprint    -> ordinary, fingerprint already known (avoids recomputing)
-//   sign_batch_pczt_with_seed_fingerprint -> batch; restricts signing to `account_index`
-// The batch path already holds the fingerprint (validated during review), so it skips recomputing it.
-
-/// Public ordinary (non-batch) signing entry: signs every action derivable from
-/// the seed. Computes the seed fingerprint, then delegates to the shared core.
+/// Signs `pczt` and serializes the stamped, redacted response.
+///
+/// Thin wrapper over `sign_and_redact_pczt`; see it for the full contract.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
-    let seed_fingerprint =
-        calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
-
-    sign_pczt_with_seed_fingerprint(pczt, seed, seed_fingerprint)
+    sign_and_redact_pczt(pczt, seed)?
+        .serialize()
+        .map_err(|e| ZcashError::SigningError(format!("serialize signed PCZT: {e:?}")))
 }
 
-/// Ordinary signing with a precomputed seed fingerprint (no account restriction).
+/// `sign_pczt`, but returns the stamped, redacted PCZT without serializing it,
+/// so callers that still need the parsed value (in-memory post-sign
+/// verification) avoid a byte round trip.
 #[cfg(feature = "cypherpunk")]
-pub(crate) fn sign_pczt_with_seed_fingerprint(
-    pczt: Pczt,
-    seed: &[u8],
-    seed_fingerprint: [u8; 32],
-) -> crate::Result<Vec<u8>> {
-    sign_pczt_with_seed_fingerprint_inner(pczt, seed, seed_fingerprint, None)
-}
-
-/// Batch signing: restricts signing to `account_index` (the device-selected
-/// account); spends tagged for another account of the same seed are refused.
-#[cfg(feature = "cypherpunk")]
-pub(crate) fn sign_batch_pczt_with_seed_fingerprint(
-    pczt: Pczt,
-    seed: &[u8],
-    seed_fingerprint: [u8; 32],
-    account_index: zcash_vendor::zip32::AccountId,
-) -> crate::Result<Vec<u8>> {
-    sign_pczt_with_seed_fingerprint_inner(pczt, seed, seed_fingerprint, Some(account_index))
-}
-
-/// Shared signing core for both ordinary and batch paths. `selected_account`
-/// distinguishes them: `None` signs any of the seed's accounts, `Some` restricts
-/// to that one.
-#[cfg(feature = "cypherpunk")]
-fn sign_pczt_with_seed_fingerprint_inner(
-    mut pczt: Pczt,
-    seed: &[u8],
-    seed_fingerprint: [u8; 32],
-    selected_account: Option<zcash_vendor::zip32::AccountId>,
-) -> crate::Result<Vec<u8>> {
+pub fn sign_and_redact_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Pczt> {
     super::validate_supported_pczt(&pczt)?;
 
-    if let Some(account_index) = selected_account {
-        fill_selected_account_spend_fvks(&mut pczt, seed, &seed_fingerprint, account_index)?;
-    }
-
-    // Recompute and fill any Orchard/Ironwood derived fields a wallet omitted to keep the
-    // request QR small (cv_net, nullifier, rk, cmx, ephemeral_key, enc_ciphertext; an
-    // elided anchor refills as the empty-tree placeholder). The lean sighash below reads
-    // these directly off the PCZT, so they must be present; this is a no-op for a full
-    // PCZT.
-    pczt.fill_derived_fields()
-        .map_err(|e| ZcashError::InvalidPczt(format!("failed to fill derived fields: {e:?}")))?;
+    let seed_fingerprint =
+        calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
 
     #[cfg(zcash_unstable = "nu6.3")]
     let process_ironwood = super::pczt_should_process_ironwood(&pczt);
 
     // The orchard signer handles both the transparent inputs and the Orchard bundle
     // (the pool only changes error labels for shielded actions). Ironwood gets its own.
-    let orchard_signer = if let Some(account_index) = selected_account {
-        SeedSigner::for_batch_account(seed, seed_fingerprint, ShieldedPool::Orchard, account_index)
-    } else {
-        SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Orchard)
-    };
+    let orchard_signer = SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Orchard);
 
     // Propagate the signer error directly (it is already a ZcashError): the strict
     // validation in SeedSigner::sign_orchard returns ZcashError::InvalidPczt for bad
@@ -372,16 +280,7 @@ fn sign_pczt_with_seed_fingerprint_inner(
     let signer = pczt_ext::sign_orchard(signer, &orchard_signer)?;
 
     #[cfg(zcash_unstable = "nu6.3")]
-    let ironwood_signer = if let Some(account_index) = selected_account {
-        SeedSigner::for_batch_account(
-            seed,
-            seed_fingerprint,
-            ShieldedPool::Ironwood,
-            account_index,
-        )
-    } else {
-        SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Ironwood)
-    };
+    let ironwood_signer = SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Ironwood);
     #[cfg(zcash_unstable = "nu6.3")]
     let signer = if process_ironwood {
         pczt_ext::sign_ironwood(signer, &ironwood_signer)?
@@ -398,41 +297,7 @@ fn sign_pczt_with_seed_fingerprint_inner(
         return Err(ZcashError::PcztNoMyInputs);
     }
 
-    stamp_and_redact(signer.finish())
-        .serialize()
-        .map_err(|e| ZcashError::InvalidPczt(alloc::format!("pczt serialize: {e:?}")))
-}
-
-/// Derives the selected account's Orchard full viewing key from the seed and
-/// fills it into any spend that carries the matching ZIP 32 derivation but no
-/// `fvk` (a wallet may omit per-spend FVKs to keep the request QR small). The
-/// checks and the signer re-derive everything they verify, so a filled FVK is
-/// trusted exactly as far as the seed it came from.
-#[cfg(feature = "cypherpunk")]
-fn fill_selected_account_spend_fvks(
-    pczt: &mut Pczt,
-    seed: &[u8],
-    seed_fingerprint: &[u8; 32],
-    account_index: zcash_vendor::zip32::AccountId,
-) -> crate::Result<()> {
-    const ZCASH_COIN_TYPE: u32 = 133;
-
-    let osk = orchard::keys::SpendingKey::from_zip32_seed(seed, ZCASH_COIN_TYPE, account_index)
-        .map_err(|e| {
-            ZcashError::SigningError(format!(
-                "failed to derive selected account Orchard FVK: {e:?}"
-            ))
-        })?;
-    let fvk = orchard::keys::FullViewingKey::from(&osk).to_bytes();
-    let account_child: zcash_vendor::zip32::ChildIndex = account_index.into();
-    let derivation_path = [
-        zcash_vendor::zip32::ChildIndex::hardened(32).index(),
-        zcash_vendor::zip32::ChildIndex::hardened(ZCASH_COIN_TYPE).index(),
-        account_child.index(),
-    ];
-
-    pczt.fill_missing_spend_fvks_for_zip32_path(seed_fingerprint, &derivation_path, fvk);
-    Ok(())
+    Ok(stamp_and_redact(signer.finish()))
 }
 
 fn stamp_and_redact(pczt: Pczt) -> Pczt {
@@ -571,6 +436,7 @@ mod tests {
     use super::*;
     // RoleSigner is the upstream reference signer; tests use its sighash as the
     // bit-exact oracle for the lean pczt_ext::shielded_sig_commitment.
+    use zcash_vendor::pczt::roles::redactor::Redactor;
     use zcash_vendor::pczt::roles::signer::Signer as RoleSigner;
 
     fn assert_invalid_pczt_message<T: core::fmt::Debug>(result: crate::Result<T>, expected: &str) {
@@ -650,194 +516,6 @@ mod tests {
         );
     }
 
-    // End-to-end consume-side proof for elidable-field requests: a migration request
-    // with every derived field, both anchors, and every enc_ciphertext elided (tagged
-    // with the wallet's memo kinds) must check, parse, and sign; the spend
-    // authorization must commit to the same sighash as a never-elided request; and the
-    // response must stay self-contained (every recomputed field present and
-    // byte-identical to the full request's), so the ordinary postflight runs on it
-    // directly.
-    #[cfg(zcash_unstable = "nu6.3")]
-    #[test]
-    fn test_sign_elided_migration_request() {
-        use zcash_vendor::pczt::{orchard::MemoKind, roles::redactor::orchard::OrchardRedactor};
-
-        let sample = crate::pczt::test_support::sample_migration_pczt();
-        let full = Pczt::parse(&sample.bytes).unwrap();
-        let full_sighash = RoleSigner::new(full.clone())
-            .expect("full migration PCZT signer should initialize")
-            .shielded_sighash();
-
-        // The wallet may only elide an enc_ciphertext it has verified to be the
-        // deterministic encryption under one of the two memo constants: probe each
-        // output by re-eliding a clone under each tag and refilling, keeping the tag
-        // exactly when the reconstruction is byte-identical. In this sample the pure
-        // dummy Orchard output reconstructs under `Zero` and the Ironwood migration
-        // output (built with the ZIP 302 empty memo) under `Empty`. The migrated
-        // Orchard note is internal-scope, so both Orchard zero-valued outputs
-        // recompute under `Zero`.
-        fn elidable_memo_kinds(
-            full: &Pczt,
-            bundle_of: fn(&Pczt) -> &zcash_vendor::pczt::orchard::Bundle,
-            redact_with: fn(Redactor, fn(OrchardRedactor<'_>)) -> Redactor,
-        ) -> Vec<Option<MemoKind>> {
-            let original: Vec<_> = bundle_of(full)
-                .actions()
-                .iter()
-                .map(|action| action.output().enc_ciphertext().clone())
-                .collect();
-            let mut tags = alloc::vec![None; original.len()];
-            for (kind, probe_all) in [
-                (
-                    MemoKind::Zero,
-                    (|mut r: OrchardRedactor<'_>| {
-                        r.redact_actions(|mut ar| ar.clear_enc_ciphertext(MemoKind::Zero));
-                    }) as fn(OrchardRedactor<'_>),
-                ),
-                (MemoKind::Empty, |mut r: OrchardRedactor<'_>| {
-                    r.redact_actions(|mut ar| ar.clear_enc_ciphertext(MemoKind::Empty));
-                }),
-            ] {
-                let mut probe = redact_with(Redactor::new(full.clone()), probe_all).finish();
-                probe
-                    .fill_derived_fields()
-                    .expect("probe reconstruction must fill");
-                for (index, action) in bundle_of(&probe).actions().iter().enumerate() {
-                    if tags[index].is_none() && action.output().enc_ciphertext() == &original[index]
-                    {
-                        tags[index] = Some(kind);
-                    }
-                }
-            }
-            tags
-        }
-        let orchard_tags = elidable_memo_kinds(
-            &full,
-            |pczt| pczt.orchard(),
-            |redactor, f| redactor.redact_orchard_with(f),
-        );
-        let ironwood_tags = elidable_memo_kinds(
-            &full,
-            |pczt| pczt.ironwood(),
-            |redactor, f| redactor.redact_ironwood_with(f),
-        );
-        assert!(!orchard_tags.is_empty());
-        assert!(
-            orchard_tags.iter().all(|tag| *tag == Some(MemoKind::Zero)),
-            "internal migration Orchard outputs must all recompute under the zero memo"
-        );
-        assert_eq!(ironwood_tags, alloc::vec![Some(MemoKind::Empty)]);
-
-        // Elide the request the way the optimizing wallet does: the six derived
-        // fields, the bundle anchor, and each *verified* enc_ciphertext under its tag.
-        fn elide_request_bundle(mut r: OrchardRedactor<'_>, memo_kinds: &[Option<MemoKind>]) {
-            r.redact_actions(|mut ar| {
-                ar.clear_cv_net();
-                ar.clear_nullifier();
-                ar.clear_rk();
-                ar.clear_cmx();
-                ar.clear_ephemeral_key();
-            });
-            for (index, memo_kind) in memo_kinds.iter().enumerate() {
-                if let Some(memo_kind) = *memo_kind {
-                    r.redact_action(index, |mut ar| ar.clear_enc_ciphertext(memo_kind));
-                }
-            }
-            r.clear_anchor();
-        }
-        let elided_request = Redactor::new(full.clone())
-            .redact_orchard_with(|r| elide_request_bundle(r, &orchard_tags))
-            .redact_ironwood_with(|r| elide_request_bundle(r, &ironwood_tags))
-            .finish();
-        let elided_bytes = elided_request
-            .clone()
-            .serialize()
-            .expect("elided request must serialize");
-        assert!(
-            elided_bytes.len() < sample.bytes.len(),
-            "eliding must shrink the request",
-        );
-
-        // The device-side check and parse paths accept the elided request (the fill
-        // recomputes byte-identical fields, so decryption and cv_net checks pass).
-        crate::check_pczt_cypherpunk(
-            &crate::pczt::test_support::Nu6_3Network,
-            &elided_bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("elided migration request must pass the pre-sign checks");
-        crate::parse_pczt_cypherpunk(
-            &crate::pczt::test_support::Nu6_3Network,
-            &elided_bytes,
-            &sample.ufvk_text,
-            &sample.seed_fingerprint,
-        )
-        .expect("elided migration request must parse for display");
-
-        let signed = sign_pczt(elided_request, &sample.seed)
-            .expect("elided migration request must sign");
-        let response = Pczt::parse(&signed).expect("signed response must parse");
-
-        // The recompute-on-receive fill is byte-identical to the elided values, and
-        // the response keeps every recomputed ciphertext (this build does not
-        // re-elide its responses), so it stays self-contained.
-        let mut filled = full;
-        filled
-            .fill_derived_fields()
-            .expect("full migration PCZT should fill");
-        for (bundle, filled_bundle) in [
-            (response.orchard(), filled.orchard()),
-            (response.ironwood(), filled.ironwood()),
-        ] {
-            for (action, filled_action) in bundle.actions().iter().zip(filled_bundle.actions()) {
-                assert!(action.output().memo_kind().is_none());
-                assert_eq!(
-                    action.output().enc_ciphertext(),
-                    filled_action.output().enc_ciphertext(),
-                    "response ciphertexts must match the full request's",
-                );
-            }
-        }
-
-        // The Orchard spend authorization commits to the never-elided sighash.
-        let mut verified = 0;
-        for (action, filled_action) in response
-            .orchard()
-            .actions()
-            .iter()
-            .zip(filled.orchard().actions())
-        {
-            if let Some(sig) = action.spend().spend_auth_sig() {
-                let rk_bytes =
-                    (*filled_action.spend().rk()).expect("filled PCZT must carry rk");
-                let rk = orchard::primitives::redpallas::VerificationKey::<
-                    orchard::primitives::redpallas::SpendAuth,
-                >::try_from(rk_bytes)
-                .expect("randomized validating key must parse");
-                let sig: orchard::primitives::redpallas::Signature<
-                    orchard::primitives::redpallas::SpendAuth,
-                > = (*sig).into();
-                rk.verify(&full_sighash, &sig)
-                    .expect("elided-request signature must match the full-request sighash");
-                verified += 1;
-            }
-        }
-        assert!(verified > 0, "the Orchard spend must be authorized");
-
-        // The self-contained response postflights directly against the elided
-        // request (the ordinary single-transaction path in rust_c).
-        crate::ensure_owned_supported_shielded_actions_are_signed(
-            &crate::pczt::test_support::Nu6_3Network,
-            &elided_bytes,
-            &signed,
-            &sample.seed_fingerprint,
-            0,
-        )
-        .expect("postflight must confirm the signature on the response");
-    }
-
     // End-to-end: an Orchard->Ironwood migration signs the Orchard spend and leaves the
     // output-only Ironwood bundle unsigned.
     #[cfg(zcash_unstable = "nu6.3")]
@@ -874,19 +552,22 @@ mod tests {
         let base_sighash = RoleSigner::new(pczt.clone())
             .expect("Ironwood PCZT signer should initialize")
             .shielded_sighash();
-        let updated_anchor = orchard::Anchor::from_bytes([6u8; 32]).unwrap();
-        let updated_anchor_pczt = Updater::new(pczt.clone())
-            .set_v6_ironwood_anchor(updated_anchor)
-            .expect("v6 Ironwood anchor should be replaceable before proving")
+        // Mirror the wallet's batch redaction: clearing the anchor rebuilds the
+        // anchor-elided request the wallet sends for batch children, with the
+        // full-anchor PCZT as its own oracle. The v6 Ironwood sighash does not
+        // commit the anchor, so the elided form must leave the shielded sighash
+        // unchanged; a client-provided anchor may equally stay on the wire.
+        let cleared_anchor_pczt = Redactor::new(pczt.clone())
+            .redact_ironwood_with(|mut r| r.clear_anchor())
             .finish();
         assert_ne!(
             pczt.ironwood().anchor(),
-            updated_anchor_pczt.ironwood().anchor()
+            cleared_anchor_pczt.ironwood().anchor()
         );
         assert_eq!(
             base_sighash,
-            RoleSigner::new(updated_anchor_pczt)
-                .expect("anchor-updated Ironwood PCZT signer should initialize")
+            RoleSigner::new(cleared_anchor_pczt)
+                .expect("anchor-cleared Ironwood PCZT signer should initialize")
                 .shielded_sighash(),
             "v6 Ironwood spend signatures must not commit to the anchor"
         );
@@ -912,9 +593,7 @@ mod tests {
             if let Some(sig) = action.spend().spend_auth_sig() {
                 let rk = orchard::primitives::redpallas::VerificationKey::<
                     orchard::primitives::redpallas::SpendAuth,
-                >::try_from(
-                    (*action.spend().rk()).expect("signed response keeps rk"),
-                )
+                >::try_from(*action.spend().rk())
                 .expect("Ironwood randomized validating key must parse");
                 let sig: orchard::primitives::redpallas::Signature<
                     orchard::primitives::redpallas::SpendAuth,
@@ -1085,13 +764,12 @@ mod legacy_tests {
             BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
-            [0; 32],
-            [0; 32],
+            None,
+            None,
         )
         .unwrap()
-        .with_ironwood_anchor([1; 32])
-        .unwrap()
-        .build();
+        .build()
+        .unwrap();
 
         let result = sign_pczt(pczt, &[7u8; 32]);
 

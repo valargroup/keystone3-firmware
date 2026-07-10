@@ -102,7 +102,7 @@ pub(crate) fn format_zec_value(value: f64) -> String {
 /// `pool` only selects the note-encryption domain — `OrchardDomain` for Orchard,
 /// `IronwoodDomain` for Ironwood. The recovery logic is identical for both, so
 /// the body is written once in the `decode_with_domain!` macro and instantiated
-/// per domain; this is why the diff looks larger than a plain "match on pool".
+/// per domain.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn decode_output_enc_ciphertext(
     action: &orchard::pczt::Action,
@@ -282,6 +282,8 @@ pub(crate) fn parse_pczt_cypherpunk_with_checked_shielded<P: consensus::Paramete
     assemble_parsed_pczt(pczt, parsed_transparent, parsed_orchard, parsed_ironwood)
 }
 
+/// Assembles the per-pool parse results into the final [`ParsedPczt`],
+/// computing the transfer, change, and fee totals.
 #[cfg(feature = "cypherpunk")]
 fn assemble_parsed_pczt(
     pczt: &Pczt,
@@ -692,6 +694,10 @@ pub(crate) fn validate_orchard_user_address<P: consensus::Parameters>(
     Ok(())
 }
 
+/// Decodes one action's output into its [`ParsedTo`] display row, trying the
+/// wallet OVKs and then direct decryption. Enforces the recoverability
+/// contract: a non-zero output that no key can decrypt is rejected as
+/// "undecryptable" instead of being skipped.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn parse_orchard_output<P: consensus::Parameters>(
     params: &P,
@@ -860,13 +866,12 @@ mod legacy_tests {
             BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
-            [0; 32],
-            [0; 32],
+            None,
+            None,
         )
         .unwrap()
-        .with_ironwood_anchor([1; 32])
-        .unwrap()
-        .build();
+        .build()
+        .unwrap();
 
         let result = parse_pczt_multi_coins(&MainNetwork, &[7u8; 32], &pczt);
 

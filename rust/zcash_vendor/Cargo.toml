@@ -48,13 +48,13 @@ serde_with = { version = "3.11.0", features = [
     "alloc",
     "macros",
 ], default-features = false }
-transparent = { package = "zcash_transparent", version = "0.8", default-features = false, features = [
+transparent = { package = "zcash_transparent", version = "0.9.0-pre.0", default-features = false, features = [
     "transparent-inputs",
 ] }
-zcash_address = { version = "0.12", default-features = false }
+zcash_address = { version = "0.13.0-pre.0", default-features = false }
 zcash_encoding = { version = "0.4", default-features = false }
-zcash_keys = { version = "0.14", default-features = false }
-zcash_protocol = { version = "0.9", default-features = false }
+zcash_keys = { version = "0.15.0-pre.0", default-features = false }
+zcash_protocol = { version = "0.10.0-pre.0", default-features = false }
 zip32 = { version = "0.2", default-features = false }
 rust_tools = { workspace = true }
 #zcash end
@@ -65,7 +65,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [dev-dependencies]
-transparent = { package = "zcash_transparent", version = "0.8", default-features = false, features = [
+transparent = { package = "zcash_transparent", version = "0.9.0-pre.0", default-features = false, features = [
     "transparent-inputs",
     "test-dependencies",
 ] }
