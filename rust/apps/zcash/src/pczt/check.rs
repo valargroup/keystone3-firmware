@@ -114,6 +114,7 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
 ) -> Result<CheckedShieldedParse, ZcashError> {
     super::validate_supported_pczt(pczt)?;
     let mut parsed_orchard = None;
+    #[cfg(zcash_unstable = "nu6.3")]
     let mut parsed_ironwood = None;
     #[cfg(zcash_unstable = "nu6.3")]
     let should_process_ironwood = super::pczt_should_process_ironwood(pczt);
@@ -150,6 +151,9 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
             })
             .map_err(map_orchard_verifier_error)?;
     }
+
+    #[cfg(not(zcash_unstable = "nu6.3"))]
+    let parsed_ironwood = None;
 
     Ok(CheckedShieldedParse {
         orchard: parsed_orchard,
@@ -400,9 +404,9 @@ fn check_shielded_bundle<P: consensus::Parameters>(
 /// per-action validation but also decodes each action into a [`ParsedOrchard`]
 /// display row. Returns `Ok(None)` when the bundle has nothing to show the user
 /// (all dummies), `Ok(Some(_))` otherwise. `check_shielded_bundle` stays as the
-/// check-only variant for paths that don't need display data; keep the two in
-/// sync. (GitHub renders these two similar functions as one mangled diff — they
-/// are separate: check-only vs check+parse.)
+/// check-only variant for paths that don't need display data; the per-action
+/// validation here must match [`check_action`]'s canonical sequence (cv_net,
+/// then spend, then output).
 #[cfg(feature = "cypherpunk")]
 fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
     params: &P,
@@ -568,18 +572,14 @@ fn check_action_output<P: consensus::Parameters>(
         .map_err(|e| ZcashError::InvalidPczt(format!("invalid {pool_label} action cmx: {e:?}")))?;
 
     // Delegate the rest of output validation to `parse_orchard_output`, the
-    // single routine the parse/display path already uses, so this check path can
-    // never be weaker than it. The bespoke loop that used to live here tried only
-    // the wallet OVKs and *silently accepted* any output that no OVK could
-    // decrypt, skipping the direct-decryption "every non-zero output must be
-    // device-visible" requirement `parse_orchard_output` enforces (it returns
-    // `enc_ciphertext ... is undecryptable` for a non-zero output no key can
-    // recover). The Zcash migration-summary review reaches outputs through here
-    // (`check_pczt_orchard` -> `check_action_output`) instead of the parse path,
-    // so that gap let a malicious host arm the reviewed-batch fingerprint for a
-    // migration whose Ironwood output is committed to a wallet address but whose
-    // ciphertext the wallet can never rescan. The recovered display value is
-    // discarded here; this function only validates.
+    // single routine the parse/display path already uses (see its doc for the
+    // recoverability contract), so this check path can never be weaker than it.
+    // The bespoke loop that used to live here tried only the wallet OVKs and
+    // *silently accepted* any output no key could decrypt, so a check-only
+    // review (`check_pczt_orchard` -> here) approved migrations whose Ironwood
+    // output is committed to a wallet address but whose ciphertext the wallet
+    // can never rescan. The recovered display value is discarded here; this
+    // function only validates.
     super::parse::parse_orchard_output(params, ufvk, action, pool)?;
 
     Ok(())
