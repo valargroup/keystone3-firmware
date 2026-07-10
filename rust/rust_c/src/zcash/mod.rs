@@ -383,7 +383,7 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
     }
 
     // Decide the display exactly as the old parse-side aggregate did: a
-    // multi-message batch whose messages[1..] are all summarizable migration
+    // multi-PCZT batch whose entries[1..] are all summarizable migration
     // children shows message 0 (the split tx, full per-output review) plus ONE
     // aggregate migration summary; otherwise it shows one row per message.
     // Message 0 is never summarized (its child summary is collected but ignored).
@@ -418,7 +418,7 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
     TransactionCheckResult::new().c_ptr()
 }
 
-/// Folds messages[1..]'s migration child summaries into one aggregate and returns
+/// Folds entries[1..]'s migration child summaries into one aggregate and returns
 /// its display rows, or `None` when this is not a split-plus-migrations batch:
 /// fewer than two messages, any child that was not a summarizable migration, or
 /// an arithmetic overflow while folding. These are exactly the conditions under

@@ -106,8 +106,14 @@ pub(crate) struct SweptAction {
     pub(crate) output_recipient_owned: Option<bool>,
 }
 
-/// Validates the supported shielded bundles and collects their display rows.
-/// Returns the collected Orchard and Ironwood rows together with the PCZT.
+/// Validates shielded actions and records their [`ParsedOrchard`] display rows
+/// and [`SweptAction`] facts in one Verifier pass. The result feeds
+/// [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`] and the batch policy
+/// and summary assembly.
+///
+/// The caller supplies the batch's [`WalletOrchardKeys`] and must run
+/// `validate_supported_pczt` first to preserve validation ordering. The
+/// Verifier-owned PCZT is returned with the sweep result for later checks.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
     params: &P,

@@ -278,7 +278,8 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     pczt::parse::parse_pczt_cypherpunk(params, seed_fingerprint, &ufvk, &pczt)
 }
 
-/// Per-batch context for checks shared across every message.
+/// Caches the decoded UFVK and wallet Orchard keys shared by every PCZT in a batch.
+/// Values are initialized lazily to preserve validation ordering.
 #[cfg(feature = "cypherpunk")]
 pub struct BatchCheckContext<'a> {
     ufvk_text: &'a str,
@@ -370,11 +371,7 @@ fn check_and_parse_batch_pczt_internal<P: consensus::Parameters>(
         &pczt,
         false,
     )?;
-    // The batch shape policy and the signable-action decision run on the
-    // sweep's recorded rows instead of re-parsing the wire bundles the way
-    // `signable_shielded_actions` does (each re-parse re-validated every
-    // dummy_sk padding spend); the policy checks and their ordering are
-    // unchanged.
+    // Apply the batch shape and signable-action policy to the validation sweep's rows.
     reject_unsupported_batch_pczt(&pczt)?;
     let signable_actions = signable_actions_from_swept(
         params,
@@ -2422,10 +2419,7 @@ mod tests {
 
         let sample = pczt::test_support::sample_migration_pczt();
 
-        // The non-zero Ironwood output's ciphertext, as it appears on the wire.
-        // The mega base wraps it in `EncCiphertext`; the raw sample carries the
-        // full `Encrypted` variant (compaction is applied explicitly elsewhere),
-        // so pull the verbatim bytes out of it.
+        // Extract the non-zero Ironwood output's ciphertext bytes.
         let enc_ciphertext = {
             let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT should parse");
             pczt.ironwood()
