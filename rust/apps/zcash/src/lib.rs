@@ -259,13 +259,7 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     pczt::parse::parse_pczt_cypherpunk(params, seed_fingerprint, &ufvk, &pczt)
 }
 
-/// Checks a batch PCZT with the selected account and returns the display data
-/// from the same single-pass Verifier sweep that validates it.
-///
-/// The check-and-parse twin of [`preflight_batch_pczt_cypherpunk`]: the preflight
-/// returns normalized bytes, while this returns [`ParsedPczt`] display rows.
-/// Both follow the normalization contract documented by `check_pczt_cypherpunk`.
-/// This helper is not wired to the FFI.
+/// Validates a batch PCZT for the selected account and returns its display data.
 #[cfg(feature = "cypherpunk")]
 pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,

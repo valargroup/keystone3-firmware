@@ -99,10 +99,7 @@ fn format_zec_value(value: f64) -> String {
 /// - `Err(_)` if `ovk` is `None` and the PCZT is missing fields needed to directly
 ///   decrypt the output.
 ///
-/// `pool` only selects the note-encryption domain — `OrchardDomain` for Orchard,
-/// `IronwoodDomain` for Ironwood. The recovery logic is identical for both, so
-/// the body is written once in the `decode_with_domain!` macro and instantiated
-/// per domain.
+/// `pool` selects the note-encryption domain used for recovery.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn decode_output_enc_ciphertext(
     action: &orchard::pczt::Action,
@@ -246,9 +243,8 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     assemble_parsed_pczt(pczt, parsed_transparent, parsed_orchard, parsed_ironwood)
 }
 
-/// Assembles a parse from shielded display data produced by
-/// [`super::check::check_and_parse_pczt_shielded`], adding the transparent
-/// bundle and final totals.
+/// Parses the transparent bundle and combines it with the supplied shielded
+/// display rows.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn parse_pczt_cypherpunk_with_checked_shielded<P: consensus::Parameters>(
     params: &P,

@@ -81,22 +81,16 @@ pub fn check_pczt_orchard<P: consensus::Parameters>(
     Ok(())
 }
 
-/// Shielded display data (`orchard` / `ironwood`) collected during validation.
-/// Populated by [`check_and_parse_pczt_shielded`] and consumed by
-/// [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`]. `None` for a
-/// pool means it contains no displayable actions (e.g. an all-dummy bundle).
+/// Orchard and Ironwood display rows collected during shielded validation.
+/// A pool is `None` when it contains no displayable actions.
 #[cfg(feature = "cypherpunk")]
 pub(crate) struct CheckedShieldedParse {
     pub(crate) orchard: Option<ParsedOrchard>,
     pub(crate) ironwood: Option<ParsedOrchard>,
 }
 
-/// Validates shielded actions and records their [`ParsedOrchard`] display rows
-/// in one Verifier pass. The result feeds
-/// [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`] for transparent
-/// bundle and totals assembly. Used by the batch review path
-/// (`check_and_parse_batch_pczt_cypherpunk`). The Verifier-owned PCZT is
-/// returned with the display rows for reuse by later checks.
+/// Validates the supported shielded bundles and collects their display rows.
+/// Returns the collected Orchard and Ironwood rows together with the PCZT.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
     params: &P,
@@ -395,13 +389,8 @@ fn check_shielded_bundle<P: consensus::Parameters>(
     }
 }
 
-/// The check-and-parse twin of [`check_shielded_bundle`]: it runs the same
-/// per-action validation but also decodes each action into a [`ParsedOrchard`]
-/// display row. Returns `Ok(None)` when the bundle has nothing to show the user
-/// (all dummies), `Ok(Some(_))` otherwise. `check_shielded_bundle` stays as the
-/// check-only variant for paths that don't need display data; the per-action
-/// validation here must match [`check_action`]'s canonical sequence (cv_net,
-/// then spend, then output).
+/// Validates a shielded bundle while collecting its non-dummy display rows.
+/// Returns `None` when the bundle contains no displayable actions.
 #[cfg(feature = "cypherpunk")]
 fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
     params: &P,
