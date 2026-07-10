@@ -83,7 +83,9 @@ pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
     let signer = pczt_ext::sign_transparent(signer, &SeedSigner { seed })
         .map_err(|e| ZcashError::SigningError(e.to_string()))?;
 
-    Ok(stamp_and_redact(signer.finish()).serialize())
+    stamp_and_redact(signer.finish())
+        .serialize()
+        .map_err(|e| ZcashError::SigningError(format!("serialize signed PCZT: {e:?}")))
 }
 
 #[cfg(not(feature = "cypherpunk"))]
@@ -112,11 +114,6 @@ struct SeedSigner<'a> {
     seed: &'a [u8],
     seed_fingerprint: [u8; 32],
     pool: ShieldedPool,
-    /// Batch mode restricts signing to a single account. `Some(account)`
-    /// (`for_batch_account`): only spends tagged for that account are signed;
-    /// spends tagged for a different account of the same seed are refused. `None`
-    /// (`new`): ordinary signing — any account derivable from the seed.
-    selected_account: Option<zcash_vendor::zip32::AccountId>,
     /// Per-account spend authorizing key cache. The seed fingerprint and the account
     /// key depend only on (seed, account), not on the action, so a bundle with many
     /// actions for one account derives once. Interior mutability because the
@@ -139,23 +136,6 @@ impl<'a> SeedSigner<'a> {
             seed,
             seed_fingerprint,
             pool,
-            selected_account: None,
-            ask_cache: RefCell::new(Vec::new()),
-            signed: Cell::new(0),
-        }
-    }
-
-    fn for_batch_account(
-        seed: &'a [u8],
-        seed_fingerprint: [u8; 32],
-        pool: ShieldedPool,
-        selected_account: zcash_vendor::zip32::AccountId,
-    ) -> Self {
-        Self {
-            seed,
-            seed_fingerprint,
-            pool,
-            selected_account: Some(selected_account),
             ask_cache: RefCell::new(Vec::new()),
             signed: Cell::new(0),
         }
@@ -236,19 +216,9 @@ impl PcztSigner for SeedSigner<'_> {
                 }
             }
         }
-        let Some(value) = action.spend().value() else {
-            return if self.selected_account.is_some() {
-                Err(ZcashError::InvalidPczt(format!(
-                    "missing {pool_label} spend value"
-                )))
-            } else {
-                Ok(())
-            };
-        };
-        // Ownership decides signing, never the value: post-NU6.3 restricted bundles
-        // pair each change output with a fabricated wallet-controlled zero-value spend
-        // that must be signed by the account spend authorizing key (see
-        // pczt_ext::sign_orchard_action: we "must NOT pre-filter by value").
+        if action.spend().value().is_none() {
+            return Ok(());
+        }
         let Some(account_index) = super::matching_seed_supported_orchard_account(
             &self.seed_fingerprint,
             action.spend().zip32_derivation().as_ref(),
@@ -256,21 +226,9 @@ impl PcztSigner for SeedSigner<'_> {
             self.pool,
         )?
         else {
-            // Not derivable from this seed. Ordinary PCZT signing ignores it. A
-            // reviewed batch tolerates untagged zero-value spends (IO Finalizer-signed
-            // dummies whose signatures the wallet strips for the QR round trip) but
-            // must otherwise contain only selected-account spends.
-            return if self.selected_account.is_some() && value.inner() != 0 {
-                Err(ZcashError::PcztNoMyInputs)
-            } else {
-                Ok(())
-            };
+            // Not derivable from this seed; not ours to sign.
+            return Ok(());
         };
-        if let Some(selected_account) = self.selected_account {
-            if account_index != selected_account {
-                return Err(ZcashError::PcztNoMyInputs);
-            }
-        }
 
         let ask = self.spend_authorizing_key(account_index)?;
         action
@@ -287,68 +245,32 @@ impl PcztSigner for SeedSigner<'_> {
     }
 }
 
-// Ordinary and batch signing share one core, `sign_pczt_with_seed_fingerprint_inner`,
-// which threads an optional selected account (None = ordinary, Some = batch/restricted).
-// The three wrappers exist so callers can enter at the right level:
-//   sign_pczt                          -> public ordinary entry; computes the seed fingerprint
-//   sign_pczt_with_seed_fingerprint    -> ordinary, fingerprint already known (avoids recomputing)
-//   sign_batch_pczt_with_seed_fingerprint -> batch; restricts signing to `account_index`
-// The batch path already holds the fingerprint (validated during review), so it skips recomputing it.
-
-/// Public ordinary (non-batch) signing entry: signs every action derivable from
-/// the seed. Computes the seed fingerprint, then delegates to the shared core.
+/// Signs `pczt` and serializes the stamped, redacted response.
+///
+/// Thin wrapper over `sign_and_redact_pczt`; see it for the full contract.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
+    sign_and_redact_pczt(pczt, seed)?
+        .serialize()
+        .map_err(|e| ZcashError::SigningError(format!("serialize signed PCZT: {e:?}")))
+}
+
+/// `sign_pczt`, but returns the stamped, redacted PCZT without serializing it,
+/// so callers that still need the parsed value (in-memory post-sign
+/// verification) avoid a byte round trip.
+#[cfg(feature = "cypherpunk")]
+pub fn sign_and_redact_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Pczt> {
+    super::validate_supported_pczt(&pczt)?;
+
     let seed_fingerprint =
         calculate_seed_fingerprint(seed).map_err(|e| ZcashError::SigningError(e.to_string()))?;
-
-    sign_pczt_with_seed_fingerprint(pczt, seed, seed_fingerprint)
-}
-
-/// Ordinary signing with a precomputed seed fingerprint (no account restriction).
-#[cfg(feature = "cypherpunk")]
-pub(crate) fn sign_pczt_with_seed_fingerprint(
-    pczt: Pczt,
-    seed: &[u8],
-    seed_fingerprint: [u8; 32],
-) -> crate::Result<Vec<u8>> {
-    sign_pczt_with_seed_fingerprint_inner(pczt, seed, seed_fingerprint, None)
-}
-
-/// Batch signing: restricts signing to `account_index` (the device-selected
-/// account); spends tagged for another account of the same seed are refused.
-#[cfg(feature = "cypherpunk")]
-pub(crate) fn sign_batch_pczt_with_seed_fingerprint(
-    pczt: Pczt,
-    seed: &[u8],
-    seed_fingerprint: [u8; 32],
-    account_index: zcash_vendor::zip32::AccountId,
-) -> crate::Result<Vec<u8>> {
-    sign_pczt_with_seed_fingerprint_inner(pczt, seed, seed_fingerprint, Some(account_index))
-}
-
-/// Shared signing core for both ordinary and batch paths. `selected_account`
-/// distinguishes them: `None` signs any of the seed's accounts, `Some` restricts
-/// to that one.
-#[cfg(feature = "cypherpunk")]
-fn sign_pczt_with_seed_fingerprint_inner(
-    pczt: Pczt,
-    seed: &[u8],
-    seed_fingerprint: [u8; 32],
-    selected_account: Option<zcash_vendor::zip32::AccountId>,
-) -> crate::Result<Vec<u8>> {
-    super::validate_supported_pczt(&pczt)?;
 
     #[cfg(zcash_unstable = "nu6.3")]
     let process_ironwood = super::pczt_should_process_ironwood(&pczt);
 
     // The orchard signer handles both the transparent inputs and the Orchard bundle
     // (the pool only changes error labels for shielded actions). Ironwood gets its own.
-    let orchard_signer = if let Some(account_index) = selected_account {
-        SeedSigner::for_batch_account(seed, seed_fingerprint, ShieldedPool::Orchard, account_index)
-    } else {
-        SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Orchard)
-    };
+    let orchard_signer = SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Orchard);
 
     // Propagate the signer error directly (it is already a ZcashError): the strict
     // validation in SeedSigner::sign_orchard returns ZcashError::InvalidPczt for bad
@@ -358,16 +280,7 @@ fn sign_pczt_with_seed_fingerprint_inner(
     let signer = pczt_ext::sign_orchard(signer, &orchard_signer)?;
 
     #[cfg(zcash_unstable = "nu6.3")]
-    let ironwood_signer = if let Some(account_index) = selected_account {
-        SeedSigner::for_batch_account(
-            seed,
-            seed_fingerprint,
-            ShieldedPool::Ironwood,
-            account_index,
-        )
-    } else {
-        SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Ironwood)
-    };
+    let ironwood_signer = SeedSigner::new(seed, seed_fingerprint, ShieldedPool::Ironwood);
     #[cfg(zcash_unstable = "nu6.3")]
     let signer = if process_ironwood {
         pczt_ext::sign_ironwood(signer, &ironwood_signer)?
@@ -384,7 +297,7 @@ fn sign_pczt_with_seed_fingerprint_inner(
         return Err(ZcashError::PcztNoMyInputs);
     }
 
-    Ok(stamp_and_redact(signer.finish()).serialize())
+    Ok(stamp_and_redact(signer.finish()))
 }
 
 fn stamp_and_redact(pczt: Pczt) -> Pczt {
@@ -523,6 +436,7 @@ mod tests {
     use super::*;
     // RoleSigner is the upstream reference signer; tests use its sighash as the
     // bit-exact oracle for the lean pczt_ext::shielded_sig_commitment.
+    use zcash_vendor::pczt::roles::redactor::Redactor;
     use zcash_vendor::pczt::roles::signer::Signer as RoleSigner;
 
     fn assert_invalid_pczt_message<T: core::fmt::Debug>(result: crate::Result<T>, expected: &str) {
@@ -638,19 +552,22 @@ mod tests {
         let base_sighash = RoleSigner::new(pczt.clone())
             .expect("Ironwood PCZT signer should initialize")
             .shielded_sighash();
-        let updated_anchor = orchard::Anchor::from_bytes([6u8; 32]).unwrap();
-        let updated_anchor_pczt = Updater::new(pczt.clone())
-            .set_v6_ironwood_anchor(updated_anchor)
-            .expect("v6 Ironwood anchor should be replaceable before proving")
+        // Mirror the wallet's batch redaction: clearing the anchor rebuilds the
+        // anchor-elided request the wallet sends for batch children, with the
+        // full-anchor PCZT as its own oracle. The v6 Ironwood sighash does not
+        // commit the anchor, so the elided form must leave the shielded sighash
+        // unchanged; a client-provided anchor may equally stay on the wire.
+        let cleared_anchor_pczt = Redactor::new(pczt.clone())
+            .redact_ironwood_with(|mut r| r.clear_anchor())
             .finish();
         assert_ne!(
             pczt.ironwood().anchor(),
-            updated_anchor_pczt.ironwood().anchor()
+            cleared_anchor_pczt.ironwood().anchor()
         );
         assert_eq!(
             base_sighash,
-            RoleSigner::new(updated_anchor_pczt)
-                .expect("anchor-updated Ironwood PCZT signer should initialize")
+            RoleSigner::new(cleared_anchor_pczt)
+                .expect("anchor-cleared Ironwood PCZT signer should initialize")
                 .shielded_sighash(),
             "v6 Ironwood spend signatures must not commit to the anchor"
         );
@@ -843,15 +760,16 @@ mod legacy_tests {
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn legacy_signing_rejects_v6_pczt() {
-        let pczt = Creator::new_v6(
+        let pczt = Creator::new(
             BranchId::Nu6_3.into(),
             10,
             MainNetwork.coin_type(),
-            [0; 32],
-            [0; 32],
-            [1; 32],
+            None,
+            None,
         )
-        .build();
+        .unwrap()
+        .build()
+        .unwrap();
 
         let result = sign_pczt(pczt, &[7u8; 32]);
 

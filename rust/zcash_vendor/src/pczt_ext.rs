@@ -188,16 +188,41 @@ fn hash_transparent_tx_id(t_digests: Option<TransparentDigests>) -> Hash {
     h.finalize()
 }
 
-/// Byte layout of a Sapling/Orchard `enc_ciphertext` as the ZIP-244 digests
-/// consume it: the first [`ENC_CIPHERTEXT_COMPACT_LEN`] bytes are the compact
-/// note ciphertext (the `*CHash` digests), bytes up to
-/// [`ENC_CIPHERTEXT_MEMO_END`] are the encrypted memo (the `*MHash` digests),
-/// and the remainder is hashed with the non-compact fields. Any signing
-/// precondition that keeps these slices panic-free must use the same
-/// constants (see `app_zcash`'s `require_signature_hash_fields`).
+/// Orchard/Ironwood note ciphertext length; the ZIP-244 action digests slice it as
+/// 52 (compact) | 512 (memo) | 16 (non-compact).
+const ORCHARD_ENC_CIPHERTEXT_SIZE: usize = 580;
+
+/// Byte layout of a Sapling/Orchard `enc_ciphertext` as the ZIP-244 digests consume it:
+/// the first [`ENC_CIPHERTEXT_COMPACT_LEN`] bytes are the compact note ciphertext (the
+/// `*CHash` digests), bytes up to [`ENC_CIPHERTEXT_MEMO_END`] are the encrypted memo (the
+/// `*MHash` digests), and the remainder is hashed with the non-compact fields. For
+/// Orchard/Ironwood, `action_enc_ciphertext` returns a buffer of exactly
+/// [`ORCHARD_ENC_CIPHERTEXT_SIZE`] bytes, so slicing at these boundaries never panics;
+/// `pub` so signing preconditions elsewhere can reference the same constants.
 pub const ENC_CIPHERTEXT_COMPACT_LEN: usize = 52;
 /// See [`ENC_CIPHERTEXT_COMPACT_LEN`]: 52 compact bytes + 512 memo bytes.
 pub const ENC_CIPHERTEXT_MEMO_END: usize = ENC_CIPHERTEXT_COMPACT_LEN + 512;
+
+/// The action's value-commitment bytes for the sighash. `cv_net` is `Option` in the v2
+/// PCZT wire model; the checked-PCZT preflight resolves it and `check::verify_cv_net`
+/// rejects any still-missing value before signing, so it is always present here. The zero
+/// fallback only keeps this infallible digest panic-free — a malformed PCZT then yields a
+/// non-matching sighash (an invalid signature), never a silent-but-valid one.
+fn action_cv_net(action: &pczt::orchard::Action) -> &[u8; 32] {
+    static ZERO: [u8; 32] = [0; 32];
+    action.cv_net().as_ref().unwrap_or(&ZERO)
+}
+
+/// The output's encrypted note ciphertext for the sighash. `resolve_fields` restores the
+/// full ciphertext from a memo-plaintext-only (`EncCiphertext::MemoPlaintext`) output; see
+/// [`action_cv_net`] for why the zero fallback is unreachable in the signing path.
+fn action_enc_ciphertext(output: &pczt::orchard::Output) -> &[u8] {
+    static ZERO: [u8; ORCHARD_ENC_CIPHERTEXT_SIZE] = [0; ORCHARD_ENC_CIPHERTEXT_SIZE];
+    match output.enc_ciphertext() {
+        pczt::orchard::EncCiphertext::Encrypted(c) if c.len() == ORCHARD_ENC_CIPHERTEXT_SIZE => c,
+        _ => &ZERO,
+    }
+}
 
 fn digest_orchard(pczt: &Pczt) -> Hash {
     let mut h = hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION);
@@ -207,7 +232,7 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
     let mut nh = hasher(ZCASH_ORCHARD_ACTIONS_NONCOMPACT_HASH_PERSONALIZATION);
 
     for action in pczt.orchard().actions().iter() {
-        let enc_ciphertext = action.output().enc_ciphertext();
+        let enc_ciphertext = action_enc_ciphertext(action.output());
 
         ch.update(action.spend().nullifier());
         ch.update(action.output().cmx());
@@ -216,7 +241,7 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
 
         mh.update(&enc_ciphertext[ENC_CIPHERTEXT_COMPACT_LEN..ENC_CIPHERTEXT_MEMO_END]);
 
-        nh.update(action.cv_net());
+        nh.update(action_cv_net(action));
         nh.update(action.spend().rk());
         nh.update(&enc_ciphertext[ENC_CIPHERTEXT_MEMO_END..]);
         nh.update(action.output().out_ciphertext());
@@ -234,7 +259,9 @@ fn digest_orchard(pczt: &Pczt) -> Hash {
     };
     h.update(&value_balance.to_le_bytes());
 
-    h.update(pczt.orchard().anchor());
+    // v5 commits the anchor (v6 omits it). Present for well-formed v5 bundles; the empty
+    // fallback keeps this infallible — see `action_cv_net`.
+    h.update(pczt.orchard().anchor().as_ref().unwrap_or(&[0u8; 32]));
 
     h.finalize()
 }
@@ -249,7 +276,7 @@ fn hash_sapling_spends(pczt: &Pczt) -> Hash {
             ch.update(s_spend.nullifier());
 
             nh.update(s_spend.cv());
-            nh.update(pczt.sapling().anchor());
+            nh.update(pczt.sapling().anchor().as_ref().unwrap_or(&[0u8; 32]));
             nh.update(s_spend.rk());
         }
 
@@ -364,7 +391,7 @@ fn digest_orchard_shaped_v6(
     let mut nh = hasher(noncompact_personalization);
 
     for action in bundle.actions().iter() {
-        let enc_ciphertext = action.output().enc_ciphertext();
+        let enc_ciphertext = action_enc_ciphertext(action.output());
 
         ch.update(action.spend().nullifier());
         ch.update(action.output().cmx());
@@ -373,7 +400,7 @@ fn digest_orchard_shaped_v6(
 
         mh.update(&enc_ciphertext[ENC_CIPHERTEXT_COMPACT_LEN..ENC_CIPHERTEXT_MEMO_END]);
 
-        nh.update(action.cv_net());
+        nh.update(action_cv_net(action));
         nh.update(action.spend().rk());
         nh.update(&enc_ciphertext[ENC_CIPHERTEXT_MEMO_END..]);
         nh.update(action.output().out_ciphertext());
@@ -623,7 +650,7 @@ where
 pub fn sign_orchard<T>(llsigner: Signer, signer: &T) -> Result<Signer, T::Error>
 where
     T: PcztSigner,
-    T::Error: From<pczt::orchard::BundleParseError>,
+    T::Error: From<pczt::roles::low_level_signer::OrchardParseError>,
     T::Error: From<orchard::pczt::ParseError>,
     T::Error: From<transparent::pczt::ParseError>,
 {
@@ -682,7 +709,7 @@ where
 pub fn sign_ironwood<T>(llsigner: Signer, signer: &T) -> Result<Signer, T::Error>
 where
     T: PcztSigner,
-    T::Error: From<pczt::orchard::BundleParseError>,
+    T::Error: From<pczt::roles::low_level_signer::OrchardParseError>,
     T::Error: From<orchard::pczt::ParseError>,
     T::Error: From<transparent::pczt::ParseError>,
 {

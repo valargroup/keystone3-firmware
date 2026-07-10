@@ -109,10 +109,6 @@ cipher = { version = "0.4.4", default-features = false, features = [
 ] }
 lazy_static = "1.4.0"
 ref-cast = "1.0.16"
-spin = { version = "0.9.8", default-features = false, features = [
-    "mutex",
-    "spin_mutex",
-] }
 tendermint-proto = "0.32"
 prost = { version = "0.11", default-features = false }
 prost-types = { version = "0.11", default-features = false }
@@ -126,12 +122,14 @@ zeroize = { version = "1.8.2", default-features = false }
 # third party dependencies end
 
 [patch.crates-io]
-pczt = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-zcash_address = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-zcash_encoding = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-zcash_keys = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-zcash_primitives = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-zcash_protocol = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-zcash_transparent = { git = "https://github.com/valargroup/librustzcash", rev = "644b1ecf4679e17a9166782f57a795a4f4194d5e" }
-# Use the SDK rev with the compact Zcash signature result registry type until it is published as a crate.
-ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "97c1a5d5df5fb457a169cd66e0f91e40acb18c64" }
+pczt = { git = "https://github.com/zakura-core/librustzcash", rev = "01e3dfe946ff3e01acfaa33cd4d19e0b7a85f095" }
+zcash_address = { git = "https://github.com/zakura-core/librustzcash", rev = "01e3dfe946ff3e01acfaa33cd4d19e0b7a85f095" }
+zcash_encoding = { git = "https://github.com/zakura-core/librustzcash", rev = "01e3dfe946ff3e01acfaa33cd4d19e0b7a85f095" }
+zcash_keys = { git = "https://github.com/zakura-core/librustzcash", rev = "01e3dfe946ff3e01acfaa33cd4d19e0b7a85f095" }
+zcash_primitives = { git = "https://github.com/zakura-core/librustzcash", rev = "01e3dfe946ff3e01acfaa33cd4d19e0b7a85f095" }
+zcash_protocol = { git = "https://github.com/zakura-core/librustzcash", rev = "01e3dfe946ff3e01acfaa33cd4d19e0b7a85f095" }
+zcash_transparent = { git = "https://github.com/zakura-core/librustzcash", rev = "01e3dfe946ff3e01acfaa33cd4d19e0b7a85f095" }
+# Keep `orchard` aligned with the pinned PCZT/librustzcash revision.
+orchard = { git = "https://github.com/zcash/orchard", rev = "475ef0ff77d45aebff93cb039d639250d82518a3" }
+# Use the SDK rev that treats the PCZT-owned Postcard messages as opaque UR payloads until it is published as a crate.
+ur-registry = { git = "https://github.com/valargroup/keystone-sdk-rust.git", rev = "664c855cf7399269ddd8bb69f085565f6286326b" }

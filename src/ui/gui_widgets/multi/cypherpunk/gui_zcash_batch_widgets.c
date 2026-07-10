@@ -24,7 +24,6 @@
 
 static URParseResult *g_urResult = NULL;
 static URParseMultiResult *g_urMultiResult = NULL;
-static bool g_preserveInputForSigning = false;
 static bool g_isMulti = false;
 
 static uint32_t g_currentTxIndex = 0;
@@ -33,6 +32,11 @@ static uint32_t g_txCount = 0;
 static TransactionParseResult_DisplayZcashBatch *g_parseResult = NULL;
 static DisplayZcashBatch *g_displayZcashBatch = NULL;
 static DisplayPczt *g_currentTransaction = NULL;
+static ZcashCheckedPczt *g_checkedBatch = NULL;
+// Holds a batch check failure message when the QR display path runs the
+// check itself (see GuiParseZcashBatchData), so the parse-fail handler can
+// surface it instead of a generic "invalid QR" window.
+static char g_batchCheckError[128] = {0};
 
 static PageWidget_t *g_pageWidget = NULL;
 static lv_obj_t *g_cont = NULL;
@@ -54,41 +58,33 @@ static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited);
 static bool IsZcashBatchUsbMode(void);
 static void RejectZcashBatchUsbRequest(void);
 static void RespondZcashBatchUsbParseError(const char *errorMessage);
-static void ReleaseZcashBatchInputData(void);
 
-static void ReleaseZcashBatchReviewData(void)
+static void FreeCheckedBatch(void)
 {
-    g_currentTransaction = NULL;
-    g_displayZcashBatch = NULL;
-
-    if (g_parseResult != NULL) {
-        free_TransactionParseResult_DisplayZcashBatch(g_parseResult);
-        g_parseResult = NULL;
+    if (g_checkedBatch != NULL) {
+        free_zcash_checked_pczt(g_checkedBatch);
+        g_checkedBatch = NULL;
     }
-}
-
-static void ReleaseZcashBatchUrData(void)
-{
-    if (g_isMulti) {
-        CHECK_FREE_UR_RESULT(g_urMultiResult, true);
-    } else {
-        CHECK_FREE_UR_RESULT(g_urResult, false);
-    }
-}
-
-static void ReleaseZcashBatchInputData(void)
-{
-    ReleaseZcashBatchReviewData();
-    ReleaseZcashBatchUrData();
 }
 
 static void ClearPageData(void)
 {
     g_currentTxIndex = 0;
     g_txCount = 0;
-    ReleaseZcashBatchReviewData();
-    if (!g_preserveInputForSigning) {
-        ReleaseZcashBatchUrData();
+    g_currentTransaction = NULL;
+    g_displayZcashBatch = NULL;
+
+    FreeCheckedBatch();
+
+    if (g_parseResult != NULL) {
+        free_TransactionParseResult_DisplayZcashBatch(g_parseResult);
+        g_parseResult = NULL;
+    }
+
+    if (g_isMulti) {
+        CHECK_FREE_UR_RESULT(g_urMultiResult, true);
+    } else {
+        CHECK_FREE_UR_RESULT(g_urResult, false);
     }
 }
 
@@ -101,25 +97,12 @@ void GuiSetZcashBatchUrData(URParseResult *urResult, URParseMultiResult *urMulti
 
 UREncodeResult *GuiGetZcashBatchSignQrCodeData(void)
 {
-    void *data = g_isMulti
-                 ? (g_urMultiResult == NULL ? NULL : g_urMultiResult->data)
-                 : (g_urResult == NULL ? NULL : g_urResult->data);
-    if (data == NULL) {
-        g_preserveInputForSigning = false;
-        ReleaseZcashBatchInputData();
-        return NULL;
-    }
-
-    UREncodeResult *result = SignZcashBatchInternal(data, false);
-    g_preserveInputForSigning = false;
-    ReleaseZcashBatchInputData();
-    return result;
+    return SignZcashBatchInternal(g_checkedBatch, false);
 }
 
 UREncodeResult *GuiGetZcashBatchSignUrDataUnlimited(void)
 {
-    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
-    return SignZcashBatchInternal(data, true);
+    return SignZcashBatchInternal(g_checkedBatch, true);
 }
 
 static bool IsZcashBatchUsbMode(void)
@@ -154,8 +137,8 @@ static UREncodeResult *SignZcashBatchInternal(void *data, bool unlimited)
     return GuiSignZcashCypherpunkWithSeed(
                data,
                unlimited,
-               sign_zcash_batch_tx_cypherpunk,
-               sign_zcash_batch_tx_cypherpunk_unlimited);
+               (ZcashCypherpunkSignFunc)sign_zcash_batch_tx_cypherpunk,
+               (ZcashCypherpunkSignFunc)sign_zcash_batch_tx_cypherpunk_unlimited);
 }
 
 #ifdef CYPHERPUNK_VERSION
@@ -167,9 +150,11 @@ PtrT_TransactionCheckResult GuiGetZcashBatchCheckResult(void)
     uint8_t accountNum = 0;
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
 
+    FreeCheckedBatch();
+
     GetExistAccountNum(&accountNum);
     if (accountNum <= 0) {
-        return check_zcash_batch_tx_cypherpunk(data, ufvk, sfp, zcashAccountIndex, true);
+        return check_zcash_batch_tx_cypherpunk(data, ufvk, sfp, zcashAccountIndex, true, &g_checkedBatch);
     }
 
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
@@ -179,7 +164,8 @@ PtrT_TransactionCheckResult GuiGetZcashBatchCheckResult(void)
                ufvk,
                sfp,
                zcashAccountIndex,
-               !IsZcashSupportedForCurrentMnemonic());
+               !IsZcashSupportedForCurrentMnemonic(),
+               &g_checkedBatch);
 }
 #endif
 
@@ -205,8 +191,6 @@ void GuiZcashBatchWidgetsVerifyPasswordSuccess(void)
         return;
     }
     uint8_t viewType = ZcashBatchTx;
-    g_preserveInputForSigning = true;
-    GuiCloseCurrentWorkingView();
     GuiFrameOpenViewWithParam(&g_transactionSignatureView, &viewType, sizeof(viewType));
 }
 
@@ -395,18 +379,38 @@ void GuiZcashBatchWidgetsRefresh(void)
 
 static void *GuiParseZcashBatchData(void)
 {
-    void *data = g_isMulti ? g_urMultiResult->data : g_urResult->data;
+    g_batchCheckError[0] = '\0';
+
+    // The QR scan path opens this view directly (gui_scan_widgets.c), bypassing
+    // the model check step that the USB path runs, so the check that
+    // populates g_checkedBatch has not run yet. g_checkedBatch is the normalized,
+    // checked bytes that this parse and later signing consume, so run the
+    // check here when it is missing. On failure, stash the real message for
+    // the parse-fail handler; only after it passes can parse succeed.
+    if (g_checkedBatch == NULL) {
+        PtrT_TransactionCheckResult checkResult = GuiGetZcashBatchCheckResult();
+        if (checkResult == NULL || checkResult->error_code != 0) {
+            if (checkResult != NULL) {
+                if (checkResult->error_message != NULL) {
+                    snprintf_s(g_batchCheckError, sizeof(g_batchCheckError), "%s",
+                               checkResult->error_message);
+                }
+                free_TransactionCheckResult(checkResult);
+            }
+            return NULL;
+        }
+        free_TransactionCheckResult(checkResult);
+    }
+
     uint8_t sfp[32];
-    uint32_t zcashAccountIndex = 0;
     GetZcashSFP(GetCurrentAccountIndex(), sfp);
 
     char ufvk[ZCASH_UFVK_MAX_LEN + 1] = {0};
     GetZcashUFVK(GetCurrentAccountIndex(), ufvk);
     g_parseResult = parse_zcash_batch_tx_cypherpunk(
-        data,
+        g_checkedBatch,
         ufvk,
         sfp,
-        zcashAccountIndex,
         !IsZcashSupportedForCurrentMnemonic());
 
     return g_parseResult;
@@ -425,13 +429,18 @@ void GuiZcashBatchWidgetsTransactionParseFail(void)
 {
     ClearLockScreenTime();
     printf("GuiZcashBatchWidgetsTransactionParseFail\n");
-    if (g_parseResult != NULL) {
-        printf("error: %s\n", g_parseResult->error_message);
+    // A failed check leaves g_parseResult NULL but records its message in
+    // g_batchCheckError; prefer whichever carries the real reason.
+    const char *errorMessage = (g_parseResult != NULL)
+                               ? g_parseResult->error_message
+                               : (g_batchCheckError[0] != '\0' ? g_batchCheckError : NULL);
+    if (errorMessage != NULL) {
+        printf("error: %s\n", errorMessage);
         if (IsZcashBatchUsbMode()) {
-            RespondZcashBatchUsbParseError(g_parseResult->error_message);
+            RespondZcashBatchUsbParseError(errorMessage);
             return;
         }
-        g_parseErrorHintBox = GuiCreateZcashBatchParseErrorWindow(g_parseResult->error_message);
+        g_parseErrorHintBox = GuiCreateZcashBatchParseErrorWindow(errorMessage);
         return;
     }
     if (IsZcashBatchUsbMode()) {
