@@ -56,70 +56,71 @@ zcash-pczt {
 ### Zcash Batch Signing
 
 `zcash-sign-batch` wraps multiple signing messages into one Keystone approval.
-Version 1 is supported by cypherpunk firmware and currently supports up to 35
-mainnet PCZT messages. It requires `atomic` to be `true`; if any message is
-invalid or cannot be signed, Keystone returns an error instead of a partial
-result. Batch PCZT entries must be fully Keystone-owned spends from supported
-shielded pools, currently Orchard or Ironwood. Transparent inputs and Sapling
-spends or outputs are rejected.
+The outer UR registry envelope carries a request id for response correlation and
+an opaque `data` field containing the PCZT-owned batch message. The matching
+compact response uses `zcash-batch-sig-result`, echoes the request id, and
+carries the PCZT-owned response in its own opaque `data` field.
 
-The 35-message limit is the current batch memory budget for `pczt-v1`. A full
-35-message batch using the supported PCZT message shape was measured at about
-35% RAM on target hardware, so this version does not define separate byte caps
-for request ids, message ids, or payloads. Revisit the limit if new message
-kinds or substantially larger payload encodings are added.
+Version 1 is supported by cypherpunk firmware and currently accepts up to 80
+PCZT messages with at most 2 MiB of PCZT payload data in total. The operation is
+atomic. If any message is invalid or cannot be signed, Keystone returns an error
+instead of a partial result. Batch PCZT entries must be fully Keystone-owned
+spends from supported shielded pools, currently Orchard or Ironwood.
+Transparent inputs and Sapling spends or outputs are rejected.
 
-Message kinds:
+#### Outer UR/CBOR envelopes
 
-```cddl
-pczt-v1 = 1
-```
-
-Networks:
-
-```cddl
-zcash-mainnet = 1
-```
-
-Result statuses:
-
-```cddl
-signed = 0
-```
-
-#### CDDL for Zcash Sign Batch
+Both registry types use the same integer keys. Firmware requires `request-id` to
+be non-empty. Key `1` follows `zcash-pczt` by carrying opaque transaction data,
+and key `2` follows `zcash-sign-result` by carrying the request id.
 
 ```cddl
 zcash-sign-batch = {
-    1: uint,                 ; version. Must be 1.
-    2: bytes,                ; request id. Echoed by zcash-sign-result.
-    3: uint,                 ; network. Must be zcash-mainnet.
-    4: [1*35 zcash-sign-message],
-   ?11: bool,                ; atomic. Defaults to true. Must be true.
+    1: bytes, ; BatchSignRequest::serialize output
+    2: bytes, ; request-id
 }
 
-zcash-sign-message = {
-    1: bytes,                ; caller-defined message id. Must be unique.
-    2: uint,                 ; message kind. Must be pczt-v1.
-    3: bytes,                ; message payload. For pczt-v1 this is raw PCZT bytes. Must be unique in the batch.
-   ?6: bytes.32,             ; SHA-256 of payload.
+zcash-batch-sig-result = {
+    1: bytes, ; BatchSignResponse::serialize output
+    2: bytes, ; echoed request-id
 }
 ```
 
-#### CDDL for Zcash Sign Result
+#### PCZT batch request
 
-```cddl
-zcash-sign-result = {
-    1: uint,                 ; version. Matches request version.
-    2: bytes,                ; request id from zcash-sign-batch.
-    3: [1*35 zcash-sign-message-result],
-}
+The request `data` encoding is
+`"PCZB" || batch_version_le || pczt_version_le || postcard_body`. Its Postcard
+body contains the PCZTs in request order.
 
-zcash-sign-message-result = {
-    1: bytes,                ; message id from zcash-sign-message.
-    2: uint,                 ; status. signed = 0.
-    3: uint,                 ; message kind from zcash-sign-message.
-    4: bytes,                ; signed payload. For pczt-v1 this is signed PCZT bytes.
-    6: bytes.32,             ; SHA-256 of signed payload.
+```rust
+const VERSION: u32 = 1;
+
+struct BatchSignRequest {
+    pczts: Vec<Pczt>,
 }
 ```
+
+PCZT entries are correlated by position. PCZT payloads must be unique within the
+request.
+
+#### PCZT batch signature response
+
+The response `data` encoding is `"PCZS" || batch_version_le || postcard_body`.
+Entry `i` contains the signatures produced for PCZT `i` in the request.
+
+```rust
+struct BatchSignResponse {
+    signatures: Vec<Vec<SpendAuthSignature>>,
+}
+
+struct SpendAuthSignature {
+    value_pool: u8,          // Orchard = 0, Ironwood = 1
+    action_index: u32,
+    signature: [u8; 64],
+}
+```
+
+The outer response echoes the request id. Each signature is correlated to an
+action by its Orchard-protocol value pool and action index, so the client can
+apply it to the corresponding unsigned PCZT without transporting a second copy
+of the full PCZT.
