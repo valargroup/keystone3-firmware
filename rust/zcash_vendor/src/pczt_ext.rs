@@ -669,12 +669,8 @@ where
 /// derivation and signs wallet-controlled spends, including zero-value ones), so we
 /// must NOT pre-filter by value here — that would drop a wallet-controlled zero-value
 /// spend. `tx_modifiable` is cleared only when this call adds a new signature.
-///
-/// Takes the precomputed `shielded_hash` rather than `(pczt, lock_time)`: the
-/// Orchard sighash is transaction-wide (the same for every action in the bundle
-/// and unaffected by the signatures being added), so the caller computes it ONCE
-/// before the action loop instead of re-deriving it per action. This is a large
-/// part of the signing speedup and is behaviour-preserving.
+/// The caller supplies the transaction-wide shielded sighash shared by every action in
+/// the bundle. Added signatures do not affect this hash.
 #[cfg(feature = "orchard")]
 fn sign_orchard_action<T>(
     signer: &T,

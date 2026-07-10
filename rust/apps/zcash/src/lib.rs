@@ -264,12 +264,9 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
 /// from the same single-pass Verifier sweep that validates it.
 ///
 /// The check-and-parse twin of [`preflight_batch_pczt_cypherpunk`]: the preflight
-/// validates and returns the normalized bytes C stores, while this validates and
-/// returns the [`ParsedPczt`] display rows, decrypting every output once (via
-/// [`pczt::check::check_and_parse_pczt_shielded`]) instead of checking and then
-/// re-decrypting in a separate parse pass. See `check_pczt_cypherpunk` for the
-/// normalization contract. Not yet wired to the FFI: production keeps the
-/// two-call preflight/display flow.
+/// returns normalized bytes, while this returns [`ParsedPczt`] display rows.
+/// Both follow the normalization contract documented by `check_pczt_cypherpunk`.
+/// This helper is not wired to the FFI.
 #[cfg(feature = "cypherpunk")]
 pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
@@ -306,8 +303,7 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
         &pczt,
         false,
     )?;
-    // `signable_shielded_actions` consumes the PCZT and hands it back; thread the
-    // returned value into the parse step rather than cloning.
+    // Reuse the PCZT returned by signability validation for display assembly.
     let (signable_actions, pczt) = signable_shielded_actions(
         params,
         pczt,
@@ -1629,15 +1625,6 @@ mod tests {
         );
     }
 
-    /// A PCZT whose single non-zero Ironwood output carries a valid note
-    /// commitment and a genuinely wallet-owned recipient, but an
-    /// `enc_ciphertext` that no key (wallet OVK or direct decryption) can
-    /// recover, must be REJECTED by the check path — exactly as the
-    /// parse/display path (`parse_orchard_output`) already rejects it. Before
-    /// the shared-output-validation fix, `check_action_output` tried only the
-    /// wallet OVKs and silently accepted an output nothing could decrypt, so a
-    /// check-only review path would approve a migration whose funds the
-    /// receiving wallet can never detect by chain-scan.
     #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn test_check_rejects_undecryptable_ironwood_output() {
@@ -1659,10 +1646,7 @@ mod tests {
 
         let sample = pczt::test_support::sample_migration_pczt();
 
-        // The non-zero Ironwood output's ciphertext, as it appears on the wire.
-        // The mega base wraps it in `EncCiphertext`; the raw sample carries the
-        // full `Encrypted` variant (compaction is applied explicitly elsewhere),
-        // so pull the verbatim bytes out of it.
+        // Extract the non-zero Ironwood output's ciphertext bytes.
         let enc_ciphertext = {
             let pczt = Pczt::parse(&sample.bytes).expect("sample PCZT should parse");
             pczt.ironwood()
@@ -1703,8 +1687,7 @@ mod tests {
             "expected an undecryptable-output rejection, got {check_err:?}"
         );
 
-        // Parity: the single-pass batch review path must agree — no weaker
-        // review path can approve what the display path rejects.
+        // Both review paths enforce the same output-recoverability contract.
         assert!(
             matches!(
                 check_and_parse_batch_pczt_cypherpunk(

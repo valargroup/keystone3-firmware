@@ -83,27 +83,21 @@ pub fn check_pczt_orchard<P: consensus::Parameters>(
     Ok(())
 }
 
-/// The shielded display data (`orchard` / `ironwood`) produced as a side effect
-/// of the check pass, so the parse step does not have to decrypt every output a
-/// second time. Populated by [`check_and_parse_pczt_shielded`] and consumed by
+/// Shielded display data (`orchard` / `ironwood`) collected during validation.
+/// Populated by [`check_and_parse_pczt_shielded`] and consumed by
 /// [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`]. `None` for a
-/// pool means it had nothing to display (e.g. all-dummy bundle).
+/// pool means it contains no displayable actions (e.g. an all-dummy bundle).
 #[cfg(feature = "cypherpunk")]
 pub(crate) struct CheckedShieldedParse {
     pub(crate) orchard: Option<ParsedOrchard>,
     pub(crate) ironwood: Option<ParsedOrchard>,
 }
 
-/// Runs the shielded validation and builds the display data in a SINGLE pass.
-///
-/// Previously the device validated a PCZT with `check_*` and then re-ran the
-/// Verifier in `parse_*` to build the display rows, decrypting every output
-/// twice. This checks and parses at once: it runs the Verifier once, and for
-/// each action both validates it and records its [`ParsedOrchard`] row. The
-/// result feeds [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`],
-/// which only has to assemble the transparent bundle and totals. Behaviour is
-/// identical to the old check-then-reparse, minus the second decryption. Used by
-/// the batch review path (`check_and_parse_batch_pczt_cypherpunk`).
+/// Validates shielded actions and records their [`ParsedOrchard`] display rows
+/// in one Verifier pass. The result feeds
+/// [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`] for transparent
+/// bundle and totals assembly. Used by the batch review path
+/// (`check_and_parse_batch_pczt_cypherpunk`).
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
     params: &P,
@@ -558,7 +552,6 @@ fn check_action_spend<P: consensus::Parameters>(
 }
 
 #[cfg(feature = "cypherpunk")]
-// check output cmx, then share the parse path's output validation
 fn check_action_output<P: consensus::Parameters>(
     params: &P,
     ufvk: &UnifiedFullViewingKey,
@@ -571,15 +564,7 @@ fn check_action_output<P: consensus::Parameters>(
         .verify_note_commitment(action.spend())
         .map_err(|e| ZcashError::InvalidPczt(format!("invalid {pool_label} action cmx: {e:?}")))?;
 
-    // Delegate the rest of output validation to `parse_orchard_output`, the
-    // single routine the parse/display path already uses (see its doc for the
-    // recoverability contract), so this check path can never be weaker than it.
-    // The bespoke loop that used to live here tried only the wallet OVKs and
-    // *silently accepted* any output no key could decrypt, so a check-only
-    // review (`check_pczt_orchard` -> here) approved migrations whose Ironwood
-    // output is committed to a wallet address but whose ciphertext the wallet
-    // can never rescan. The recovered display value is discarded here; this
-    // function only validates.
+    // Keep check-only and display review aligned on output recoverability.
     super::parse::parse_orchard_output(params, ufvk, action, pool)?;
 
     Ok(())

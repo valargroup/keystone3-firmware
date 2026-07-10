@@ -253,13 +253,9 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     assemble_parsed_pczt(pczt, parsed_transparent, parsed_orchard, parsed_ironwood)
 }
 
-/// Finishes a parse whose shielded pools were ALREADY checked-and-parsed in one
-/// pass (`parsed_orchard`/`parsed_ironwood` come from
-/// [`super::check::check_and_parse_pczt_shielded`]). It only parses the
-/// transparent bundle and assembles the totals, reusing the shielded work rather
-/// than decrypting the outputs again. The full-from-scratch variant that decodes
-/// everything itself is [`parse_pczt_cypherpunk`]; both funnel into
-/// [`assemble_parsed_pczt`].
+/// Assembles a parse from shielded display data produced by
+/// [`super::check::check_and_parse_pczt_shielded`], adding the transparent
+/// bundle and final totals.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn parse_pczt_cypherpunk_with_checked_shielded<P: consensus::Parameters>(
     params: &P,
@@ -695,9 +691,8 @@ pub(crate) fn validate_orchard_user_address<P: consensus::Parameters>(
 }
 
 /// Decodes one action's output into its [`ParsedTo`] display row, trying the
-/// wallet OVKs and then direct decryption. Enforces the recoverability
-/// contract: a non-zero output that no key can decrypt is rejected as
-/// "undecryptable" instead of being skipped.
+/// wallet OVKs and then direct decryption. Every non-zero output must be
+/// recoverable.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn parse_orchard_output<P: consensus::Parameters>(
     params: &P,
