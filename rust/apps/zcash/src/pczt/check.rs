@@ -97,23 +97,24 @@ pub(crate) struct CheckedShieldedParse {
 /// in one Verifier pass. The result feeds
 /// [`super::parse::parse_pczt_cypherpunk_with_checked_shielded`] for transparent
 /// bundle and totals assembly. Used by the batch review path
-/// (`check_and_parse_batch_pczt_cypherpunk`).
+/// (`check_and_parse_batch_pczt_cypherpunk`). The Verifier-owned PCZT is
+/// returned with the display rows for reuse by later checks.
 #[cfg(feature = "cypherpunk")]
 pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
     account_index: zip32::AccountId,
     ufvk: &UnifiedFullViewingKey,
-    pczt: &Pczt,
-) -> Result<CheckedShieldedParse, ZcashError> {
-    super::validate_supported_pczt(pczt)?;
+    pczt: Pczt,
+) -> Result<(CheckedShieldedParse, Pczt), ZcashError> {
+    super::validate_supported_pczt(&pczt)?;
     let mut parsed_orchard = None;
     #[cfg(zcash_unstable = "nu6.3")]
     let mut parsed_ironwood = None;
     #[cfg(zcash_unstable = "nu6.3")]
-    let should_process_ironwood = super::pczt_should_process_ironwood(pczt);
+    let should_process_ironwood = super::pczt_should_process_ironwood(&pczt);
 
-    let verifier = Verifier::new(pczt.clone())
+    let verifier = Verifier::new(pczt)
         .with_orchard(|bundle| {
             parsed_orchard = check_and_parse_shielded_bundle(
                 params,
@@ -129,7 +130,7 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
         .map_err(map_orchard_verifier_error)?;
 
     #[cfg(zcash_unstable = "nu6.3")]
-    if should_process_ironwood {
+    let verifier = if should_process_ironwood {
         verifier
             .with_ironwood(|bundle| {
                 parsed_ironwood = check_and_parse_shielded_bundle(
@@ -143,16 +144,21 @@ pub(crate) fn check_and_parse_pczt_shielded<P: consensus::Parameters>(
                 .map_err(pczt::roles::verifier::OrchardError::Custom)?;
                 Ok(())
             })
-            .map_err(map_orchard_verifier_error)?;
-    }
+            .map_err(map_orchard_verifier_error)?
+    } else {
+        verifier
+    };
 
     #[cfg(not(zcash_unstable = "nu6.3"))]
     let parsed_ironwood = None;
 
-    Ok(CheckedShieldedParse {
-        orchard: parsed_orchard,
-        ironwood: parsed_ironwood,
-    })
+    Ok((
+        CheckedShieldedParse {
+            orchard: parsed_orchard,
+            ironwood: parsed_ironwood,
+        },
+        verifier.finish(),
+    ))
 }
 
 pub fn check_pczt_transparent<P: consensus::Parameters>(

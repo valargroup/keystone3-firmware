@@ -288,12 +288,12 @@ pub fn check_and_parse_batch_pczt_cypherpunk<P: consensus::Parameters>(
     let xpub = ufvk.transparent().ok_or(ZcashError::InvalidDataError(
         "transparent xpub is not present".to_string(),
     ))?;
-    let checked_shielded = pczt::check::check_and_parse_pczt_shielded(
+    let (checked_shielded, pczt) = pczt::check::check_and_parse_pczt_shielded(
         params,
         seed_fingerprint,
         account_index,
         &ufvk,
-        &pczt,
+        pczt,
     )?;
     pczt::check::check_pczt_transparent(
         params,
