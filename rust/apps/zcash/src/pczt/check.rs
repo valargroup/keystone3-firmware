@@ -26,7 +26,7 @@ use zcash_vendor::zcash_protocol::consensus::NetworkConstants;
 #[cfg(feature = "cypherpunk")]
 use super::parse::WalletOrchardKeys;
 #[cfg(feature = "cypherpunk")]
-use super::structs::ParsedOrchard;
+use super::structs::{ParsedOrchard, ParsedTo};
 #[cfg(feature = "cypherpunk")]
 use super::ShieldedPool;
 
@@ -393,12 +393,15 @@ fn check_shielded_bundle<P: consensus::Parameters>(
     pool: ShieldedPool,
 ) -> Result<(), ZcashError> {
     let pool_label = pool.label();
+    let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
+        "orchard fvk is not present".to_string(),
+    ))?;
     bundle.actions().iter().try_for_each(|action| {
         check_action(
             params,
             seed_fingerprint,
             account_index,
-            ufvk,
+            fvk,
             keys,
             action,
             bundle.flags(),
@@ -451,24 +454,16 @@ fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
         .iter()
         .enumerate()
         .try_for_each(|(index, action)| {
-            action.verify_cv_net().map_err(|e| {
-                ZcashError::InvalidPczt(format!("invalid cv_net in {pool_label} action: {e:?}"))
-            })?;
-
-            check_action_spend(
+            let parsed_to = check_action(
                 params,
                 seed_fingerprint,
                 account_index,
                 fvk,
-                action.spend(),
+                keys,
+                action,
+                bundle.flags(),
                 pool,
             )?;
-            action
-                .output()
-                .verify_note_commitment(action.spend())
-                .map_err(|e| {
-                    ZcashError::InvalidPczt(format!("invalid {pool_label} action cmx: {e:?}"))
-                })?;
 
             // Add only real spends to the review.
             if let Some(value) = action.spend().value() {
@@ -479,9 +474,6 @@ fn check_and_parse_shielded_bundle<P: consensus::Parameters>(
                 }
             }
 
-            // Require every real output to be recoverable for review.
-            let parsed_to = super::parse::parse_orchard_output(params, keys, action, pool)?;
-            check_restricted_zero_value_output(keys, action, bundle.flags(), pool)?;
             if !parsed_to.get_is_dummy() {
                 parsed_orchard.add_to(parsed_to);
             }
@@ -535,12 +527,12 @@ fn check_action<P: consensus::Parameters>(
     params: &P,
     seed_fingerprint: &[u8; 32],
     account_index: zip32::AccountId,
-    ufvk: &UnifiedFullViewingKey,
+    fvk: &FullViewingKey,
     keys: &WalletOrchardKeys,
     action: &orchard::pczt::Action,
     flags: &orchard::bundle::Flags,
     pool: ShieldedPool,
-) -> Result<(), ZcashError> {
+) -> Result<ParsedTo, ZcashError> {
     let pool_label = pool.label();
     // Check `cv_net` first so we know that the `value` fields for both the spend and the
     // output are present and correct.
@@ -548,9 +540,6 @@ fn check_action<P: consensus::Parameters>(
         ZcashError::InvalidPczt(format!("invalid cv_net in {pool_label} action: {e:?}"))
     })?;
 
-    let fvk = ufvk.orchard().ok_or(ZcashError::InvalidDataError(
-        "orchard fvk is not present".to_string(),
-    ))?;
     check_action_spend(
         params,
         seed_fingerprint,
@@ -559,8 +548,7 @@ fn check_action<P: consensus::Parameters>(
         action.spend(),
         pool,
     )?;
-    check_action_output(params, keys, action, flags, pool)?;
-    Ok(())
+    check_action_output(params, keys, action, flags, pool)
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -615,7 +603,7 @@ fn check_action_output<P: consensus::Parameters>(
     action: &orchard::pczt::Action,
     flags: &orchard::bundle::Flags,
     pool: ShieldedPool,
-) -> Result<(), ZcashError> {
+) -> Result<ParsedTo, ZcashError> {
     let pool_label = pool.label();
     action
         .output()
@@ -623,10 +611,10 @@ fn check_action_output<P: consensus::Parameters>(
         .map_err(|e| ZcashError::InvalidPczt(format!("invalid {pool_label} action cmx: {e:?}")))?;
 
     // Decode and validate the recipient, rejecting non-zero outputs the device cannot review.
-    super::parse::parse_orchard_output(params, keys, action, pool)?;
+    let parsed_to = super::parse::parse_orchard_output(params, keys, action, pool)?;
     check_restricted_zero_value_output(keys, action, flags, pool)?;
 
-    Ok(())
+    Ok(parsed_to)
 }
 
 #[cfg(feature = "cypherpunk")]

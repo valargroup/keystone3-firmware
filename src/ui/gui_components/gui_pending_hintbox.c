@@ -6,6 +6,7 @@ static lv_obj_t *g_pendingHintBox = NULL;
 static bool g_hasSubtitle = false;
 static lv_obj_t *g_subTitleLabel = NULL;
 
+// Builds the static loading sheet with an optional explanatory line.
 static void GuiNoPendingHintBoxOpenInternal(const char *title, const char *subtitle)
 {
     bool hasSubtitle = subtitle != NULL;

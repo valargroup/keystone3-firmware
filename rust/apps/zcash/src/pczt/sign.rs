@@ -226,7 +226,7 @@ struct SeedSigner<'a> {
     seed: &'a [u8],
     seed_fingerprint: [u8; 32],
     pool: ShieldedPool,
-    /// Borrowed so every message and both pool passes can share one scrubbed
+    /// Borrowed so every PCZT and both pool passes can share one scrubbed
     /// slot. See [`SpendAuthCache`] for the request-scoping contract.
     ask_cache: &'a SpendAuthCache,
     /// Number of authorizations produced, so `sign_pczt` can distinguish "nothing of
@@ -391,19 +391,19 @@ pub fn sign_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Vec<u8>> {
 /// `sign_pczt`, but returns the stamped, redacted PCZT without serializing it,
 /// so callers that still need the parsed value (in-memory post-sign
 /// verification) avoid a byte round trip. Derives keys into a fresh
-/// [`SpendAuthCache`]; batch callers should use [`sign_and_redact_pczt_with_cache`]
-/// so messages for the selected account share one cached derivation.
+/// [`SpendAuthCache`]; the batch signing path instead reuses a request-scoped
+/// cache so PCZTs for the selected account share one derivation.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_and_redact_pczt(pczt: Pczt, seed: &[u8]) -> crate::Result<Pczt> {
     sign_and_redact_pczt_with_cache(pczt, seed, &SpendAuthCache::new())
 }
 
 /// [`sign_and_redact_pczt`] with a caller-provided [`SpendAuthCache`]. The normal
-/// batch path derives its selected account key once and reuses it across messages
+/// batch path derives its selected account key once and reuses it across PCZTs
 /// and pools. An account change scrubs and replaces the slot. The cache must not
 /// be reused with another seed.
 #[cfg(feature = "cypherpunk")]
-pub fn sign_and_redact_pczt_with_cache(
+pub(crate) fn sign_and_redact_pczt_with_cache(
     pczt: Pczt,
     seed: &[u8],
     ask_cache: &SpendAuthCache,
@@ -644,7 +644,7 @@ mod tests {
             ask_scalar_bytes(&orchard::keys::SpendAuthorizingKey::from(&osk))
         };
 
-        // Separate signers model separate PCZT messages and pool passes sharing
+        // Separate signers model separate PCZTs and pool passes sharing
         // one request-scoped slot: miss, cross-pool hit, replacement, hit, then
         // replacement back to the first account.
         for (pool, i) in [

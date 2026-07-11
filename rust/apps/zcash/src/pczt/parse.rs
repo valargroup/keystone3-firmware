@@ -210,21 +210,8 @@ pub fn parse_pczt_cypherpunk<P: consensus::Parameters>(
     ufvk: &UnifiedFullViewingKey,
     pczt: &Pczt,
 ) -> Result<ParsedPczt, ZcashError> {
-    let keys = WalletOrchardKeys::derive(ufvk)?;
-    parse_pczt_cypherpunk_with_keys(params, seed_fingerprint, &keys, pczt)
-}
-
-/// [`parse_pczt_cypherpunk`] against pre-derived wallet Orchard keys, so a caller
-/// that already built a [`WalletOrchardKeys`] (e.g. the migration summary, which
-/// reuses it for `summarize_migration_actions`) parses without re-deriving them.
-#[cfg(feature = "cypherpunk")]
-pub(crate) fn parse_pczt_cypherpunk_with_keys<P: consensus::Parameters>(
-    params: &P,
-    seed_fingerprint: &[u8; 32],
-    keys: &WalletOrchardKeys,
-    pczt: &Pczt,
-) -> Result<ParsedPczt, ZcashError> {
     super::validate_supported_pczt(pczt)?;
+    let keys = WalletOrchardKeys::derive(ufvk)?;
     let mut parsed_orchard = None;
     let mut parsed_ironwood = None;
     let should_process_ironwood = super::pczt_should_process_ironwood(pczt);
@@ -235,7 +222,7 @@ pub(crate) fn parse_pczt_cypherpunk_with_keys<P: consensus::Parameters>(
             parsed_orchard = parse_orchard(
                 params,
                 seed_fingerprint,
-                keys,
+                &keys,
                 bundle,
                 ShieldedPool::Orchard,
             )
@@ -249,7 +236,7 @@ pub(crate) fn parse_pczt_cypherpunk_with_keys<P: consensus::Parameters>(
                 parsed_ironwood = parse_orchard(
                     params,
                     seed_fingerprint,
-                    keys,
+                    &keys,
                     bundle,
                     ShieldedPool::Ironwood,
                 )
@@ -661,10 +648,10 @@ pub(crate) fn parse_orchard_spend(
     Ok(ParsedFrom::new(None, zec_value, value, is_mine))
 }
 
-/// Wallet Orchard key material derived once per check/parse/summarize entry and
-/// reused across every action of the PCZT: `to_ivk`/`to_ovk` are expensive
-/// (Sinsemilla-commitment-class) and invariant for a given UFVK, so deriving
-/// them per output dominated batch review time on-device.
+/// Wallet Orchard key material derived once per check/parse entry and reused
+/// across every action of the PCZT. Deriving the incoming viewing keys requires
+/// Sinsemilla commitments; the derived key fields are invariant for a given
+/// UFVK.
 #[cfg(feature = "cypherpunk")]
 pub(crate) struct WalletOrchardKeys {
     external_ivk: orchard::keys::IncomingViewingKey,
@@ -675,7 +662,7 @@ pub(crate) struct WalletOrchardKeys {
     /// Memoized per-address scope ownership, keyed by the raw address bytes.
     /// `diversifier_index` costs a diversified-base derivation per call and a
     /// migration batch asks about the same one or two addresses for every
-    /// output of every message, so cache the (external, internal) verdicts.
+    /// output of every PCZT, so cache the (external, internal) verdicts.
     /// Bounded: past the cap the verdict is still computed, just not cached.
     address_scopes: core::cell::RefCell<alloc::vec::Vec<([u8; 43], (bool, bool))>>,
 }

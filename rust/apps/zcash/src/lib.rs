@@ -313,8 +313,7 @@ impl<'a> BatchCheckContext<'a> {
     }
 }
 
-/// Validates one batch PCZT and returns its normalized transaction, display,
-/// and the action facts recorded by the single shielded sweep.
+/// Validates one batch PCZT and returns its normalized transaction and display.
 #[cfg(feature = "cypherpunk")]
 fn check_and_parse_batch_pczt_internal<P: consensus::Parameters>(
     params: &P,
@@ -322,7 +321,7 @@ fn check_and_parse_batch_pczt_internal<P: consensus::Parameters>(
     ctx: &BatchCheckContext<'_>,
     seed_fingerprint: &[u8; 32],
     account_index: u32,
-) -> Result<(Pczt, ParsedPczt, Vec<pczt::check::SweptAction>)> {
+) -> Result<(Pczt, ParsedPczt)> {
     let mut pczt = pczt::parse_pczt(pczt_bytes)?;
     // Resolve compact field representations before the single-pass validation.
     pczt.resolve_fields().map_err(|e| {
@@ -374,6 +373,8 @@ fn check_and_parse_batch_pczt_internal<P: consensus::Parameters>(
         account_index,
         ShieldedActionPolicy::Batch,
     )?;
+    // Release cloned derivation paths before building the retained display.
+    drop(swept_actions);
 
     if signable_actions.is_empty() {
         return Err(ZcashError::PcztNoMyInputs);
@@ -386,7 +387,7 @@ fn check_and_parse_batch_pczt_internal<P: consensus::Parameters>(
         checked_orchard,
         checked_ironwood,
     )?;
-    Ok((pczt, parsed, swept_actions))
+    Ok((pczt, parsed))
 }
 
 /// Checks one batch PCZT and returns normalized bytes, display rows, and an
@@ -401,7 +402,7 @@ pub fn check_batch_pczt_with_display<P: consensus::Parameters>(
     seed_fingerprint: &[u8; 32],
     account_index: u32,
 ) -> Result<(Vec<u8>, ParsedPczt, Option<BatchMigrationTransferSummary>)> {
-    let (pczt, parsed, _swept_actions) = check_and_parse_batch_pczt_internal(
+    let (pczt, parsed) = check_and_parse_batch_pczt_internal(
         params,
         pczt_bytes,
         ctx,
@@ -1165,9 +1166,8 @@ pub fn sign_checked_batch_pczt<P: consensus::Parameters>(
 
 /// [`sign_checked_batch_pczt`] with a caller-provided [`SpendAuthCache`]. Create
 /// one cache per signing request and pass it to every PCZT using the same
-/// seed. The normal batch path reuses its selected account key, avoiding the
-/// repeated ZIP 32 derivation that accounted for ~70% of signing time at 31
-/// PCZTs. An account change scrubs and replaces the slot.
+/// seed. The normal batch path reuses its selected account key, avoiding
+/// repeated ZIP 32 derivation. An account change scrubs and replaces the slot.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_checked_batch_pczt_with_cache<P: consensus::Parameters>(
     params: &P,
@@ -2852,11 +2852,13 @@ mod tests {
     /// an Orchard change tx, an Ironwood tx, and an Orchard->Ironwood migration.
     #[test]
     fn test_check_batch_with_display_bytes_match_reference_check() {
-        for sample in [
+        let samples = [
             pczt::test_support::sample_orchard_change_pczt(),
             pczt::test_support::sample_ironwood_pczt(),
             pczt::test_support::sample_migration_pczt(),
-        ] {
+        ];
+        let ctx = BatchCheckContext::new(&samples[0].ufvk_text);
+        for sample in &samples {
             let reference = check_batch_pczt_cypherpunk(
                 &pczt::test_support::Nu6_3Network,
                 &sample.bytes,
@@ -2868,7 +2870,7 @@ mod tests {
             let (bytes, _parsed, _summary) = check_batch_pczt_with_display(
                 &pczt::test_support::Nu6_3Network,
                 &sample.bytes,
-                &BatchCheckContext::new(&sample.ufvk_text),
+                &ctx,
                 &sample.seed_fingerprint,
                 0,
             )
