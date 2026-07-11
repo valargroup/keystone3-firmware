@@ -24,6 +24,8 @@ use zcash_vendor::{
     zip32,
 };
 
+#[cfg(feature = "cypherpunk")]
+use zcash_vendor::pczt::roles::signer::SpendAuthSignature;
 #[cfg(any(test, feature = "multi_coins", feature = "cypherpunk"))]
 use zcash_vendor::pczt::Pczt;
 
@@ -71,12 +73,6 @@ pub fn get_address<P: consensus::Parameters>(params: &P, ufvk_text: &str) -> Res
 /// The returned bytes are what C retains as the `checked_PCZT`, which display
 /// and signing consume without re-running these checks.
 #[cfg(feature = "cypherpunk")]
-pub use zcash_vendor::pczt::roles::signer::{
-    batch::{BatchSignRequest, BatchSignResponse},
-    SpendAuthSignature,
-};
-
-#[cfg(feature = "cypherpunk")]
 pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
     pczt_bytes: &[u8],
@@ -94,10 +90,9 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     )
 }
 
-/// Batch check for one `ZcashSignBatch` message: parses once, runs the full
-/// policy checks, enforces the batch shielded-action policy (the PCZT must be
-/// batch-signable by this account), and returns the normalized encoding. See
-/// `check_pczt_cypherpunk` for the normalization contract.
+/// Checks one PCZT from a batch request, enforcing the batch shielded-action
+/// policy, and returns its normalized encoding. See `check_pczt_cypherpunk`
+/// for the normalization contract.
 #[cfg(feature = "cypherpunk")]
 pub fn check_batch_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
@@ -506,10 +501,10 @@ fn compact_batch_migration_review(items: Vec<ParsedBatchItem>) -> Vec<ParsedPczt
 }
 
 /// Parses checked batch PCZTs and compacts eligible Orchard-to-Ironwood
-/// self-transfers without relying on message position.
+/// self-transfers without relying on PCZT position.
 ///
 /// Every input must be normalized bytes produced by the batch check. A batch
-/// with more than one ordinary transaction uses full per-message review.
+/// with more than one ordinary transaction uses full review for each PCZT.
 #[cfg(feature = "cypherpunk")]
 pub fn parse_batch_with_migration_summary_cypherpunk<'a, P: consensus::Parameters>(
     params: &P,
@@ -2113,7 +2108,7 @@ mod tests {
                 &ufvk_text,
                 &seed_fingerprint,
             )
-            .expect("message order must not affect migration classification");
+            .expect("PCZT order must not affect migration classification");
 
             assert_eq!(parsed.len(), 2);
             let summary = &parsed[1];
@@ -2124,7 +2119,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_migration_summary_keeps_single_message_uncompacted() {
+    fn test_batch_migration_summary_keeps_single_pczt_uncompacted() {
         let sample = pczt::test_support::sample_migration_pczt();
         let checked = check_batch_pczt_cypherpunk(
             &pczt::test_support::Nu6_3Network,
@@ -2215,7 +2210,7 @@ mod tests {
             &sample.seed_fingerprint,
             0,
         )
-        .expect("per-message review must accept the memo-carrying transfer");
+        .expect("review for each PCZT must accept the memo-carrying transfer");
         let shown_memo = parsed
             .get_ironwood()
             .expect("migration must show Ironwood outputs")
@@ -2462,7 +2457,7 @@ mod tests {
                 ),
                 Err(ZcashError::InvalidPczt(message)) if message.contains("undecryptable")
             ),
-            "ordinary per-message review must also reject the undecryptable output"
+            "ordinary review for each PCZT must also reject the undecryptable output"
         );
     }
 
