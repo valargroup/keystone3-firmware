@@ -31,13 +31,12 @@ use zcash_vendor::pczt::roles::signer::batch::{BatchSignRequest, BatchSignRespon
 use zcash_vendor::{pczt::Pczt, zcash_protocol::consensus::MainNetwork};
 use zeroize::Zeroize;
 
-// Bound both encoded request bytes before Postcard parsing and canonical PCZT
-// bytes after parsing. A full 35-PCZT batch used about 35% of target RAM; compact
-// PCZTs permit 80 (a full migration batch) under the same tested byte ceiling.
+// Bound both PCZT count and bytes because check, parse, and sign temporarily
+// retain multiple encoded and decoded copies in the device's 8 MiB PSRAM.
 #[cfg(feature = "cypherpunk")]
-const ZCASH_BATCH_MAX_PCZTS: usize = 80;
+const ZCASH_BATCH_MAX_PCZTS: usize = 50;
 #[cfg(feature = "cypherpunk")]
-const ZCASH_BATCH_MAX_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+const ZCASH_BATCH_MAX_TOTAL_BYTES: usize = 512 * 1024;
 
 #[no_mangle]
 pub unsafe extern "C" fn derive_zcash_ufvk(
