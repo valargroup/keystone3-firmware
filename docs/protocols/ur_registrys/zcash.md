@@ -55,24 +55,27 @@ zcash-pczt {
 
 ### Zcash Batch Signing
 
-`zcash-sign-batch` wraps multiple signing messages into one Keystone approval.
+`zcash-sign-batch` wraps multiple PCZTs into one Keystone approval.
 The outer UR registry envelope carries a request id for response correlation and
-an opaque `data` field containing the PCZT-owned batch message. The matching
+an opaque `data` field containing the PCZT-owned batch request. The matching
 compact response uses `zcash-batch-sig-result`, echoes the request id, and
 carries the PCZT-owned response in its own opaque `data` field.
 
 Batch version 1 is supported by cypherpunk firmware and currently accepts up to
-80 PCZTs whose individually serialized payloads total at most 2 MiB. The
-operation is atomic. If any PCZT is invalid or cannot be signed, Keystone
-returns an error instead of a partial result. Batch PCZT entries must be unique,
-fully Keystone-owned spends from supported shielded pools, currently Orchard or
-Ironwood. Transparent inputs and Sapling spends or outputs are rejected.
+80 PCZTs. The encoded batch data and request id together, and the canonical PCZT
+payloads after decoding, must each fit within 2 MiB. The operation is atomic. If
+any PCZT is invalid or cannot be signed, Keystone returns an error instead of a
+partial result. PCZT entries with identical canonical encodings are rejected.
+Every spend must be fully Keystone-owned and use a supported shielded pool,
+currently Orchard or Ironwood. Transparent inputs and Sapling spends or outputs
+are rejected.
 
 #### Outer UR/CBOR envelopes
 
-Both registry types use the same integer keys. Firmware requires `request-id` to
-be non-empty. Key `1` follows `zcash-pczt` by carrying opaque transaction data,
-and key `2` follows `zcash-sign-result` by carrying the request id.
+Both registry types use definite-length CBOR maps with the same integer keys.
+Firmware requires `request-id` to be non-empty. Key `1` follows `zcash-pczt` by
+carrying opaque transaction data, and key `2` follows `zcash-sign-result` by
+carrying the request id.
 
 ```cddl
 zcash-sign-batch = {

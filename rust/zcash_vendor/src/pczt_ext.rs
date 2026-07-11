@@ -284,6 +284,8 @@ fn hash_sapling_spends(pczt: &Pczt) -> Hash {
             ch.update(s_spend.nullifier());
 
             nh.update(s_spend.cv());
+            // Checked v5 spends require an anchor. Zero only keeps digesting
+            // malformed unchecked data infallible; it cannot yield a valid transaction.
             nh.update(pczt.sapling().anchor().as_ref().unwrap_or(&[0u8; 32]));
             nh.update(s_spend.rk());
         }

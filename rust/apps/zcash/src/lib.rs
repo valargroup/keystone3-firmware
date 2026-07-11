@@ -15,6 +15,8 @@ use alloc::{
 // the non-cypherpunk build so it stays warning-free.
 #[cfg(feature = "cypherpunk")]
 use alloc::format;
+#[cfg(feature = "cypherpunk")]
+use pczt::sign::SpendAuthCache;
 use pczt::structs::ParsedPczt;
 #[cfg(feature = "cypherpunk")]
 use pczt::structs::{ParsedFrom, ParsedOrchard, ParsedTo};
@@ -24,6 +26,8 @@ use zcash_vendor::{
     zip32,
 };
 
+#[cfg(feature = "cypherpunk")]
+use zcash_vendor::pczt::roles::signer::SpendAuthSignature;
 #[cfg(any(test, feature = "multi_coins", feature = "cypherpunk"))]
 use zcash_vendor::pczt::Pczt;
 
@@ -71,14 +75,6 @@ pub fn get_address<P: consensus::Parameters>(params: &P, ufvk_text: &str) -> Res
 /// The returned bytes are what C retains as the `checked_PCZT`, which display
 /// and signing consume without re-running these checks.
 #[cfg(feature = "cypherpunk")]
-pub use pczt::sign::SpendAuthCache;
-#[cfg(feature = "cypherpunk")]
-pub use zcash_vendor::pczt::roles::signer::{
-    batch::{BatchSignRequest, BatchSignResponse},
-    SpendAuthSignature,
-};
-
-#[cfg(feature = "cypherpunk")]
 pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     params: &P,
     pczt_bytes: &[u8],
@@ -96,12 +92,11 @@ pub fn check_pczt_cypherpunk<P: consensus::Parameters>(
     )
 }
 
-/// Batch check for one `ZcashSignBatch` message: parses once, runs the full
-/// policy checks, enforces the batch shielded-action policy (the PCZT must be
-/// batch-signable by this account), and returns the normalized encoding. See
-/// `check_pczt_cypherpunk` for the normalization contract.
+/// Checks one PCZT from a batch request, enforcing the batch shielded-action
+/// policy, and returns its normalized encoding. See `check_pczt_cypherpunk`
+/// for the normalization contract.
 ///
-/// Test-only parity reference: production checks a batch message through the
+/// Test-only parity reference: production checks a batch PCZT through the
 /// display-producing `check_batch_pczt_with_display`, and this independent
 /// check-only composition (whose bytes are byte-identical) is what the parity
 /// tests diff that fused engine against.
@@ -340,8 +335,8 @@ fn check_and_parse_batch_pczt_internal<P: consensus::Parameters>(
         "transparent xpub is not present".to_string(),
     ))?;
     // `validate_supported_pczt` stays ahead of the wallet-key derivation so the
-    // first message keeps the check-only path's error ordering; the context
-    // then caches the derived keys for every later message.
+    // first PCZT keeps the check-only path's error ordering; the context then
+    // caches the derived keys for every later PCZT.
     pczt::validate_supported_pczt(&pczt)?;
     let keys = ctx.wallet_keys(params)?;
     // Validate shielded actions while collecting their display rows.
@@ -397,8 +392,7 @@ fn check_and_parse_batch_pczt_internal<P: consensus::Parameters>(
 /// Checks one batch PCZT and returns normalized bytes, display rows, and an
 /// optional compact migration classification. Validation and display share one
 /// shielded-action sweep, while the context reuses viewing keys across the batch.
-/// `None` means
-/// the caller must retain the ordinary per-message display.
+/// `None` means the caller must retain the ordinary display for this PCZT.
 #[cfg(feature = "cypherpunk")]
 pub fn check_batch_pczt_with_display<P: consensus::Parameters>(
     params: &P,
@@ -615,7 +609,7 @@ fn compact_batch_migration_review(items: Vec<ParsedBatchItem>) -> Vec<ParsedPczt
 }
 
 /// Compacts the display rows cached by the batch check without re-parsing any
-/// PCZT. Classification is independent of the original message order.
+/// PCZT. Classification is independent of the original PCZT order.
 #[cfg(feature = "cypherpunk")]
 pub fn compact_checked_batch_migration_review(
     items: impl IntoIterator<Item = (ParsedPczt, Option<BatchMigrationTransferSummary>)>,
@@ -629,10 +623,10 @@ pub fn compact_checked_batch_migration_review(
 }
 
 /// Parses checked batch PCZTs and compacts eligible Orchard-to-Ironwood
-/// self-transfers without relying on message position.
+/// self-transfers without relying on PCZT position.
 ///
 /// Every input must be normalized bytes produced by the batch check. A batch
-/// with more than one ordinary transaction uses full per-message review.
+/// with more than one ordinary transaction uses full review for each PCZT.
 #[cfg(feature = "cypherpunk")]
 pub fn parse_batch_with_migration_summary_cypherpunk<'a, P: consensus::Parameters>(
     params: &P,
@@ -1149,7 +1143,7 @@ pub fn sign_checked_pczt<P: consensus::Parameters>(
 /// signable shielded action. Parses `checked_pczt` exactly once and returns the
 /// redacted, version-stamped response bytes. Derives keys into a fresh
 /// [`SpendAuthCache`]; batch loops should use
-/// [`sign_checked_batch_pczt_with_cache`] so messages for the selected account
+/// [`sign_checked_batch_pczt_with_cache`] so PCZTs for the selected account
 /// share one cached derivation.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_checked_batch_pczt<P: consensus::Parameters>(
@@ -1170,10 +1164,10 @@ pub fn sign_checked_batch_pczt<P: consensus::Parameters>(
 }
 
 /// [`sign_checked_batch_pczt`] with a caller-provided [`SpendAuthCache`]. Create
-/// one cache per signing request and pass it to every message using the same
+/// one cache per signing request and pass it to every PCZT using the same
 /// seed. The normal batch path reuses its selected account key, avoiding the
 /// repeated ZIP 32 derivation that accounted for ~70% of signing time at 31
-/// messages. An account change scrubs and replaces the slot.
+/// PCZTs. An account change scrubs and replaces the slot.
 #[cfg(feature = "cypherpunk")]
 pub fn sign_checked_batch_pczt_with_cache<P: consensus::Parameters>(
     params: &P,
@@ -2350,7 +2344,7 @@ mod tests {
                 &ufvk_text,
                 &seed_fingerprint,
             )
-            .expect("message order must not affect migration classification");
+            .expect("PCZT order must not affect migration classification");
 
             assert_eq!(parsed.len(), 2);
             let summary = &parsed[1];
@@ -2361,7 +2355,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_migration_summary_keeps_single_message_uncompacted() {
+    fn test_batch_migration_summary_keeps_single_pczt_uncompacted() {
         let sample = pczt::test_support::sample_migration_pczt();
         let checked = check_batch_pczt_cypherpunk(
             &pczt::test_support::Nu6_3Network,
@@ -2452,7 +2446,7 @@ mod tests {
             &sample.seed_fingerprint,
             0,
         )
-        .expect("per-message review must accept the memo-carrying transfer");
+        .expect("review for each PCZT must accept the memo-carrying transfer");
         let shown_memo = parsed
             .get_ironwood()
             .expect("migration must show Ironwood outputs")
@@ -2699,7 +2693,7 @@ mod tests {
                 ),
                 Err(ZcashError::InvalidPczt(message)) if message.contains("undecryptable")
             ),
-            "ordinary per-message review must also reject the undecryptable output"
+            "ordinary review for each PCZT must also reject the undecryptable output"
         );
     }
 
@@ -2938,10 +2932,10 @@ mod tests {
         assert_eq!(summary.fee, 20_000);
     }
 
-    /// A non-migration-shaped message (here a memo-carrying migration child the
+    /// A non-migration-shaped PCZT (here a memo-carrying migration child the
     /// amounts-only summary cannot render) must still pass the check successfully but
     /// yield `None` for the aggregate summary, so the caller falls back to the
-    /// per-message display, which shows the memo.
+    /// display for that PCZT, which shows the memo.
     #[test]
     fn test_check_batch_with_display_non_migration_yields_no_summary() {
         use zcash_vendor::zcash_protocol::memo::MemoBytes;
