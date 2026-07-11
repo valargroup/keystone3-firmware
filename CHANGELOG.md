@@ -6,6 +6,8 @@
 
 1. Added support for Zcash batch PCZT signing
 2. The device no longer auto-locks while a long Zcash batch review is loading
+3. Zcash batch signing returns a compact signatures-only QR (far fewer frames) and only signs the exact batch that was reviewed
+4. Zcash batch requests and compact signature responses use the shared versioned PCZT Postcard format
 
 ### Bug Fixes
 
