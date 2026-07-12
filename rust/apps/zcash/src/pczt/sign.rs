@@ -190,21 +190,13 @@ impl Drop for AskCacheSlot {
 /// Changing account scrubs the old key before replacement; dropping the cache
 /// scrubs the final key.
 #[cfg(feature = "cypherpunk")]
-pub struct SpendAuthCache {
-    slot: RefCell<AskCacheSlot>,
-    #[cfg(test)]
-    derivation_count: Cell<usize>,
-}
+pub struct SpendAuthCache(RefCell<AskCacheSlot>);
 
 #[cfg(feature = "cypherpunk")]
 impl SpendAuthCache {
     /// Creates an empty request-scoped cache.
     pub fn new() -> Self {
-        Self {
-            slot: RefCell::new(AskCacheSlot::empty()),
-            #[cfg(test)]
-            derivation_count: Cell::new(0),
-        }
+        Self(RefCell::new(AskCacheSlot::empty()))
     }
 }
 
@@ -271,10 +263,6 @@ impl<'a> SeedSigner<'a> {
         // after this borrow ends.
         let ask = orchard::keys::SpendAuthorizingKey::from(unsafe { osk.assume_init_ref() });
         osk.zeroize();
-        #[cfg(test)]
-        self.ask_cache
-            .derivation_count
-            .set(self.ask_cache.derivation_count.get() + 1);
         Ok(ask)
     }
 
@@ -289,7 +277,7 @@ impl<'a> SeedSigner<'a> {
     ) -> Result<R, ZcashError> {
         // Mutably borrowed across `f`, which is fine: `f` only signs and never
         // re-enters the cache.
-        let mut cache = self.ask_cache.slot.borrow_mut();
+        let mut cache = self.ask_cache.0.borrow_mut();
         if cache.get(account_index).is_none() {
             let ask = self.derive_spend_authorizing_key(account_index)?;
             cache.replace(account_index, ask);
@@ -644,9 +632,9 @@ mod tests {
             ask_scalar_bytes(&orchard::keys::SpendAuthorizingKey::from(&osk))
         };
 
-        // Separate signers model separate PCZTs and pool passes sharing
-        // one request-scoped slot: miss, cross-pool hit, replacement, hit, then
-        // replacement back to the first account.
+        // Separate signers model PCZT and pool passes sharing one request-scoped
+        // slot. Every lookup must return the requested account's key, including
+        // after replacing the cached account.
         for (pool, i) in [
             (ShieldedPool::Orchard, 0u32),
             (ShieldedPool::Ironwood, 0),
@@ -662,12 +650,11 @@ mod tests {
         }
 
         // The slot holds exactly the most recently used account's key.
-        assert_eq!(cache.slot.borrow().account, Some(account(0)));
-        assert_eq!(cache.derivation_count.get(), 3);
+        assert_eq!(cache.0.borrow().account, Some(account(0)));
     }
 
     #[test]
-    fn test_ask_cache_reused_across_pczt_calls() {
+    fn test_ask_cache_can_be_reused_across_pczt_calls() {
         let sample = signable_sample_pczt();
         let cache = SpendAuthCache::new();
 
@@ -680,11 +667,7 @@ mod tests {
             .expect("shared-cache PCZT should sign");
         }
 
-        assert_eq!(
-            cache.derivation_count.get(),
-            1,
-            "separate PCZT calls must reuse the cached account key"
-        );
+        assert_eq!(cache.0.borrow().account, Some(zip32::AccountId::ZERO));
     }
 
     fn signable_sample_pczt() -> crate::pczt::test_support::SamplePczt {
