@@ -648,6 +648,15 @@ pub(crate) fn parse_orchard_spend(
     Ok(ParsedFrom::new(None, zec_value, value, is_mine))
 }
 
+#[cfg(feature = "cypherpunk")]
+pub(crate) fn is_wallet_orchard_address(
+    keys: &WalletOrchardKeys,
+    address: &Address,
+) -> Result<bool, ZcashError> {
+    let (external, internal) = keys.address_scope_flags(address);
+    Ok(external || internal)
+}
+
 /// Wallet Orchard key material derived once per check/parse entry and reused
 /// across every action of the PCZT. Deriving the incoming viewing keys requires
 /// Sinsemilla commitments; the derived key fields are invariant for a given
@@ -694,15 +703,6 @@ impl WalletOrchardKeys {
             self.internal_ivk.diversifier_index(address).is_some(),
         )
     }
-}
-
-#[cfg(feature = "cypherpunk")]
-pub(crate) fn is_wallet_orchard_address(
-    keys: &WalletOrchardKeys,
-    address: &Address,
-) -> Result<bool, ZcashError> {
-    let (external, internal) = keys.address_scope_flags(address);
-    Ok(external || internal)
 }
 
 #[cfg(feature = "cypherpunk")]
