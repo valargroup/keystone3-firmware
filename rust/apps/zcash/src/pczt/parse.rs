@@ -659,19 +659,7 @@ pub(crate) struct WalletOrchardKeys {
     external_ovk: OutgoingViewingKey,
     internal_ovk: OutgoingViewingKey,
     transparent_internal_ovk: Option<OutgoingViewingKey>,
-    /// Memoized per-address scope ownership, keyed by the raw address bytes.
-    /// `diversifier_index` costs a diversified-base derivation per call and a
-    /// migration batch asks about the same one or two addresses for every
-    /// output of every PCZT, so cache the (external, internal) verdicts.
-    /// Bounded: past the cap the verdict is still computed, just not cached.
-    address_scopes: core::cell::RefCell<alloc::vec::Vec<([u8; 43], (bool, bool))>>,
 }
-
-/// Distinct addresses a single batch legitimately asks about (the wallet's own
-/// internal and external addresses, plus slack for counterparty outputs); past
-/// this the cache stops growing so a many-address PCZT cannot bloat memory.
-#[cfg(feature = "cypherpunk")]
-const ADDRESS_SCOPE_CACHE_CAP: usize = 8;
 
 #[cfg(feature = "cypherpunk")]
 impl WalletOrchardKeys {
@@ -695,32 +683,16 @@ impl WalletOrchardKeys {
             external_ovk,
             internal_ovk,
             transparent_internal_ovk,
-            address_scopes: core::cell::RefCell::new(alloc::vec::Vec::new()),
         })
     }
 
-    /// Returns whether `address` belongs to the wallet's (external, internal)
-    /// IVK scopes, memoized per address. The verdicts are pure functions of the
-    /// derived IVKs, which are fixed for this value's lifetime.
+    /// Returns whether `address` belongs to the wallet's external and internal
+    /// IVK scopes.
     fn address_scope_flags(&self, address: &Address) -> (bool, bool) {
-        let raw = address.to_raw_address_bytes();
-        if let Some((_, flags)) = self
-            .address_scopes
-            .borrow()
-            .iter()
-            .find(|(cached, _)| *cached == raw)
-        {
-            return *flags;
-        }
-        let flags = (
+        (
             self.external_ivk.diversifier_index(address).is_some(),
             self.internal_ivk.diversifier_index(address).is_some(),
-        );
-        let mut cache = self.address_scopes.borrow_mut();
-        if cache.len() < ADDRESS_SCOPE_CACHE_CAP {
-            cache.push((raw, flags));
-        }
-        flags
+        )
     }
 }
 
@@ -731,15 +703,6 @@ pub(crate) fn is_wallet_orchard_address(
 ) -> Result<bool, ZcashError> {
     let (external, internal) = keys.address_scope_flags(address);
     Ok(external || internal)
-}
-
-#[cfg(feature = "cypherpunk")]
-fn is_internal_orchard_address(
-    keys: &WalletOrchardKeys,
-    address: &Address,
-) -> Result<bool, ZcashError> {
-    let (_, internal) = keys.address_scope_flags(address);
-    Ok(internal)
 }
 
 #[cfg(feature = "cypherpunk")]
@@ -808,8 +771,8 @@ pub(crate) fn parse_orchard_output<P: consensus::Parameters>(
                     validate_orchard_user_address(params, user_address, &address)?;
                 }
 
-                let belongs_to_wallet = is_wallet_orchard_address(keys, &address)?;
-                let is_internal = is_internal_orchard_address(keys, &address)?;
+                let (is_external, is_internal) = keys.address_scope_flags(&address);
+                let belongs_to_wallet = is_external || is_internal;
                 if is_internal_ovk && !belongs_to_wallet {
                     return Err(ZcashError::InvalidPczt(alloc::format!(
                         "{pool_label} output was recoverable with an internal OVK but does not belong to this wallet"
