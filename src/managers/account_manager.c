@@ -47,6 +47,9 @@ static int32_t WipeLegacyPasswordHashPages(void)
     if (IsPinHashWiped()) {
         return SUCCESS_CODE;
     }
+    if (!SE_IsGeneration1()) {
+        return ERR_ATECC608B_BIND;
+    }
 
     // Erase old PIN verifiers. Do not add normal read/write users for this page.
     for (uint8_t accountIndex = 0; accountIndex < 3; accountIndex++) {

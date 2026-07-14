@@ -47,10 +47,12 @@
 #include "anti_tamper.h"
 #include "power_on_self_check.h"
 #include "account_manager.h"
+#include "se_manager.h"
 #include "version.h"
 #include "hardware_version.h"
 #include "librust_c.h"
 #include "drv_mpu.h"
+#include "assert.h"
 
 int main(void)
 {
@@ -77,6 +79,9 @@ int main(void)
     UserMsgInit();
     DS28S60_Init();
     Atecc608bInit();
+    // This branch implements only the generation 1 account backend. Confirm its
+    // locked configuration before any account page can be read or written.
+    ASSERT(SE_IsGeneration1());
     AccountsDataCheck();
     MountUsbFatfs();
     RtcInit();

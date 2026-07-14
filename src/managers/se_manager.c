@@ -27,6 +27,41 @@ static int32_t NormalizeAteccAuthError(int32_t ret)
     return (ret == ATCA_CHECKMAC_VERIFY_FAILED) ? ERR_KEYSTORE_AUTH : ret;
 }
 
+bool SE_IsGeneration1(void)
+{
+#ifdef COMPILE_SIMULATOR
+    return true;
+#else
+    static bool resolved = false;
+    static bool supported = false;
+    Atecc608bConfig_t config = {0};
+    bool configLocked = false;
+    bool dataLocked = false;
+
+    if (resolved) {
+        return supported;
+    }
+    resolved = true;
+
+    if (atcab_read_config_zone((uint8_t *)&config) != ATCA_SUCCESS ||
+        atcab_is_locked(LOCK_ZONE_CONFIG, &configLocked) != ATCA_SUCCESS ||
+        atcab_is_locked(LOCK_ZONE_DATA, &dataLocked) != ATCA_SUCCESS) {
+        CLEAR_OBJECT(config);
+        return false;
+    }
+
+    // Classify only from the immutable locked config. The data-zone match
+    // count is mutable and must never select an account backend.
+    supported = configLocked && dataLocked &&
+                config.countMatch == 0x00 &&
+                config.chipOptions == 0x0402 &&
+                config.slotConfig[8] == 0x42C2 &&
+                config.slotConfig[13] == 0x42C2;
+    CLEAR_OBJECT(config);
+    return supported;
+#endif
+}
+
 static int32_t SetNewKeyPieceToAtecc608b(uint8_t accountIndex, uint8_t *piece, const char *password)
 {
     uint8_t authKey[32], hostRandom[32], inData[32], outData[32];
@@ -173,6 +208,9 @@ int32_t GetKeyPieceFromSE(uint8_t accountIndex, uint8_t *pieces, const char *pas
 {
     int32_t ret;
 
+    if (!SE_IsGeneration1()) {
+        return ERR_ATECC608B_BIND;
+    }
     do {
         ret = GetKeyPieceFromAtecc608b(accountIndex, pieces, password);
         CHECK_ERRCODE_BREAK("atecc piece", ret);
@@ -189,6 +227,9 @@ int32_t SetNewKeyPieceToSE(uint8_t accountIndex, uint8_t *pieces, const char *pa
 {
     //TODO: deal with error code
     int32_t ret;
+    if (!SE_IsGeneration1()) {
+        return ERR_ATECC608B_BIND;
+    }
     ret = SetNewKeyPieceToAtecc608b(accountIndex, pieces, password);
     CHECK_ERRCODE_RETURN_INT(ret);
 

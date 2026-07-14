@@ -50,6 +50,9 @@ int32_t SetFpResetKey(const uint8_t *resetKey);
 int32_t GetFpResetKey(uint8_t *resetKey);
 bool FpAesKeyExist();
 void GetAccountSlot(AccountSlot_t *accountSlot, uint8_t accountIndex);
+/// Return true when the locked secure element matches the generation 1
+/// configuration discriminator used by this branch.
+bool SE_IsGeneration1(void);
 int32_t SignMessageWithDeviceKey(uint8_t *messageHash, uint8_t *signaure);
 int32_t GetDevicePublicKey(uint8_t *pubkey);
 int32_t SetWalletDataHash(uint8_t index, uint8_t *info);

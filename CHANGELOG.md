@@ -1,5 +1,11 @@
 ## Unreleased
 
+**All variants:**
+
+### Bug Fixes
+
+1. Rejected secure elements that do not match the generation 1 configuration discriminator before accessing account storage
+
 **Cypherpunk:**
 
 ### What's new
