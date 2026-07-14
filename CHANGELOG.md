@@ -1,5 +1,11 @@
 ## Unreleased
 
+**All variants:**
+
+### Bug Fixes
+
+1. Added generation 2 secure element support and cleanup for incomplete wallet state after interrupted lifecycle operations
+
 **Cypherpunk:**
 
 ### What's new
