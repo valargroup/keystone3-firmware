@@ -4797,8 +4797,8 @@ checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
 name = "ur-parse-lib"
-version = "1.0.4"
-source = "git+https://github.com/valargroup/keystone-sdk-rust.git?rev=37bc6d12fdf15df140b65b7b819f16cf9c2aa03f#37bc6d12fdf15df140b65b7b819f16cf9c2aa03f"
+version = "1.0.7"
+source = "git+https://github.com/valargroup/keystone-sdk-rust.git?rev=abc72f085f4c42e0ad048c60c1102f24a16e1f68#abc72f085f4c42e0ad048c60c1102f24a16e1f68"
 dependencies = [
  "hex",
  "keystone-ur",
@@ -4807,8 +4807,8 @@ dependencies = [
 
 [[package]]
 name = "ur-registry"
-version = "1.0.5"
-source = "git+https://github.com/valargroup/keystone-sdk-rust.git?rev=37bc6d12fdf15df140b65b7b819f16cf9c2aa03f#37bc6d12fdf15df140b65b7b819f16cf9c2aa03f"
+version = "1.0.7"
+source = "git+https://github.com/valargroup/keystone-sdk-rust.git?rev=abc72f085f4c42e0ad048c60c1102f24a16e1f68#abc72f085f4c42e0ad048c60c1102f24a16e1f68"
 dependencies = [
  "bs58",
  "hex",
