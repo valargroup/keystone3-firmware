@@ -89,6 +89,8 @@ void GuiScanDeInit()
     GUI_DEL_OBJ(g_noticeWindow);
 #endif
 
+    // Scanning can exceed the lock timeout, so restart it before re-enabling auto-lock.
+    ClearLockScreenTime();
     SetPageLockScreen(true);
 }
 
@@ -194,6 +196,8 @@ void GuiScanResult(bool result, void *param)
 void GuiTransactionCheckPass(void)
 {
     GuiModelTransactionCheckResultClear();
+    // Scanning can exceed the lock timeout, so restart it before re-enabling auto-lock.
+    ClearLockScreenTime();
     SetPageLockScreen(true);
     GuiCloseCurrentWorkingView();
 #ifdef WEB3_VERSION
