@@ -62,9 +62,13 @@ compact response uses `zcash-batch-sig-result`, echoes the request id, and
 carries the PCZT-owned response in its own opaque `data` field. It also reports
 the signing firmware version once for the entire response.
 
-Batch version 1 is supported by cypherpunk firmware and currently accepts up to
-40 PCZTs. The encoded batch data and request id together, and the canonical PCZT
-payloads after decoding, must each fit within 512 KiB. The operation is atomic.
+Batch version 1 is supported by cypherpunk firmware. A request is accepted
+whenever the encoded batch data and request id together fit within 128 KiB, it
+carries at most 40 PCZTs, and those PCZTs carry at most 384 shielded (Orchard
+plus Ironwood) actions in total. Every limit is checkable by the sender from
+the compact encoding it transmits, and a request within all three limits is
+never size-rejected - including after the firmware resolves compact fields
+into its larger internal normalized representation. The operation is atomic.
 If any PCZT is invalid or cannot be signed, Keystone returns an error instead of
 a partial result. PCZT entries with identical canonical encodings are rejected.
 Every spend must be fully Keystone-owned and use a supported shielded pool,

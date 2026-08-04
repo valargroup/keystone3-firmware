@@ -37,12 +37,66 @@ use zcash_vendor::pczt::roles::signer::batch::{BatchSignRequest, BatchSignRespon
 use zcash_vendor::{pczt::Pczt, zcash_protocol::consensus::MainNetwork};
 use zeroize::Zeroize;
 
-// Cap both per-PCZT overhead and variable-size payload data to leave headroom
-// in shared device memory while processing a batch.
+// Batch size limits. The three sender-facing caps (wire bytes, PCZT count,
+// total shielded actions) form the compatibility contract: any request within
+// all three is never size-rejected, because the two internal representation
+// caps below are derived to be implied by them
+// (`test_normalized_cap_covers_wire_contract`).
+
+/// Cap on the number of PCZTs in one batch request. Sender-facing.
 #[cfg(feature = "cypherpunk")]
 const ZCASH_BATCH_MAX_PCZTS: usize = 40;
+
+/// Sender-facing cap on the received request: request id plus compact Postcard
+/// body as transmitted, so a wallet can verify it locally before displaying
+/// the QR. Checked BEFORE parse, which also bounds parse-time action-struct
+/// allocation (about 2 KiB in memory per action at 122 wire bytes minimum,
+/// including Vec capacity doubling) under the device heap; the previous
+/// 512 KiB value was never practically scannable over QR and admitted a
+/// pre-approval parse-time OOM hang.
 #[cfg(feature = "cypherpunk")]
-const ZCASH_BATCH_MAX_TOTAL_BYTES: usize = 512 * 1024;
+const ZCASH_BATCH_MAX_WIRE_BYTES: usize = 128 * 1024;
+
+/// Sender-facing cap on total shielded (Orchard + Ironwood) actions across
+/// the batch, countable from the compact encoding without resolving fields.
+/// Memory-derived: up to three full action arrays coexist during check and
+/// sign, and each in-memory action costs about 2 KiB (the inline witness
+/// Option reserves 1,032 bytes even when None), so 384 keeps worst-case peaks
+/// well under the usable PSRAM heap; the allocator loops forever on OOM.
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_TOTAL_ACTIONS: usize = 384;
+
+/// Worst-case wire growth of one action under `Pczt::resolve_fields` for the
+/// pinned pczt crate: filling omitted cv_net (+32) and cmx (+32) and
+/// re-encrypting an empty-memo compact ciphertext to the full 580-byte form
+/// (+581). Pinned empirically by `test_resolved_action_growth_is_bounded`;
+/// re-derive it whenever the pczt crate pin changes (the Cargo.lock pin is
+/// the real guard - the fixture test cannot see newly added elidable fields).
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_RESOLVED_ACTION_GROWTH: usize = 645;
+
+/// Cap on the retained normalized envelope (post-`resolve_fields`, re-encoded
+/// v2). Any request satisfying the sender-facing caps fits:
+/// MAX_WIRE_BYTES + MAX_TOTAL_ACTIONS * MAX_RESOLVED_ACTION_GROWTH
+///   = 131,072 + 247,680 = 378,752 <= 524,288.
+/// Bounded by device memory: batch buffers live in the PSRAM heap and
+/// post-parse worst-case peaks stay near 3.6 MiB at this cap.
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_NORMALIZED_BYTES: usize = 512 * 1024;
+
+/// Cap on the canonical per-PCZT payload sum, the defense-in-depth invariant
+/// `validate_zcash_batch_payloads` checks. Standalone `Pczt::serialize()`
+/// re-encodes each PCZT as v2 with its own 8-byte header, and re-encoding a
+/// v1-wire PCZT additionally grows by up to 7 fixed bytes (transparent Option
+/// wrap +1, sapling Option tag + anchor Option +2, orchard Option tag +
+/// anchor Option + note_version +3, absent-ironwood None tag +1) plus 5 bytes
+/// per action, so for any wire-legal batch:
+/// MAX_WIRE_BYTES + 15 * MAX_PCZTS + 5 * MAX_TOTAL_ACTIONS
+///   = 131,072 + 600 + 1,920 = 133,592.
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES: usize =
+    ZCASH_BATCH_MAX_WIRE_BYTES + 15 * ZCASH_BATCH_MAX_PCZTS + 5 * ZCASH_BATCH_MAX_TOTAL_ACTIONS;
+
 #[cfg(feature = "cypherpunk")]
 const ZCASH_BATCH_REQUEST_HEADER_LEN: usize = 12;
 
@@ -238,9 +292,9 @@ fn validate_zcash_batch_payloads(payloads: &[Vec<u8>]) -> Result<(), RustCError>
             )));
         }
         total_payload_bytes = total_payload_bytes.saturating_add(payload.len());
-        if total_payload_bytes > ZCASH_BATCH_MAX_TOTAL_BYTES {
+        if total_payload_bytes > ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES {
             return Err(RustCError::UnsupportedTransaction(format!(
-                "Zcash batch PCZTs exceed {ZCASH_BATCH_MAX_TOTAL_BYTES} bytes"
+                "Zcash batch PCZTs exceed {ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES} bytes"
             )));
         }
 
@@ -276,20 +330,36 @@ fn validate_zcash_batch(batch: &BatchSignRequest) -> Result<Vec<Vec<u8>>, RustCE
     Ok(payloads)
 }
 
-/// Bounds the outer request before parsing or retaining its checked state.
+/// Bounds one batch envelope (request id + data) against `max_bytes`,
+/// reporting the applied cap in the error.
 #[cfg(feature = "cypherpunk")]
-fn validate_zcash_batch_envelope(request_id: &[u8], data: &[u8]) -> Result<(), RustCError> {
+fn validate_zcash_batch_envelope_with(
+    request_id: &[u8],
+    data: &[u8],
+    max_bytes: usize,
+) -> Result<(), RustCError> {
     if request_id.is_empty() {
         return Err(RustCError::InvalidData(
             "Zcash batch request id must not be empty".to_string(),
         ));
     }
-    if request_id.len().saturating_add(data.len()) > ZCASH_BATCH_MAX_TOTAL_BYTES {
+    if request_id.len().saturating_add(data.len()) > max_bytes {
         return Err(RustCError::UnsupportedTransaction(format!(
-            "Zcash batch request exceeds {ZCASH_BATCH_MAX_TOTAL_BYTES} bytes"
+            "Zcash batch request exceeds {max_bytes} bytes"
         )));
     }
     Ok(())
+}
+
+/// Bounds the retained normalized envelope (the re-encoded post-resolve
+/// batch), which may legally exceed the wire cap by the resolved-field
+/// growth; see `ZCASH_BATCH_MAX_NORMALIZED_BYTES`.
+#[cfg(feature = "cypherpunk")]
+fn validate_zcash_batch_normalized_envelope(
+    request_id: &[u8],
+    data: &[u8],
+) -> Result<(), RustCError> {
+    validate_zcash_batch_envelope_with(request_id, data, ZCASH_BATCH_MAX_NORMALIZED_BYTES)
 }
 
 /// Rejects an oversized top-level count before Postcard allocates the PCZT vector.
@@ -322,13 +392,46 @@ fn validate_zcash_batch_request_count(data: &[u8]) -> Result<(), RustCError> {
     Ok(())
 }
 
-/// Parses the bounded outer registry into the PCZT crate's batch request.
+/// Enforces the sender-facing cap on total shielded (Orchard + Ironwood)
+/// actions in a parsed batch. Runs at wire ingress and again on the sign-time
+/// reopen of the retained normalized bytes; `resolve_fields` preserves action
+/// counts, so the two checks always agree.
 #[cfg(feature = "cypherpunk")]
-fn parse_zcash_batch_registry(registry: &ZcashSignBatch) -> Result<BatchSignRequest, RustCError> {
-    validate_zcash_batch_envelope(registry.get_request_id(), registry.get_data())?;
+fn validate_zcash_batch_action_count(batch: &BatchSignRequest) -> Result<(), RustCError> {
+    let total_actions = batch.pczts().iter().fold(0usize, |total, pczt| {
+        total
+            .saturating_add(pczt.orchard().actions().len())
+            .saturating_add(pczt.ironwood().actions().len())
+    });
+    if total_actions > ZCASH_BATCH_MAX_TOTAL_ACTIONS {
+        return Err(RustCError::UnsupportedTransaction(format!(
+            "Zcash batch exceeds {ZCASH_BATCH_MAX_TOTAL_ACTIONS} shielded actions"
+        )));
+    }
+    Ok(())
+}
+
+/// Parses the bounded outer registry into the PCZT crate's batch request.
+///
+/// `max_envelope_bytes` selects the representation-specific envelope cap:
+/// `ZCASH_BATCH_MAX_WIRE_BYTES` at wire ingress and
+/// `ZCASH_BATCH_MAX_NORMALIZED_BYTES` when reopening the retained normalized
+/// bytes at sign time.
+#[cfg(feature = "cypherpunk")]
+fn parse_zcash_batch_registry(
+    registry: &ZcashSignBatch,
+    max_envelope_bytes: usize,
+) -> Result<BatchSignRequest, RustCError> {
+    validate_zcash_batch_envelope_with(
+        registry.get_request_id(),
+        registry.get_data(),
+        max_envelope_bytes,
+    )?;
     validate_zcash_batch_request_count(registry.get_data())?;
-    BatchSignRequest::parse(registry.get_data())
-        .map_err(|e| RustCError::InvalidData(format!("invalid PCZT batch request: {e:?}")))
+    let batch = BatchSignRequest::parse(registry.get_data())
+        .map_err(|e| RustCError::InvalidData(format!("invalid PCZT batch request: {e:?}")))?;
+    validate_zcash_batch_action_count(&batch)?;
+    Ok(batch)
 }
 
 /// Reopens the exact normalized envelope retained by the check step.
@@ -337,14 +440,14 @@ fn parse_checked_zcash_batch(data: &[u8]) -> Result<(Vec<u8>, BatchSignRequest),
     let registry = ZcashSignBatch::try_from(data.to_vec()).map_err(|e| {
         RustCError::InvalidData(format!("decode checked Zcash batch envelope: {e:?}"))
     })?;
-    let batch = parse_zcash_batch_registry(&registry)?;
+    let batch = parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_NORMALIZED_BYTES)?;
     Ok((registry.get_request_id().to_vec(), batch))
 }
 
 /// Retains normalized PCZTs and their request id as checked firmware state.
 #[cfg(feature = "cypherpunk")]
 fn encode_checked_zcash_batch(request_id: &[u8], data: Vec<u8>) -> Result<Vec<u8>, RustCError> {
-    validate_zcash_batch_envelope(request_id, &data)?;
+    validate_zcash_batch_normalized_envelope(request_id, &data)?;
     ZcashSignBatch::new(request_id.to_vec(), data)
         .try_into()
         .map_err(|e| {
@@ -382,7 +485,7 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
         .c_ptr();
     }
     let registry = extract_ptr_with_type!(tx, ZcashSignBatch);
-    let batch = match parse_zcash_batch_registry(registry) {
+    let batch = match parse_zcash_batch_registry(registry, ZCASH_BATCH_MAX_WIRE_BYTES) {
         Ok(batch) => batch,
         Err(e) => return TransactionCheckResult::from(e).c_ptr(),
     };
@@ -967,7 +1070,7 @@ mod tests {
     fn test_validate_zcash_batch_rejects_oversized_total_payload() {
         // Three PCZTs whose summed payloads cross the byte bound: the count cap
         // alone no longer bounds RAM, so the byte bound must reject this.
-        let big = vec![0xAB; ZCASH_BATCH_MAX_TOTAL_BYTES / 2];
+        let big = vec![0xAB; ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES / 2];
         let payloads = vec![big.clone(), [big.as_slice(), &[0x01]].concat(), vec![0x02]];
 
         let error = validate_zcash_batch_payloads(&payloads).unwrap_err();
@@ -1037,13 +1140,13 @@ mod tests {
         let registry = ZcashSignBatch::new(vec![], empty_batch_request());
 
         assert_eq!(
-            parse_zcash_batch_registry(&registry).unwrap_err(),
+            parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_WIRE_BYTES).unwrap_err(),
             RustCError::InvalidData("Zcash batch request id must not be empty".to_string())
         );
 
-        let oversized = ZcashSignBatch::new(vec![0xaa], vec![0; ZCASH_BATCH_MAX_TOTAL_BYTES]);
+        let oversized = ZcashSignBatch::new(vec![0xaa], vec![0; ZCASH_BATCH_MAX_WIRE_BYTES]);
         assert!(matches!(
-            parse_zcash_batch_registry(&oversized),
+            parse_zcash_batch_registry(&oversized, ZCASH_BATCH_MAX_WIRE_BYTES),
             Err(RustCError::UnsupportedTransaction(message))
                 if message.contains("batch request exceeds")
         ));
@@ -1066,11 +1169,387 @@ mod tests {
         request[ZCASH_BATCH_REQUEST_HEADER_LEN] += 1;
         let registry = ZcashSignBatch::new(vec![0xaa], request);
         assert_eq!(
-            parse_zcash_batch_registry(&registry).unwrap_err(),
+            parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_WIRE_BYTES).unwrap_err(),
             RustCError::UnsupportedTransaction(format!(
                 "Zcash batch supports at most {ZCASH_BATCH_MAX_PCZTS} PCZTs"
             ))
         );
+    }
+
+    /// One-action PCZT with cv_net, cmx, and the ciphertext elided to the
+    /// compact memo form, generated with the pinned pczt crate (387 bytes).
+    /// Resolving it re-derives all three fields at their maximum growth.
+    #[cfg(feature = "cypherpunk")]
+    const ELIDED_ONE_ACTION_PCZT: [u8; 387] = [
+        0x50, 0x43, 0x5a, 0x54, 0x02, 0x00, 0x00, 0x00, 0x05, 0x8a, 0xce, 0x9c, 0xb5, 0x02, 0xd5,
+        0xa0, 0x9c, 0xc7, 0x0c, 0x00, 0x80, 0xad, 0xe2, 0x04, 0x85, 0x01, 0x83, 0x00, 0x00, 0x00,
+        0x01, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xad, 0x1c, 0x11, 0xf6, 0x15, 0x5e, 0xc8, 0xf3,
+        0xca, 0xbd, 0x63, 0xda, 0x1d, 0x28, 0x6f, 0x73, 0x08, 0x03, 0x60, 0x9f, 0xc4, 0x9e, 0x2a,
+        0xb4, 0xf2, 0xde, 0xa2, 0xc7, 0x4a, 0xbb, 0x65, 0x09, 0x00, 0x00, 0x01, 0xa0, 0x8d, 0x06,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79, 0x4b, 0xd5, 0x9f, 0x8c, 0x9f,
+        0xf4, 0x67, 0xda, 0x4d, 0xa5, 0x9b, 0x5d, 0xf7, 0x01, 0x5d, 0x82, 0x63, 0xe3, 0xc3, 0x43,
+        0xee, 0x83, 0x22, 0xe9, 0xd1, 0x4d, 0x9f, 0x12, 0x19, 0x50, 0x0b, 0x01, 0x00, 0x50, 0x07,
+        0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+        0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+        0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+        0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+        0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+        0x07, 0x07, 0x07, 0x07, 0x01, 0xcc, 0x36, 0x60, 0x19, 0x59, 0x21, 0x3b, 0x6b, 0x0c, 0xdb,
+        0x96, 0xa7, 0x5c, 0x17, 0xc3, 0xa6, 0x68, 0xa9, 0x7f, 0x0d, 0x6a, 0x8c, 0x5c, 0xe1, 0x64,
+        0xa5, 0x18, 0xea, 0x9b, 0xa9, 0xa5, 0x0e, 0xa7, 0x51, 0x91, 0xfd, 0x86, 0x1b, 0x0f, 0xf1,
+        0x0e, 0x62, 0xb0, 0x01, 0xa0, 0x8d, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+        0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+        0x03, 0x03, 0x03, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    /// Appends the Postcard LEB128 varint encoding of `value`.
+    #[cfg(feature = "cypherpunk")]
+    fn put_postcard_varint(bytes: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                bytes.push(byte);
+                break;
+            }
+            bytes.push(byte | 0x80);
+        }
+    }
+
+    /// A 32-byte test nullifier varied by `index` so fixture actions stay
+    /// distinct and batch duplicate detection never trips.
+    #[cfg(feature = "cypherpunk")]
+    fn test_nullifier(index: u32) -> [u8; 32] {
+        let mut nullifier = [0x11; 32];
+        nullifier[..4].copy_from_slice(&index.to_le_bytes());
+        nullifier
+    }
+
+    /// Postcard encoding of a minimal `Global`: v5 tx version, Nu6 branch id,
+    /// mainnet coin type, no fallback lock time, zero expiry, empty
+    /// proprietary map.
+    #[cfg(feature = "cypherpunk")]
+    fn test_global_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        put_postcard_varint(&mut bytes, 5); // tx_version
+        put_postcard_varint(&mut bytes, 0x26A7_270A); // version_group_id (v5)
+        put_postcard_varint(&mut bytes, 0xC8E7_1055); // consensus_branch_id (Nu6)
+        bytes.push(0x00); // fallback_lock_time: None
+        put_postcard_varint(&mut bytes, 0); // expiry_height
+        put_postcard_varint(&mut bytes, 133); // coin_type
+        bytes.push(0x00); // tx_modifiable
+        bytes.push(0x00); // proprietary: empty map
+        bytes
+    }
+
+    /// Minimal parseable v2 Orchard action (122 bytes): mandatory nullifier,
+    /// rk, and ephemeral key present; every optional field elided; empty-memo
+    /// compact ciphertext. Parseable without being resolvable, which is all
+    /// the count- and size-shaped fixtures need.
+    #[cfg(feature = "cypherpunk")]
+    fn v2_min_action_bytes(index: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.push(0x00); // cv_net: None
+        bytes.push(0x01); // spend.nullifier: Some
+        bytes.extend_from_slice(&test_nullifier(index));
+        bytes.push(0x01); // spend.rk: Some
+        bytes.extend_from_slice(&[0x22; 32]);
+        bytes.extend_from_slice(&[0x00; 10]); // remaining spend Options: None
+        bytes.push(0x00); // spend.proprietary: empty map
+        bytes.push(0x00); // output.cmx: None
+        bytes.extend_from_slice(&[0x33; 32]); // output.ephemeral_key
+        bytes.extend_from_slice(&[0x01, 0x00]); // enc_ciphertext: empty MemoPlaintext
+        bytes.push(0x00); // output.out_ciphertext: empty
+        bytes.extend_from_slice(&[0x00; 6]); // remaining output Options: None
+        bytes.push(0x00); // output.proprietary: empty map
+        bytes.push(0x00); // rcv: None
+        bytes
+    }
+
+    /// Headerless v2 PCZT body: minimal global, empty transparent and Sapling
+    /// slots, an Orchard bundle holding `actions` plus an optional zkproof pad
+    /// (arbitrary bytes that round-trip verbatim, letting size-targeted
+    /// fixtures stay canonical), and an empty Ironwood slot.
+    #[cfg(feature = "cypherpunk")]
+    fn v2_pczt_body_bytes(actions: &[Vec<u8>], zkproof_pad: usize) -> Vec<u8> {
+        let mut bytes = test_global_bytes();
+        bytes.push(0x00); // transparent: None
+        bytes.push(0x00); // sapling: None
+        bytes.push(0x01); // orchard: Some
+        put_postcard_varint(&mut bytes, actions.len() as u64);
+        for action in actions {
+            bytes.extend_from_slice(action);
+        }
+        bytes.push(0x03); // flags: spends + outputs enabled
+        bytes.extend_from_slice(&[0x00, 0x00]); // value_sum: (0, false)
+        bytes.push(0x00); // anchor: None
+        bytes.push(0x00); // note_version: V2
+        if zkproof_pad == 0 {
+            bytes.push(0x00); // zkproof: None
+        } else {
+            bytes.push(0x01); // zkproof: Some
+            put_postcard_varint(&mut bytes, zkproof_pad as u64);
+            bytes.extend(core::iter::repeat(0x5a).take(zkproof_pad));
+        }
+        bytes.push(0x00); // bsk: None
+        bytes.push(0x00); // ironwood: None
+        bytes
+    }
+
+    /// `BatchSignRequest` wire bytes: the 12-byte header (magic, batch
+    /// version, shared PCZT version) plus the Postcard body (PCZT count and
+    /// headerless per-version PCZT bodies).
+    #[cfg(feature = "cypherpunk")]
+    fn batch_request_bytes(pczt_version: u32, bodies: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = b"PCZB".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&pczt_version.to_le_bytes());
+        put_postcard_varint(&mut bytes, bodies.len() as u64);
+        for body in bodies {
+            bytes.extend_from_slice(body);
+        }
+        bytes
+    }
+
+    /// Builds a v2 batch whose `spread` entries give each PCZT's action
+    /// count, with globally unique nullifiers and per-PCZT zkproof padding.
+    #[cfg(feature = "cypherpunk")]
+    fn v2_batch_bytes(spread: &[usize], zkproof_pad: usize) -> Vec<u8> {
+        let mut next_index = 0u32;
+        let bodies = spread
+            .iter()
+            .map(|&count| {
+                let actions = (0..count)
+                    .map(|_| {
+                        let action = v2_min_action_bytes(next_index);
+                        next_index += 1;
+                        action
+                    })
+                    .collect::<Vec<_>>();
+                v2_pczt_body_bytes(&actions, zkproof_pad)
+            })
+            .collect::<Vec<_>>();
+        batch_request_bytes(2, &bodies)
+    }
+
+    /// Minimal v1 Orchard action (181 bytes): v1 stores cv_net, nullifier,
+    /// rk, cmx, and the ciphertexts as mandatory raw fields, so v1 wire
+    /// cannot elide them - its re-encoding growth is the fixed +5 structural
+    /// tag bytes per action rather than resolve growth.
+    #[cfg(feature = "cypherpunk")]
+    fn v1_min_action_bytes(index: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[0x44; 32]); // cv_net (raw)
+        bytes.extend_from_slice(&test_nullifier(index)); // spend.nullifier (raw)
+        bytes.extend_from_slice(&[0x22; 32]); // spend.rk (raw)
+        bytes.extend_from_slice(&[0x00; 10]); // optional spend fields: None
+        bytes.push(0x00); // spend.proprietary: empty map
+        bytes.extend_from_slice(&[0x55; 32]); // output.cmx (raw)
+        bytes.extend_from_slice(&[0x33; 32]); // output.ephemeral_key
+        bytes.push(0x00); // output.enc_ciphertext: empty vec
+        bytes.push(0x00); // output.out_ciphertext: empty vec
+        bytes.extend_from_slice(&[0x00; 6]); // optional output fields: None
+        bytes.push(0x00); // output.proprietary: empty map
+        bytes.push(0x00); // rcv: None
+        bytes
+    }
+
+    /// Headerless v1 PCZT body carrying every fixed v1-to-v2 growth term:
+    /// one minimal transparent output (defeats the v2 empty-bundle omission),
+    /// an anchored-but-empty Sapling bundle (zero extra v1 wire cost - the v1
+    /// anchor is a mandatory `[u8; 32]` either way - but non-default, so v2
+    /// keeps the bundle), and a v1 Orchard bundle with `actions` plus an
+    /// optional zkproof pad.
+    #[cfg(feature = "cypherpunk")]
+    fn v1_pczt_body_bytes(actions: &[Vec<u8>], zkproof_pad: usize) -> Vec<u8> {
+        let mut bytes = test_global_bytes();
+        bytes.push(0x00); // transparent.inputs: empty
+        put_postcard_varint(&mut bytes, 1); // transparent.outputs: one entry
+        put_postcard_varint(&mut bytes, 0); // output.value
+        bytes.push(0x00); // output.script_pubkey: empty
+        bytes.push(0x00); // output.redeem_script: None
+        bytes.push(0x00); // output.bip32_derivation: empty map
+        bytes.push(0x00); // output.user_address: None
+        bytes.push(0x00); // output.proprietary: empty map
+        bytes.push(0x00); // sapling.spends: empty
+        bytes.push(0x00); // sapling.outputs: empty
+        bytes.push(0x00); // sapling.value_sum: 0
+        bytes.extend_from_slice(&[0x77; 32]); // sapling.anchor (raw, non-default)
+        bytes.push(0x00); // sapling.bsk: None
+        put_postcard_varint(&mut bytes, actions.len() as u64);
+        for action in actions {
+            bytes.extend_from_slice(action);
+        }
+        bytes.push(0x03); // orchard.flags
+        bytes.extend_from_slice(&[0x00, 0x00]); // orchard.value_sum: (0, false)
+        bytes.extend_from_slice(&[0x66; 32]); // orchard.anchor (raw)
+        if zkproof_pad == 0 {
+            bytes.push(0x00); // zkproof: None
+        } else {
+            bytes.push(0x01); // zkproof: Some
+            put_postcard_varint(&mut bytes, zkproof_pad as u64);
+            bytes.extend(core::iter::repeat(0x5a).take(zkproof_pad));
+        }
+        bytes.push(0x00); // orchard.bsk: None
+        bytes
+    }
+
+    /// Sums shielded (Orchard + Ironwood) actions over a parsed batch.
+    #[cfg(feature = "cypherpunk")]
+    fn count_batch_actions(batch: &BatchSignRequest) -> usize {
+        batch
+            .pczts()
+            .iter()
+            .map(|pczt| pczt.orchard().actions().len() + pczt.ironwood().actions().len())
+            .sum()
+    }
+
+    /// Pins `ZCASH_BATCH_MAX_RESOLVED_ACTION_GROWTH` to the pinned pczt
+    /// crate's measured behavior, and pins that `resolve_fields` never
+    /// changes the action count.
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_resolved_action_growth_is_bounded() {
+        let mut pczt = Pczt::parse(&ELIDED_ONE_ACTION_PCZT).unwrap();
+        assert_eq!(pczt.orchard().actions().len(), 1);
+
+        pczt.resolve_fields().unwrap();
+        assert_eq!(pczt.orchard().actions().len(), 1);
+
+        let normalized = serialize_batch_pczt(&pczt).unwrap();
+        assert_eq!(
+            normalized.len() - ELIDED_ONE_ACTION_PCZT.len(),
+            ZCASH_BATCH_MAX_RESOLVED_ACTION_GROWTH
+        );
+    }
+
+    /// CI-checked size theorem (with `test_resolved_action_growth_is_bounded`):
+    /// any batch within the sender-facing wire, PCZT, and action caps fits the
+    /// normalized retention cap, and its canonical payload sum fits the
+    /// canonical cap - so wire-legal batches are never size-rejected.
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_normalized_cap_covers_wire_contract() {
+        assert!(
+            ZCASH_BATCH_MAX_WIRE_BYTES
+                + ZCASH_BATCH_MAX_TOTAL_ACTIONS * ZCASH_BATCH_MAX_RESOLVED_ACTION_GROWTH
+                <= ZCASH_BATCH_MAX_NORMALIZED_BYTES
+        );
+        // 15 per PCZT = 8 (standalone header) + 7 (fixed v1-to-v2 growth:
+        // transparent Option wrap +1, sapling Option tag + anchor Option +2,
+        // orchard Option tag + anchor Option + note_version +3, ironwood None
+        // tag +1); 5 per action = the v1-to-v2 Option/enum tags.
+        assert!(
+            ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES
+                >= ZCASH_BATCH_MAX_WIRE_BYTES
+                    + 15 * ZCASH_BATCH_MAX_PCZTS
+                    + 5 * ZCASH_BATCH_MAX_TOTAL_ACTIONS
+        );
+
+        // Empirical v1 witness: a wire-legal v1 batch whose canonical payload
+        // sum lands ABOVE the wire cap must still be accepted. Two 16-action
+        // PCZTs carry every fixed growth term; the zkproof pad sizes the
+        // request just under the wire cap.
+        let first_actions: Vec<Vec<u8>> = (0..16).map(v1_min_action_bytes).collect();
+        let second_actions: Vec<Vec<u8>> = (16..32).map(v1_min_action_bytes).collect();
+        let unpadded = batch_request_bytes(
+            1,
+            &[
+                v1_pczt_body_bytes(&first_actions, 0),
+                v1_pczt_body_bytes(&second_actions, 0),
+            ],
+        );
+        // Room for the 1-byte request id, minus the 3-byte zkproof length
+        // varint replacing the elided None tag.
+        let target_wire = ZCASH_BATCH_MAX_WIRE_BYTES - 9;
+        let pad = target_wire - unpadded.len() - 3;
+        let request = batch_request_bytes(
+            1,
+            &[
+                v1_pczt_body_bytes(&first_actions, pad),
+                v1_pczt_body_bytes(&second_actions, 0),
+            ],
+        );
+        assert_eq!(request.len(), target_wire);
+
+        let registry = ZcashSignBatch::new(vec![0xaa], request.clone());
+        let batch = parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_WIRE_BYTES).unwrap();
+        let payloads = validate_zcash_batch(&batch).unwrap();
+        let canonical_total: usize = payloads.iter().map(|payload| payload.len()).sum();
+
+        // 13-byte batch header amortized away; +15 fixed bytes per PCZT and
+        // +5 per action, exactly the canonical cap's slack terms.
+        assert_eq!(canonical_total, request.len() - 13 + 15 * 2 + 5 * 32);
+        assert!(canonical_total > ZCASH_BATCH_MAX_WIRE_BYTES);
+        assert!(canonical_total <= ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES);
+    }
+
+    /// The action cap rejects one action past the limit and accepts the
+    /// limit, counting across every PCZT in the batch.
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_validate_zcash_batch_action_count_rejects_excess() {
+        let over = v2_batch_bytes(&[192, 193], 0);
+        let registry = ZcashSignBatch::new(vec![0xaa], over);
+        assert_eq!(
+            parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_WIRE_BYTES).unwrap_err(),
+            RustCError::UnsupportedTransaction(format!(
+                "Zcash batch exceeds {ZCASH_BATCH_MAX_TOTAL_ACTIONS} shielded actions"
+            ))
+        );
+
+        let at_cap = v2_batch_bytes(&[192, 192], 0);
+        let registry = ZcashSignBatch::new(vec![0xaa], at_cap);
+        let batch = parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_WIRE_BYTES).unwrap();
+        assert_eq!(batch.pczts().len(), 2);
+        assert_eq!(count_batch_actions(&batch), ZCASH_BATCH_MAX_TOTAL_ACTIONS);
+    }
+
+    /// Regression for the field failure: a batch envelope larger than the
+    /// wire cap but within the normalized cap is retained and reopened
+    /// intact, with its action count preserved across the round-trip. The
+    /// fixture sits in the size class only normalized batches reach (at the
+    /// PCZT and action caps, near the theorem's 378,752-byte maximum), which
+    /// the retention envelope had never traversed before this change.
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_encode_checked_zcash_batch_allows_resolved_growth() {
+        let mut spread = vec![10usize; 24];
+        spread.extend_from_slice(&[9; 16]); // 24 * 10 + 16 * 9 = 384 actions
+        assert_eq!(spread.len(), ZCASH_BATCH_MAX_PCZTS);
+        let data = v2_batch_bytes(&spread, 8_100);
+        assert!(data.len() > ZCASH_BATCH_MAX_WIRE_BYTES);
+        assert!(data.len() > 360_000);
+        assert!(data.len() <= ZCASH_BATCH_MAX_NORMALIZED_BYTES);
+
+        let before = BatchSignRequest::parse(&data).unwrap();
+        assert_eq!(count_batch_actions(&before), ZCASH_BATCH_MAX_TOTAL_ACTIONS);
+
+        let request_id = vec![0xaa, 0xbb];
+        let checked = encode_checked_zcash_batch(&request_id, data).unwrap();
+        let (decoded_request_id, batch) = parse_checked_zcash_batch(&checked).unwrap();
+
+        assert_eq!(decoded_request_id, request_id);
+        assert_eq!(count_batch_actions(&batch), ZCASH_BATCH_MAX_TOTAL_ACTIONS);
+    }
+
+    /// The retention path still fails closed above the normalized cap.
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_encode_checked_zcash_batch_rejects_above_normalized_cap() {
+        let oversized = vec![0x00; ZCASH_BATCH_MAX_NORMALIZED_BYTES];
+        assert!(matches!(
+            encode_checked_zcash_batch(&[0xaa], oversized),
+            Err(RustCError::UnsupportedTransaction(message))
+                if message.contains(&format!("exceeds {ZCASH_BATCH_MAX_NORMALIZED_BYTES} bytes"))
+        ));
     }
 
     #[cfg(feature = "cypherpunk")]
