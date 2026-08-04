@@ -1,3 +1,12 @@
+## Unreleased
+
+**Cypherpunk:**
+
+### Bug Fixes
+
+1. Added explicit wire, normalized payload, action, and response signature limits for Zcash batch signing.
+
+
 ## 3.0.2 (2026-07-24)
 
 **Cypherpunk:**

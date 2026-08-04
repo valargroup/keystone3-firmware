@@ -37,12 +37,25 @@ use zcash_vendor::pczt::roles::signer::batch::{BatchSignRequest, BatchSignRespon
 use zcash_vendor::{pczt::Pczt, zcash_protocol::consensus::MainNetwork};
 use zeroize::Zeroize;
 
-// Cap both per-PCZT overhead and variable-size payload data to leave headroom
-// in shared device memory while processing a batch.
+// The wire, PCZT, and action limits are the sender-facing contract. Together
+// they guarantee that field resolution fits the separate normalized limit.
 #[cfg(feature = "cypherpunk")]
 const ZCASH_BATCH_MAX_PCZTS: usize = 40;
 #[cfg(feature = "cypherpunk")]
-const ZCASH_BATCH_MAX_TOTAL_BYTES: usize = 512 * 1024;
+const ZCASH_BATCH_MAX_WIRE_BYTES: usize = 128 * 1024;
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_TOTAL_ACTIONS: usize = 384;
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_NORMALIZED_BYTES: usize = 512 * 1024;
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES: usize = ZCASH_BATCH_MAX_NORMALIZED_BYTES;
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_V1_TO_V2_FIXED_GROWTH_PER_PCZT: usize = 7;
+
+// This is a separate fail-safe for the signed-response path. It cleanly
+// rejects batches above the currently validated hardware boundary.
+#[cfg(feature = "cypherpunk")]
+const ZCASH_BATCH_MAX_SIGNATURES: usize = 96;
 #[cfg(feature = "cypherpunk")]
 const ZCASH_BATCH_REQUEST_HEADER_LEN: usize = 12;
 
@@ -238,9 +251,9 @@ fn validate_zcash_batch_payloads(payloads: &[Vec<u8>]) -> Result<(), RustCError>
             )));
         }
         total_payload_bytes = total_payload_bytes.saturating_add(payload.len());
-        if total_payload_bytes > ZCASH_BATCH_MAX_TOTAL_BYTES {
+        if total_payload_bytes > ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES {
             return Err(RustCError::UnsupportedTransaction(format!(
-                "Zcash batch PCZTs exceed {ZCASH_BATCH_MAX_TOTAL_BYTES} bytes"
+                "Zcash batch PCZTs exceed {ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES} bytes"
             )));
         }
 
@@ -276,17 +289,21 @@ fn validate_zcash_batch(batch: &BatchSignRequest) -> Result<Vec<Vec<u8>>, RustCE
     Ok(payloads)
 }
 
-/// Bounds the outer request before parsing or retaining its checked state.
+/// Bounds one representation of the outer request before parsing or retention.
 #[cfg(feature = "cypherpunk")]
-fn validate_zcash_batch_envelope(request_id: &[u8], data: &[u8]) -> Result<(), RustCError> {
+fn validate_zcash_batch_envelope(
+    request_id: &[u8],
+    data: &[u8],
+    max_bytes: usize,
+) -> Result<(), RustCError> {
     if request_id.is_empty() {
         return Err(RustCError::InvalidData(
             "Zcash batch request id must not be empty".to_string(),
         ));
     }
-    if request_id.len().saturating_add(data.len()) > ZCASH_BATCH_MAX_TOTAL_BYTES {
+    if request_id.len().saturating_add(data.len()) > max_bytes {
         return Err(RustCError::UnsupportedTransaction(format!(
-            "Zcash batch request exceeds {ZCASH_BATCH_MAX_TOTAL_BYTES} bytes"
+            "Zcash batch request exceeds {max_bytes} bytes"
         )));
     }
     Ok(())
@@ -322,13 +339,55 @@ fn validate_zcash_batch_request_count(data: &[u8]) -> Result<(), RustCError> {
     Ok(())
 }
 
-/// Parses the bounded outer registry into the PCZT crate's batch request.
+/// Rejects action counts whose decoded allocation and resolution cost cannot
+/// be bounded by the compact wire size alone.
 #[cfg(feature = "cypherpunk")]
-fn parse_zcash_batch_registry(registry: &ZcashSignBatch) -> Result<BatchSignRequest, RustCError> {
-    validate_zcash_batch_envelope(registry.get_request_id(), registry.get_data())?;
+fn validate_zcash_batch_action_count(batch: &BatchSignRequest) -> Result<(), RustCError> {
+    let total_actions = batch.pczts().iter().fold(0usize, |total, pczt| {
+        total
+            .saturating_add(pczt.orchard().actions().len())
+            .saturating_add(pczt.ironwood().actions().len())
+    });
+    validate_zcash_batch_action_total(total_actions)
+}
+
+#[cfg(feature = "cypherpunk")]
+fn validate_zcash_batch_action_total(total_actions: usize) -> Result<(), RustCError> {
+    if total_actions > ZCASH_BATCH_MAX_TOTAL_ACTIONS {
+        return Err(RustCError::UnsupportedTransaction(format!(
+            "Zcash batch exceeds {ZCASH_BATCH_MAX_TOTAL_ACTIONS} shielded actions"
+        )));
+    }
+    Ok(())
+}
+
+/// Applies the independent response-signature safety limit.
+#[cfg(feature = "cypherpunk")]
+fn validate_zcash_batch_signature_count(signature_count: usize) -> Result<(), RustCError> {
+    if signature_count > ZCASH_BATCH_MAX_SIGNATURES {
+        return Err(RustCError::UnsupportedTransaction(format!(
+            "Zcash batch supports at most {ZCASH_BATCH_MAX_SIGNATURES} signatures"
+        )));
+    }
+    Ok(())
+}
+
+/// Parses a size-bounded outer registry and applies semantic resource limits.
+#[cfg(feature = "cypherpunk")]
+fn parse_zcash_batch_registry(
+    registry: &ZcashSignBatch,
+    max_envelope_bytes: usize,
+) -> Result<BatchSignRequest, RustCError> {
+    validate_zcash_batch_envelope(
+        registry.get_request_id(),
+        registry.get_data(),
+        max_envelope_bytes,
+    )?;
     validate_zcash_batch_request_count(registry.get_data())?;
-    BatchSignRequest::parse(registry.get_data())
-        .map_err(|e| RustCError::InvalidData(format!("invalid PCZT batch request: {e:?}")))
+    let batch = BatchSignRequest::parse(registry.get_data())
+        .map_err(|e| RustCError::InvalidData(format!("invalid PCZT batch request: {e:?}")))?;
+    validate_zcash_batch_action_count(&batch)?;
+    Ok(batch)
 }
 
 /// Reopens the exact normalized envelope retained by the check step.
@@ -337,14 +396,14 @@ fn parse_checked_zcash_batch(data: &[u8]) -> Result<(Vec<u8>, BatchSignRequest),
     let registry = ZcashSignBatch::try_from(data.to_vec()).map_err(|e| {
         RustCError::InvalidData(format!("decode checked Zcash batch envelope: {e:?}"))
     })?;
-    let batch = parse_zcash_batch_registry(&registry)?;
+    let batch = parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_NORMALIZED_BYTES)?;
     Ok((registry.get_request_id().to_vec(), batch))
 }
 
 /// Retains normalized PCZTs and their request id as checked firmware state.
 #[cfg(feature = "cypherpunk")]
 fn encode_checked_zcash_batch(request_id: &[u8], data: Vec<u8>) -> Result<Vec<u8>, RustCError> {
-    validate_zcash_batch_envelope(request_id, &data)?;
+    validate_zcash_batch_envelope(request_id, &data, ZCASH_BATCH_MAX_NORMALIZED_BYTES)?;
     ZcashSignBatch::new(request_id.to_vec(), data)
         .try_into()
         .map_err(|e| {
@@ -382,7 +441,7 @@ pub unsafe extern "C" fn check_zcash_batch_tx_cypherpunk(
         .c_ptr();
     }
     let registry = extract_ptr_with_type!(tx, ZcashSignBatch);
-    let batch = match parse_zcash_batch_registry(registry) {
+    let batch = match parse_zcash_batch_registry(registry, ZCASH_BATCH_MAX_WIRE_BYTES) {
         Ok(batch) => batch,
         Err(e) => return TransactionCheckResult::from(e).c_ptr(),
     };
@@ -574,6 +633,7 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                     }
 
                     let mut results = Vec::new();
+                    let mut signature_count = 0usize;
                     let mut error = None;
                     // One scrubbed spend-auth slot for the whole request. The
                     // selected account key stays cached across every batch PCZT.
@@ -597,6 +657,15 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                             Ok(payload) => {
                                 match app_zcash::extract_compact_sigs_from_signed_pczt(&payload) {
                                     Ok(compact_sigs) => {
+                                        signature_count =
+                                            signature_count.saturating_add(compact_sigs.len());
+                                        // Stop before response serialization and QR allocation.
+                                        if let Err(e) =
+                                            validate_zcash_batch_signature_count(signature_count)
+                                        {
+                                            error = Some(UREncodeResult::from(e).c_ptr());
+                                            break;
+                                        }
                                         results.push(compact_sigs);
                                     }
                                     Err(e) => {
@@ -967,7 +1036,7 @@ mod tests {
     fn test_validate_zcash_batch_rejects_oversized_total_payload() {
         // Three PCZTs whose summed payloads cross the byte bound: the count cap
         // alone no longer bounds RAM, so the byte bound must reject this.
-        let big = vec![0xAB; ZCASH_BATCH_MAX_TOTAL_BYTES / 2];
+        let big = vec![0xAB; ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES / 2];
         let payloads = vec![big.clone(), [big.as_slice(), &[0x01]].concat(), vec![0x02]];
 
         let error = validate_zcash_batch_payloads(&payloads).unwrap_err();
@@ -1037,13 +1106,13 @@ mod tests {
         let registry = ZcashSignBatch::new(vec![], empty_batch_request());
 
         assert_eq!(
-            parse_zcash_batch_registry(&registry).unwrap_err(),
+            parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_WIRE_BYTES).unwrap_err(),
             RustCError::InvalidData("Zcash batch request id must not be empty".to_string())
         );
 
-        let oversized = ZcashSignBatch::new(vec![0xaa], vec![0; ZCASH_BATCH_MAX_TOTAL_BYTES]);
+        let oversized = ZcashSignBatch::new(vec![0xaa], vec![0; ZCASH_BATCH_MAX_WIRE_BYTES]);
         assert!(matches!(
-            parse_zcash_batch_registry(&oversized),
+            parse_zcash_batch_registry(&oversized, ZCASH_BATCH_MAX_WIRE_BYTES),
             Err(RustCError::UnsupportedTransaction(message))
                 if message.contains("batch request exceeds")
         ));
@@ -1066,11 +1135,50 @@ mod tests {
         request[ZCASH_BATCH_REQUEST_HEADER_LEN] += 1;
         let registry = ZcashSignBatch::new(vec![0xaa], request);
         assert_eq!(
-            parse_zcash_batch_registry(&registry).unwrap_err(),
+            parse_zcash_batch_registry(&registry, ZCASH_BATCH_MAX_WIRE_BYTES).unwrap_err(),
             RustCError::UnsupportedTransaction(format!(
                 "Zcash batch supports at most {ZCASH_BATCH_MAX_PCZTS} PCZTs"
             ))
         );
+    }
+
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_zcash_batch_resource_limits_accept_boundary_and_reject_one_over() {
+        let request_id = [0xaa];
+        let at_wire_limit = vec![0; ZCASH_BATCH_MAX_WIRE_BYTES - request_id.len()];
+        validate_zcash_batch_envelope(&request_id, &at_wire_limit, ZCASH_BATCH_MAX_WIRE_BYTES)
+            .unwrap();
+        let one_over_wire_limit = [at_wire_limit.as_slice(), &[0]].concat();
+        assert!(validate_zcash_batch_envelope(
+            &request_id,
+            &one_over_wire_limit,
+            ZCASH_BATCH_MAX_WIRE_BYTES,
+        )
+        .is_err());
+        validate_zcash_batch_envelope(
+            &request_id,
+            &one_over_wire_limit,
+            ZCASH_BATCH_MAX_NORMALIZED_BYTES,
+        )
+        .unwrap();
+
+        validate_zcash_batch_action_total(ZCASH_BATCH_MAX_TOTAL_ACTIONS).unwrap();
+        assert!(validate_zcash_batch_action_total(ZCASH_BATCH_MAX_TOTAL_ACTIONS + 1).is_err());
+
+        validate_zcash_batch_signature_count(ZCASH_BATCH_MAX_SIGNATURES).unwrap();
+        assert!(validate_zcash_batch_signature_count(ZCASH_BATCH_MAX_SIGNATURES + 1).is_err());
+    }
+
+    #[cfg(feature = "cypherpunk")]
+    #[test]
+    fn test_zcash_batch_wire_contract_fits_normalized_limit() {
+        let maximum_normalized_bytes = ZCASH_BATCH_MAX_WIRE_BYTES
+            + ZCASH_BATCH_MAX_PCZTS * ZCASH_BATCH_MAX_V1_TO_V2_FIXED_GROWTH_PER_PCZT
+            + ZCASH_BATCH_MAX_TOTAL_ACTIONS * app_zcash::COMPACT_PCZT_MAX_RESOLVED_ACTION_GROWTH;
+
+        assert_eq!(maximum_normalized_bytes, 379_032);
+        assert!(maximum_normalized_bytes <= ZCASH_BATCH_MAX_NORMALIZED_BYTES);
     }
 
     #[cfg(feature = "cypherpunk")]
