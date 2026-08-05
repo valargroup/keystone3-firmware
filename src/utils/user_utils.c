@@ -1,6 +1,6 @@
 #include "user_utils.h"
 #include "define.h"
-#include "lvgl.h"
+#include "drv_trng.h"
 #include "user_memory.h"
 
 #define HEX_STRING_MAX_LENGTH 4096
@@ -167,7 +167,9 @@ void ArrayRandom(char *words, char *out, int count)
     }
 
     for (int i = 0; i < count - 1; ++i) {
-        int num = i + lv_rand(0, 2048) % (count - i);
+        uint32_t random;
+        TrngGet(&random, sizeof(random));
+        int num = i + random % (count - i);
         char *temp = pointerList[i];
         pointerList[i] = pointerList[num];
         pointerList[num] = temp;

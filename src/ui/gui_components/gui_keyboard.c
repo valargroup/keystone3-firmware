@@ -12,6 +12,7 @@
 #include "gui_hintbox.h"
 #include "gui_button.h"
 #include "device_setting.h"
+#include "drv_trng.h"
 
 #pragma GCC optimize ("O0")
 
@@ -488,7 +489,9 @@ static void ShuffleNumKeyBoardMap(const char **map)
     for (int i = 0; i < n; i++) digits[i] = map[digitIdx[i]];
 
     for (int i = n - 1; i > 0; i--) {
-        uint32_t r = lv_rand(0, 2048) % (i + 1);
+        uint32_t random;
+        TrngGet(&random, sizeof(random));
+        uint32_t r = random % (i + 1);
         const char *tmp = digits[i];
         digits[i] = digits[r];
         digits[r] = tmp;
