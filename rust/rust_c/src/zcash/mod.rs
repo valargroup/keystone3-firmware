@@ -49,11 +49,6 @@ const ZCASH_BATCH_MAX_NORMALIZED_BYTES: usize = 512 * 1024;
 const ZCASH_BATCH_MAX_CANONICAL_PAYLOAD_BYTES: usize = ZCASH_BATCH_MAX_NORMALIZED_BYTES;
 #[cfg(feature = "cypherpunk")]
 const ZCASH_BATCH_MAX_V1_TO_V2_FIXED_GROWTH_PER_PCZT: usize = 7;
-
-// Each action can produce at most one spend authorization signature. Retain an
-// exact post-sign check as defense in depth, but derive it from the action cap.
-#[cfg(feature = "cypherpunk")]
-const ZCASH_BATCH_MAX_SIGNATURES: usize = ZCASH_BATCH_MAX_TOTAL_ACTIONS;
 #[cfg(feature = "cypherpunk")]
 const ZCASH_BATCH_REQUEST_HEADER_LEN: usize = 12;
 
@@ -356,17 +351,6 @@ fn validate_zcash_batch_action_total(total_actions: usize) -> Result<(), RustCEr
     Ok(())
 }
 
-/// Retains an exact post-sign check derived from the action budget.
-#[cfg(feature = "cypherpunk")]
-fn validate_zcash_batch_signature_count(signature_count: usize) -> Result<(), RustCError> {
-    if signature_count > ZCASH_BATCH_MAX_SIGNATURES {
-        return Err(RustCError::UnsupportedTransaction(format!(
-            "Zcash batch supports at most {ZCASH_BATCH_MAX_SIGNATURES} signatures"
-        )));
-    }
-    Ok(())
-}
-
 /// Parses a size-bounded outer registry and applies semantic resource limits.
 #[cfg(feature = "cypherpunk")]
 fn parse_zcash_batch_registry(
@@ -628,7 +612,6 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                     }
 
                     let mut results = Vec::new();
-                    let mut signature_count = 0usize;
                     let mut error = None;
                     // One scrubbed spend-auth slot for the whole request. The
                     // selected account key stays cached across every batch PCZT.
@@ -652,15 +635,6 @@ unsafe fn sign_zcash_batch_tx_cypherpunk_dynamic(
                             Ok(payload) => {
                                 match app_zcash::extract_compact_sigs_from_signed_pczt(&payload) {
                                     Ok(compact_sigs) => {
-                                        signature_count =
-                                            signature_count.saturating_add(compact_sigs.len());
-                                        // Stop before response serialization and QR allocation.
-                                        if let Err(e) =
-                                            validate_zcash_batch_signature_count(signature_count)
-                                        {
-                                            error = Some(UREncodeResult::from(e).c_ptr());
-                                            break;
-                                        }
                                         results.push(compact_sigs);
                                     }
                                     Err(e) => {
@@ -1148,10 +1122,6 @@ mod tests {
 
         validate_zcash_batch_action_total(ZCASH_BATCH_MAX_TOTAL_ACTIONS).unwrap();
         assert!(validate_zcash_batch_action_total(ZCASH_BATCH_MAX_TOTAL_ACTIONS + 1).is_err());
-
-        assert_eq!(ZCASH_BATCH_MAX_SIGNATURES, ZCASH_BATCH_MAX_TOTAL_ACTIONS);
-        validate_zcash_batch_signature_count(ZCASH_BATCH_MAX_SIGNATURES).unwrap();
-        assert!(validate_zcash_batch_signature_count(ZCASH_BATCH_MAX_SIGNATURES + 1).is_err());
     }
 
     #[cfg(feature = "cypherpunk")]
