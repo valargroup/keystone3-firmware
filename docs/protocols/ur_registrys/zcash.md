@@ -63,12 +63,13 @@ carries the PCZT-owned response in its own opaque `data` field. It also reports
 the signing firmware version once for the entire response.
 
 Batch version 1 is supported by cypherpunk firmware. Its resource limits are
-128 KiB for the encoded batch data plus request id, 40 PCZTs, 384 Orchard plus
-Ironwood actions, and 96 spend authorization signatures returned by the device.
-The first three limits form a sender-checkable contract that guarantees a valid
-request still fits the 512 KiB internal limit after compact fields are resolved.
-The signature limit is an independent safety bound for response generation. The
-operation is atomic.
+128 KiB for the encoded batch data plus request id and 96 total Orchard and
+Ironwood actions. Together they form a sender-checkable contract that guarantees
+a valid request still fits the 512 KiB internal limit after compact fields are
+resolved.
+Each action can produce at most one spend authorization signature, so the action
+limit also bounds the response to 96 signatures. There is no independent PCZT
+count limit. The operation is atomic.
 If any PCZT is invalid or cannot be signed, Keystone returns an error instead of
 a partial result. PCZT entries with identical canonical encodings are rejected.
 Every spend must be fully Keystone-owned and use a supported shielded pool,
