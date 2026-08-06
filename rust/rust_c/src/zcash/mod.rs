@@ -1059,36 +1059,76 @@ mod tests {
     }
 
     #[cfg(feature = "cypherpunk")]
-    fn padded_zcash_batch(padding_bytes: usize) -> BatchSignRequest {
-        use zcash_vendor::pczt::roles::{creator::Creator, updater::Updater};
-        use zcash_vendor::zcash_protocol::consensus::{BranchId, NetworkConstants};
+    fn padded_zcash_batch_with_orchard_actions(padding_bytes: usize) -> BatchSignRequest {
+        use rand_core::OsRng;
+        use zcash_primitives::transaction::{builder::PcztParts, TxVersion};
+        use zcash_vendor::{
+            orchard::{
+                self,
+                builder::{Builder, BundleType},
+                bundle::BundleVersion,
+                keys::{FullViewingKey, Scope, SpendingKey},
+                value::NoteValue,
+                Anchor,
+            },
+            pczt::roles::{creator::Creator, updater::Updater},
+            zcash_protocol::consensus::{BlockHeight, BranchId},
+        };
 
-        let pczt = Creator::new(
-            BranchId::Nu6_3.into(),
-            1,
-            MainNetwork.coin_type(),
-            None,
-            None,
+        let spending_key = SpendingKey::from_bytes([7; 32]).unwrap();
+        let full_viewing_key = FullViewingKey::from(&spending_key);
+        let recipient = full_viewing_key.address_at(0u32, Scope::External);
+        let bundle_version = BundleVersion::orchard_v3();
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            bundle_version.default_flags(),
+            Anchor::empty_tree(),
         )
-        .unwrap()
-        .build()
+        .unwrap();
+        builder
+            .add_change_output(
+                full_viewing_key,
+                None,
+                recipient,
+                NoteValue::from_raw(1),
+                [0; 512],
+            )
+            .unwrap();
+        let (orchard, _) = builder.build_for_pczt(&mut OsRng).unwrap();
+        let pczt = Creator::build_from_parts(PcztParts {
+            params: MainNetwork,
+            version: TxVersion::V6,
+            consensus_branch_id: BranchId::Nu6_3,
+            lock_time: 0,
+            expiry_height: BlockHeight::from_u32(1),
+            transparent: None,
+            sapling: None,
+            orchard: Some(orchard),
+            ironwood: None,
+        })
         .unwrap();
         let pczt = Updater::new(pczt)
             .update_global_with(|mut global| {
                 global.set_proprietary("padding".to_string(), vec![0; padding_bytes]);
             })
             .finish();
+
         BatchSignRequest::new(vec![pczt])
     }
 
     #[cfg(feature = "cypherpunk")]
     #[test]
-    fn test_zcash_batch_resource_budget_uses_encoded_batch_and_per_pczt_overhead() {
-        let batch = padded_zcash_batch(ZCASH_BATCH_MAX_RESOLVED_BYTES - 4096);
+    fn test_zcash_batch_resource_budget_charges_batch_pczts_and_actions() {
+        let batch = padded_zcash_batch_with_orchard_actions(ZCASH_BATCH_MAX_RESOLVED_BYTES - 8192);
         let canonical_bytes = batch.serialize().unwrap().len();
+        let action_count = zcash_batch_action_count(&batch).unwrap();
+        let action_growth = action_count * app_zcash::COMPACT_PCZT_MAX_RESOLVED_ACTION_GROWTH;
+        assert!(action_count > 0);
         let request_id_len = ZCASH_BATCH_MAX_RESOLVED_BYTES
             - canonical_bytes
-            - ZCASH_BATCH_PER_PCZT_ENCODING_OVERHEAD;
+            - ZCASH_BATCH_PER_PCZT_ENCODING_OVERHEAD
+            - action_growth;
         let mut request_id = vec![0xaa; request_id_len];
 
         validate_zcash_batch_envelope(&request_id, &batch.serialize().unwrap()).unwrap();
