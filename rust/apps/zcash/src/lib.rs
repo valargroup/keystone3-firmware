@@ -36,12 +36,8 @@ use zcash_vendor::sha2::{Digest, Sha256};
 #[cfg(feature = "cypherpunk")]
 use zcash_vendor::zcash_protocol::consensus::NetworkConstants;
 
-/// Maximum serialized growth of one compact Orchard or Ironwood action when
-/// [`Pczt::resolve_fields`] restores `cv_net` (32 bytes), `cmx` (32 bytes),
-/// and the full ciphertext representation (581 bytes).
-///
-/// This is part of the firmware batch-size proof. Re-evaluate it whenever the
-/// pinned `pczt` encoding changes.
+/// Maximum serialized growth of one compact Orchard action when
+/// [`Pczt::resolve_fields`] restores redacted fields.
 #[cfg(feature = "cypherpunk")]
 pub const COMPACT_PCZT_MAX_RESOLVED_ACTION_GROWTH: usize = 645;
 
@@ -3499,7 +3495,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compact_action_resolution_growth_bound_covers_both_pools() {
+    fn test_compact_orchard_action_resolution_growth_is_bounded() {
         use zcash_vendor::pczt::roles::redactor::Redactor;
 
         fn assert_pool_growth(
