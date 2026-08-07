@@ -344,7 +344,7 @@ fn estimate_zcash_batch_resolved_bytes(
     request_id
         .len()
         .checked_add(canonical_bytes)
-        .and_then(|bytes| bytes.checked_add(per_pczt_overhead))
+        .and_then(|bytes| bytes.checked_add(pczt_encoding_overhead))
         .and_then(|bytes| bytes.checked_add(resolved_action_growth))
         .ok_or_else(|| RustCError::UnsupportedTransaction("Zcash batch size overflow".to_string()))
 }
