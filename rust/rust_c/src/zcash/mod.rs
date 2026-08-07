@@ -328,7 +328,7 @@ fn estimate_zcash_batch_resolved_bytes(
         .serialize()
         .map_err(|e| RustCError::InvalidData(format!("encode PCZT batch request: {e:?}")))?
         .len();
-    let per_pczt_overhead = batch
+    let pczt_encoding_overhead = batch
         .pczts()
         .len()
         .checked_mul(ZCASH_BATCH_PER_PCZT_ENCODING_OVERHEAD)
