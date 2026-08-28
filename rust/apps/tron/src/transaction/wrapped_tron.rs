@@ -34,6 +34,7 @@ pub struct WrappedTron {
     pub(crate) from: String,
     pub(crate) to: String,
     pub(crate) value: String,
+    pub(crate) method: String,
     pub(crate) token_short_name: Option<String>,
     pub(crate) divider: f64,
     pub(crate) fee_limit: u64,
@@ -90,6 +91,13 @@ const KNOWN_TOKENS: &[(&str, &str, f64)] = &[
     ), // 18 decimals
 ];
 
+fn known_token_metadata(contract_address: &str) -> Option<(&'static str, f64)> {
+    KNOWN_TOKENS
+        .iter()
+        .find(|token| token.0 == contract_address)
+        .map(|token| (token.1, token.2))
+}
+
 impl WrappedTron {
     pub fn from_raw_transaction(raw_tx: Transaction, path: String) -> Result<Self> {
         let mut instance = Self {
@@ -102,6 +110,7 @@ impl WrappedTron {
             from: String::new(),
             to: String::new(),
             value: "0".to_string(),
+            method: String::new(),
             divider: DIVIDER,
             token_short_name: None,
             fee_limit: 0,
@@ -112,10 +121,19 @@ impl WrappedTron {
         if let Some(raw) = &instance.tron_tx.raw_data {
             instance.fee_limit = raw.fee_limit as u64;
             instance.memo = String::from_utf8_lossy(&raw.data).to_string();
+            if raw.contract.len() > 1 {
+                return Err(TronError::InvalidRawTxCryptoBytes(
+                    "multiple contracts require a complete review".to_string(),
+                ));
+            }
             if let Some(contract) = raw.contract.get(0) {
                 use crate::pb::protocol::transaction::contract::ContractType;
-                let c_type = ContractType::from_i32(contract.r#type)
-                    .unwrap_or(ContractType::TransferContract);
+                let c_type = ContractType::from_i32(contract.r#type).ok_or(
+                    TronError::InvalidRawTxCryptoBytes(format!(
+                        "unsupported contract type {}",
+                        contract.r#type
+                    )),
+                )?;
 
                 if let Some(param) = &contract.parameter {
                     match c_type {
@@ -148,6 +166,7 @@ impl WrappedTron {
                                 bitcoin::base58::encode_check(&ct.contract_address);
 
                             if ct.data.len() >= 68 && &ct.data[0..4] == &[0xa9, 0x05, 0x9c, 0xbb] {
+                                instance.method = "TRC-20 Transfer".to_string();
                                 let mut to_addr_bytes = vec![0x41u8];
                                 to_addr_bytes.extend_from_slice(&ct.data[16..36]);
                                 instance.to = bitcoin::base58::encode_check(&to_addr_bytes);
@@ -157,16 +176,39 @@ impl WrappedTron {
                                     ethabi::ethereum_types::U256::from_big_endian(amount_bytes)
                                         .to_string();
 
-                                if let Some(token_info) = KNOWN_TOKENS
-                                    .iter()
-                                    .find(|t| t.0 == instance.contract_address)
+                                if let Some((token, divider)) =
+                                    known_token_metadata(&instance.contract_address)
                                 {
-                                    instance.token = token_info.1.to_string();
-                                    instance.divider = token_info.2;
+                                    instance.token = token.to_string();
+                                    instance.divider = divider;
                                 } else {
-                                    instance.token = "TRC20 Token".to_string();
-                                    instance.divider = 10u64.pow(6) as f64;
+                                    // Unknown token metadata must stay in raw units.  A
+                                    // hard-coded decimal count would make the displayed
+                                    // amount look authoritative even though the contract
+                                    // has not been verified.
+                                    instance.token = "TRC20 Token (raw)".to_string();
+                                    instance.divider = 1.0;
                                 }
+                            } else if ct.data.len() >= 68
+                                && &ct.data[0..4] == &[0x09, 0x5e, 0xa7, 0xb3]
+                            {
+                                instance.method = "TRC-20 Approve".to_string();
+                                let mut spender_bytes = vec![0x41u8];
+                                spender_bytes.extend_from_slice(&ct.data[16..36]);
+                                instance.to = bitcoin::base58::encode_check(&spender_bytes);
+                                instance.value =
+                                    U256::from_big_endian(&ct.data[36..68]).to_string();
+                                if let Some((token, divider)) =
+                                    known_token_metadata(&instance.contract_address)
+                                {
+                                    instance.token = token.to_string();
+                                    instance.divider = divider;
+                                } else {
+                                    instance.token = "TRC20 Token (raw)".to_string();
+                                    instance.divider = 1.0;
+                                }
+                            } else {
+                                instance.method = "Contract Call".to_string();
                             }
                         }
 
@@ -184,7 +226,12 @@ impl WrappedTron {
                             instance.token = String::from_utf8_lossy(&ct.asset_name).to_string();
                             instance.divider = DIVIDER;
                         }
-                        _ => {}
+                        _ => {
+                            return Err(TronError::InvalidRawTxCryptoBytes(format!(
+                                "unsupported contract type {}",
+                                contract.r#type
+                            )))
+                        }
                     }
                 }
             }
@@ -415,13 +462,25 @@ impl WrappedTron {
             .ok_or(TronError::InvalidRawTxCryptoBytes(
                 "empty transaction field for payload content".to_string(),
             ))?;
-        let mut token_short_name: Option<String> = None;
+        // `override` is supplied by the sender and is not part of the signed
+        // transaction. Only the contract-address allowlist below may provide
+        // human-readable token metadata.
+        let token_short_name: Option<String> = None;
         let mut divider = DIVIDER;
         match tx {
             TronTx(tx) => {
-                if let Some(value) = tx.to_owned().r#override {
-                    token_short_name = Some(value.token_short_name);
-                    divider = 10u64.pow(value.decimals as u32) as f64;
+                let contract_address = tx.contract_address.to_string();
+                let mut token = tx.token.to_string();
+                if !contract_address.is_empty() {
+                    if let Some((known_token, known_divider)) =
+                        known_token_metadata(&contract_address)
+                    {
+                        token = known_token.to_string();
+                        divider = known_divider;
+                    } else {
+                        token = "TRC20 Token (raw)".to_string();
+                        divider = 1.0;
+                    }
                 }
                 let mut tron_tx = if tx.contract_address.is_empty() {
                     Self::build_transfer_tx(tx)
@@ -447,11 +506,12 @@ impl WrappedTron {
                     extended_pubkey: context.extended_public_key.to_string(),
                     tron_tx,
                     xfp: payload.xfp,
-                    token: tx.token.to_string(),
-                    contract_address: tx.contract_address.to_string(),
+                    token,
+                    contract_address,
                     from: tx.from.to_string(),
                     to: tx.to.to_string(),
                     value: tx.value.to_string(),
+                    method: String::new(),
                     divider,
                     token_short_name,
                     fee_limit,
@@ -504,6 +564,9 @@ impl WrappedTron {
     }
 
     pub fn format_method(&self) -> Result<String> {
+        if !self.method.is_empty() {
+            return Ok(self.method.clone());
+        }
         if !self.contract_address.is_empty() {
             Ok("TRC-20 Transfer".to_string())
         } else if !self.token.is_empty() && self.token != "TRX" {
@@ -532,6 +595,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::test::{prepare_parse_context, prepare_payload};
+    use crate::transaction::parser::TxParser;
     use alloc::string::ToString;
     use bitcoin::bip32::Fingerprint;
     use core::str::FromStr;
@@ -586,6 +650,7 @@ mod tests {
             from: "".to_string(),
             to: "".to_string(),
             value: "".to_string(),
+            method: "".to_string(),
             token_short_name: None,
             divider: 1.0,
             fee_limit: 0,
@@ -639,6 +704,7 @@ mod tests {
             from: "".to_string(),
             to: "".to_string(),
             value: "".to_string(),
+            method: "".to_string(),
             token_short_name: None,
             divider: 1.0,
             fee_limit: 0,
@@ -800,10 +866,122 @@ mod tests {
         tron_tx.raw_data = Some(raw);
 
         let result = WrappedTron::from_raw_transaction(tron_tx, "m/44'/195'/0'/0/0".to_string());
-        assert!(result.is_ok());
-        let wrapped = result.unwrap();
-        assert_eq!(wrapped.from, "");
-        assert_eq!(wrapped.to, "");
+        assert!(matches!(
+            result,
+            Err(TronError::InvalidRawTxCryptoBytes(message))
+                if message.contains("unsupported contract type")
+        ));
+    }
+
+    #[test]
+    fn test_from_raw_transaction_rejects_multiple_contracts() {
+        let mut tron_tx = Transaction::default();
+        let mut raw = transaction::Raw::default();
+        raw.contract = vec![
+            transaction::Contract::default(),
+            transaction::Contract::default(),
+        ];
+        tron_tx.raw_data = Some(raw);
+
+        let result = WrappedTron::from_raw_transaction(tron_tx, "m/44'/195'/0'/0/0".to_string());
+        assert!(matches!(
+            result,
+            Err(TronError::InvalidRawTxCryptoBytes(message))
+                if message.contains("multiple contracts")
+        ));
+    }
+
+    #[test]
+    fn test_from_raw_transaction_decodes_trc20_approve() {
+        let owner = [vec![0x41], vec![0x11; 20]].concat();
+        let spender = [vec![0x41], vec![0x22; 20]].concat();
+        let token = bitcoin::base58::decode_check("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").unwrap();
+        let mut data = vec![0x09, 0x5e, 0xa7, 0xb3];
+        data.extend_from_slice(&[0u8; 12]);
+        data.extend_from_slice(&spender[1..]);
+        data.extend_from_slice(&[0u8; 31]);
+        data.push(1);
+
+        let trigger = TriggerSmartContract {
+            owner_address: owner,
+            contract_address: token,
+            call_value: 0,
+            data,
+            call_token_value: 0,
+            token_id: 0,
+        };
+        let contract = transaction::Contract {
+            r#type: 31,
+            parameter: Some(Any {
+                type_url: "type.googleapis.com/protocol.TriggerSmartContract".to_string(),
+                value: trigger.encode_to_vec(),
+            }),
+            ..Default::default()
+        };
+        let tx = Transaction {
+            raw_data: Some(transaction::Raw {
+                contract: vec![contract],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let parsed = WrappedTron::from_raw_transaction(tx, "m/44'/195'/0'/0/0".to_string())
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!("TRC-20 Approve", parsed.detail.method);
+        assert_eq!("1 USDT", parsed.detail.value);
+        assert_eq!(bitcoin::base58::encode_check(&spender), parsed.detail.to);
+    }
+
+    #[test]
+    fn test_from_payload_ignores_untrusted_token_override() {
+        let context = prepare_parse_context(
+            "xpub6D1AabNHCupeiLM65ZR9UStMhJ1vCpyV4XbZdyhMZBiJXALQtmn9p42VTQckoHVn8WNqS7dqnJokZHAHcHGoaQgmv8D45oNUKx6DZMNZBCd",
+        );
+        let payload = Payload {
+            r#type: payload::Type::SignTx as i32,
+            xfp: "73c5da0a".to_string(),
+            content: Some(payload::Content::SignTx(SignTransaction {
+                coin_code: "TRON".to_string(),
+                sign_id: "override-regression".to_string(),
+                hd_path: "m/44'/195'/0'/0/0".to_string(),
+                timestamp: 0,
+                decimal: 6,
+                transaction: Some(
+                    ur_registry::pb::protoc::sign_transaction::Transaction::TronTx(
+                        ur_registry::pb::protoc::TronTx {
+                            token: "FAKE".to_string(),
+                            contract_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".to_string(),
+                            from: "TTS7Y53sS4rzrDCtZaiuRzqxd16atCe2UR".to_string(),
+                            to: "TS5zPoC4XEBmHvDNAnnW2gH3MQhcRN6iRm".to_string(),
+                            memo: String::new(),
+                            value: "1000000".to_string(),
+                            latest_block: Some(LatestBlock {
+                                hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                                number: 1,
+                                timestamp: 1_000_000,
+                            }),
+                            r#override: Some(ur_registry::pb::protoc::Override {
+                                token_short_name: "FAKE".to_string(),
+                                token_full_name: "Fake Token".to_string(),
+                                decimals: 0,
+                            }),
+                            fee: 0,
+                        },
+                    ),
+                ),
+            })),
+        };
+
+        let parsed = WrappedTron::from_payload(payload, &context)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!("1 USDT", parsed.detail.value);
+        assert_eq!("USDT", parsed.detail.token);
+        assert!(!parsed.detail.value.contains("FAKE"));
     }
 
     #[test]

@@ -44,9 +44,9 @@ pub struct OverviewDelegate {
     pub method: String,
     #[serde(skip_serializing_if = "String::is_empty", rename(serialize = "Value"))]
     pub value: String,
-    #[serde(rename(serialize = "From"))]
+    #[serde(rename(serialize = "Delegator"))]
     pub from: String,
-    #[serde(rename(serialize = "To"))]
+    #[serde(rename(serialize = "Validator"))]
     pub to: String,
 }
 

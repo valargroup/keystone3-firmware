@@ -923,59 +923,152 @@ use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
+/// Derives an AES-256 key from the wallet seed at a dedicated BIP32 path.
+/// The UFVK itself is seed-derived, so keying the ciphertext with the seed loses no security
+/// property and removes the weak `sha256(login password)` key derivation (see security review).
+#[no_mangle]
+pub unsafe extern "C" fn rust_derive_key_from_seed(
+    seed: PtrBytes,
+    seed_len: u32,
+) -> *mut SimpleResponse<u8> {
+    let seed = extract_array!(seed, u8, seed_len as usize);
+    // Dedicated path, distinct from the legacy fixed-IV path m/44'/1557192335'/0'/2'/0'.
+    let key_path = "m/44'/1557192335'/0'/3'/0'".to_string();
+    let key = match get_private_key_by_seed(seed, &key_path) {
+        Ok(key) => key,
+        Err(e) => return SimpleResponse::from(e).simple_c_ptr(),
+    };
+    SimpleResponse::success(Box::into_raw(Box::new(key)) as *mut u8).simple_c_ptr()
+}
+
+/// Raw AES-256-CBC encrypt (pure crypto, no blob layout). Returns hex(ciphertext).
 #[no_mangle]
 pub unsafe extern "C" fn rust_aes256_cbc_encrypt(
     data: PtrString,
-    password: PtrString,
+    key: PtrBytes,
+    key_len: u32,
     iv: PtrBytes,
     iv_len: u32,
 ) -> *mut SimpleResponse<c_char> {
     let data = unsafe { recover_c_char(data) };
     let data = data.as_bytes();
-    let password = unsafe { recover_c_char(password) };
+    let key = extract_array!(key, u8, key_len as usize);
     let iv = extract_array!(iv, u8, iv_len as usize);
-    let key = sha256(password.as_bytes());
-    let iv = GenericArray::from_slice(iv);
+    let iv_generic = GenericArray::from_slice(iv);
     let key = GenericArray::from_slice(&key);
-    let ct = Aes256CbcEnc::new(key, iv).encrypt_padded_vec_mut::<Pkcs7>(data);
+    let ct = Aes256CbcEnc::new(key, iv_generic).encrypt_padded_vec_mut::<Pkcs7>(data);
     SimpleResponse::success(convert_c_char(hex::encode(ct))).simple_c_ptr()
 }
 
+/// Raw AES-256-CBC decrypt (pure crypto, no blob layout). Input is hex(ciphertext).
 #[no_mangle]
 pub unsafe extern "C" fn rust_aes256_cbc_decrypt(
     hex_data: PtrString,
-    password: PtrString,
+    key: PtrBytes,
+    key_len: u32,
     iv: PtrBytes,
     iv_len: u32,
 ) -> *mut SimpleResponse<c_char> {
     let hex_data = unsafe { recover_c_char(hex_data) };
-    let data = hex::decode(hex_data).unwrap();
-    let password = unsafe { recover_c_char(password) };
+    let data = match hex::decode(hex_data) {
+        Ok(data) => data,
+        Err(_) => {
+            return SimpleResponse::from(RustCError::InvalidHex("invalid ciphertext".to_string()))
+                .simple_c_ptr()
+        }
+    };
+    let key = extract_array!(key, u8, key_len as usize);
     let iv = extract_array!(iv, u8, iv_len as usize);
-    let key = sha256(password.as_bytes());
     let iv = GenericArray::from_slice(iv);
     let key = GenericArray::from_slice(&key);
 
     match Aes256CbcDec::new(key, iv).decrypt_padded_vec_mut::<Pkcs7>(&data) {
-        Ok(pt) => {
-            SimpleResponse::success(convert_c_char(String::from_utf8(pt).unwrap())).simple_c_ptr()
-        }
+        Ok(pt) => match String::from_utf8(pt) {
+            Ok(pt_str) => SimpleResponse::success(convert_c_char(pt_str)).simple_c_ptr(),
+            Err(_) => SimpleResponse::from(RustCError::InvalidHex("invalid plaintext".to_string()))
+                .simple_c_ptr(),
+        },
         Err(_e) => SimpleResponse::from(RustCError::InvalidHex("decrypt failed".to_string()))
             .simple_c_ptr(),
     }
 }
 
+/// Storage layout for the UFVK blob: hex(IV_16) || hex(ciphertext). The fresh random IV
+/// travels with the blob so the same plaintext+key never produces comparable ciphertext
+/// (see security review). Encryption side: pack the caller-provided random IV ahead of ct.
 #[no_mangle]
-pub unsafe extern "C" fn rust_derive_iv_from_seed(
-    seed: PtrBytes,
-    seed_len: u32,
-) -> *mut SimpleResponse<u8> {
-    let seed = extract_array!(seed, u8, seed_len as usize);
-    let iv_path = "m/44'/1557192335'/0'/2'/0'".to_string();
-    let iv = get_private_key_by_seed(seed, &iv_path).unwrap();
-    let mut iv_bytes = [0; 16];
-    iv_bytes.copy_from_slice(&iv[..16]);
-    SimpleResponse::success(Box::into_raw(Box::new(iv_bytes)) as *mut u8).simple_c_ptr()
+pub unsafe extern "C" fn rust_encrypt_ufvk_blob(
+    data: PtrString,
+    key: PtrBytes,
+    key_len: u32,
+    iv: PtrBytes,
+    iv_len: u32,
+) -> *mut SimpleResponse<c_char> {
+    let data = unsafe { recover_c_char(data) };
+    let data = data.as_bytes();
+    let key = extract_array!(key, u8, key_len as usize);
+    let iv = extract_array!(iv, u8, iv_len as usize);
+    let iv_generic = GenericArray::from_slice(iv);
+    let key = GenericArray::from_slice(&key);
+    let ct = Aes256CbcEnc::new(key, iv_generic).encrypt_padded_vec_mut::<Pkcs7>(data);
+    // Storage format: "z2" || hex(IV_16) || hex(ciphertext). The magic prefix distinguishes the
+    // new layout from legacy pure-hex ciphertext; the fresh random IV travels with the blob so
+    // the same plaintext+key never produces comparable ciphertext (see security review).
+    let value = format!("z2{}{}", hex::encode(iv), hex::encode(ct));
+    SimpleResponse::success(convert_c_char(value)).simple_c_ptr()
+}
+
+/// Storage layout for the UFVK blob: hex(IV_16) || hex(ciphertext). Decryption side:
+/// split off the leading IV, then decrypt the rest.
+#[no_mangle]
+pub unsafe extern "C" fn rust_decrypt_ufvk_blob(
+    blob: PtrString,
+    key: PtrBytes,
+    key_len: u32,
+) -> *mut SimpleResponse<c_char> {
+    let blob = unsafe { recover_c_char(blob) };
+    let blob = blob.as_bytes();
+    // Magic prefix distinguishes the new layout from legacy pure-hex ciphertext (whose
+    // leading bytes would otherwise be misread as the IV). Legacy blobs fail here and are
+    // regenerated by the caller instead of being probed heuristically.
+    const MAGIC: &[u8] = b"z2";
+    if !blob.starts_with(MAGIC) {
+        return SimpleResponse::from(RustCError::InvalidHex("invalid blob magic".to_string()))
+            .simple_c_ptr();
+    }
+    let payload = &blob[MAGIC.len()..];
+    if payload.len() < 2 * 16 {
+        return SimpleResponse::from(RustCError::InvalidHex("invalid blob".to_string()))
+            .simple_c_ptr();
+    }
+    let (iv_hex, ct_hex) = payload.split_at(2 * 16);
+    let iv = match hex::decode(iv_hex) {
+        Ok(iv) => iv,
+        Err(_) => {
+            return SimpleResponse::from(RustCError::InvalidHex("invalid iv".to_string()))
+                .simple_c_ptr()
+        }
+    };
+    let data = match hex::decode(ct_hex) {
+        Ok(data) => data,
+        Err(_) => {
+            return SimpleResponse::from(RustCError::InvalidHex("invalid ciphertext".to_string()))
+                .simple_c_ptr()
+        }
+    };
+    let key = extract_array!(key, u8, key_len as usize);
+    let iv = GenericArray::from_slice(&iv);
+    let key = GenericArray::from_slice(&key);
+
+    match Aes256CbcDec::new(key, iv).decrypt_padded_vec_mut::<Pkcs7>(&data) {
+        Ok(pt) => match String::from_utf8(pt) {
+            Ok(pt_str) => SimpleResponse::success(convert_c_char(pt_str)).simple_c_ptr(),
+            Err(_) => SimpleResponse::from(RustCError::InvalidHex("invalid plaintext".to_string()))
+                .simple_c_ptr(),
+        },
+        Err(_e) => SimpleResponse::from(RustCError::InvalidHex("decrypt failed".to_string()))
+            .simple_c_ptr(),
+    }
 }
 
 #[cfg(test)]
@@ -1232,41 +1325,91 @@ mod tests {
     #[test]
     fn test_aes256_cbc_encrypt() {
         let mut data = convert_c_char("hello world".to_string());
-        let mut password = convert_c_char("password".to_string());
         let mut seed = hex::decode("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").unwrap();
-        let iv = unsafe { rust_derive_iv_from_seed(seed.as_mut_ptr(), 64) };
-        let mut iv = unsafe { slice::from_raw_parts_mut((*iv).data, 16) };
-        let iv_len = 16;
-        let ct = unsafe { rust_aes256_cbc_encrypt(data, password, iv.as_mut_ptr(), iv_len as u32) };
+        let key_resp = unsafe { rust_derive_key_from_seed(seed.as_mut_ptr(), 64) };
+        let mut key = unsafe { slice::from_raw_parts_mut((*key_resp).data, 32) };
+        let mut iv_bytes = [0u8; 16];
+        iv_bytes.copy_from_slice(&hex::decode("73e6ca87d5cd5622cdc747367905efe7").unwrap());
+        let ct = unsafe {
+            rust_aes256_cbc_encrypt(data, key.as_mut_ptr(), 32, iv_bytes.as_mut_ptr(), 16)
+        };
         assert!(!ct.is_null());
         let ct_vec = unsafe { (*ct).data };
         let value = unsafe { recover_c_char(ct_vec) };
-        assert_eq!(value, "4989eed8515d7d3fcc16b009d8cdff9e");
+        // Pure ciphertext only: "hello world" -> 16-byte block -> 32 hex chars, no IV prefix.
+        assert_eq!(value.len(), 32);
+        assert!(hex::decode(value).is_ok());
+    }
+
+    #[test]
+    fn test_aes256_ufvk_blob() {
+        let mut data = convert_c_char("hello world".to_string());
+        let mut seed = hex::decode("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").unwrap();
+        let key_resp = unsafe { rust_derive_key_from_seed(seed.as_mut_ptr(), 64) };
+        let mut key = unsafe { slice::from_raw_parts_mut((*key_resp).data, 32) };
+        let mut iv_bytes = [0u8; 16];
+        iv_bytes.copy_from_slice(&hex::decode("73e6ca87d5cd5622cdc747367905efe7").unwrap());
+        // Blob encrypt packs magic + hex(IV) || hex(ciphertext).
+        let blob_resp = unsafe {
+            rust_encrypt_ufvk_blob(data, key.as_mut_ptr(), 32, iv_bytes.as_mut_ptr(), 16)
+        };
+        assert!(!blob_resp.is_null());
+        let blob = unsafe { recover_c_char((*blob_resp).data) };
+        assert_eq!(blob.len(), 2 + 32 + 32); // magic + IV prefix + one-block ciphertext
+        assert!(blob.starts_with("z2"));
+        assert!(blob[2..].starts_with("73e6ca87d5cd5622cdc747367905efe7"));
+
+        // Blob decrypt splits magic+IV off and recovers the plaintext.
+        let blob_input = convert_c_char(blob);
+        let pt_resp = unsafe { rust_decrypt_ufvk_blob(blob_input, key.as_mut_ptr(), 32) };
+        assert!(!pt_resp.is_null());
+        let pt = unsafe { recover_c_char((*pt_resp).data) };
+        assert_eq!(pt, "hello world");
+    }
+
+    #[test]
+    fn test_aes256_ufvk_blob_rejects_legacy_or_garbage() {
+        let mut seed = hex::decode("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").unwrap();
+        let key_resp = unsafe { rust_derive_key_from_seed(seed.as_mut_ptr(), 64) };
+        let mut key = unsafe { slice::from_raw_parts_mut((*key_resp).data, 32) };
+
+        // Legacy blob: pure hex ciphertext without the magic prefix must be rejected
+        // (so the caller regenerates) instead of being misparsed or panicking.
+        let legacy = convert_c_char(
+            "73e6ca87d5cd5622cdc747367905efe700000000000000000000000000000000".to_string(),
+        );
+        let r1 = unsafe { rust_decrypt_ufvk_blob(legacy, key.as_mut_ptr(), 32) };
+        assert!(!r1.is_null());
+        assert!(unsafe { (*r1).data.is_null() });
+
+        // Truncated blob (magic but too short) must be rejected, not panic.
+        let truncated = convert_c_char("z273e6ca87d5cd56".to_string());
+        let r2 = unsafe { rust_decrypt_ufvk_blob(truncated, key.as_mut_ptr(), 32) };
+        assert!(!r2.is_null());
+        assert!(unsafe { (*r2).data.is_null() });
     }
 
     #[test]
     fn test_aes256_cbc_decrypt() {
-        //8dd387c3b2656d9f24ace7c3daf6fc26a1c161098460f8dddd37545fc951f9cd7da6c75c71ae52f32ceb8827eca2169ef4a643d2ccb9f01389d281a85850e2ddd100630ab1ca51310c3e6ccdd3029d0c48db18cdc971dba8f0daff9ad281b56221ffefc7d32333ea310a1f74f99dea444f8a089002cf1f0cd6a4ddf608a7b5388dc09f9417612657b9bf335a466f951547f9707dd129b3c24c900a26010f51c543eba10e9aabef7062845dc6969206b25577a352cb4d984db67c54c7615fe60769726bffa59fd8bd0b66fe29ee3c358af13cf0796c2c062bc79b73271eb0366f0536e425f8e42307ead4c695804fd3281aca5577d9a621e3a8047b14128c280c45343b5bbb783a065d94764e90ad6820fe81a200637401c256b1fb8f58a9d412d303b89c647411662907cdc55ed93adb
-        //73e6ca87d5cd5622cdc747367905efe7
-        //68487dc295052aa79c530e283ce698b8c6bb1b42ff0944252e1910dbecdc5425
         let mut seed = hex::decode("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").unwrap();
-        // First encrypt to get ciphertext
+        let mut iv_bytes = [0u8; 16];
+        iv_bytes.copy_from_slice(&hex::decode("73e6ca87d5cd5622cdc747367905efe7").unwrap());
+        // Encrypt to get pure ciphertext under the seed-derived key.
         let enc_data = convert_c_char("hello world".to_string());
-        let enc_password = convert_c_char("password".to_string());
-        let iv_resp = unsafe { rust_derive_iv_from_seed(seed.as_mut_ptr(), 64) };
-        let mut iv_enc = unsafe { slice::from_raw_parts_mut((*iv_resp).data, 16) };
-        let ct =
-            unsafe { rust_aes256_cbc_encrypt(enc_data, enc_password, iv_enc.as_mut_ptr(), 16) };
+        let key_resp = unsafe { rust_derive_key_from_seed(seed.as_mut_ptr(), 64) };
+        let mut key = unsafe { slice::from_raw_parts_mut((*key_resp).data, 32) };
+        let ct = unsafe {
+            rust_aes256_cbc_encrypt(enc_data, key.as_mut_ptr(), 32, iv_bytes.as_mut_ptr(), 16)
+        };
         let ct_hex = unsafe { recover_c_char((*ct).data) };
-        assert_eq!(ct_hex, "4989eed8515d7d3fcc16b009d8cdff9e");
 
-        // Now decrypt
+        // Decrypt back with the same IV.
         let data = convert_c_char(ct_hex);
-        let password = convert_c_char("password".to_string());
-        let iv = unsafe { rust_derive_iv_from_seed(seed.as_mut_ptr(), 64) };
-        let iv = unsafe { slice::from_raw_parts_mut((*iv).data, 16) };
-        let iv_len = 16;
-        let pt = unsafe { rust_aes256_cbc_decrypt(data, password, iv.as_mut_ptr(), iv_len as u32) };
+        let key_resp = unsafe { rust_derive_key_from_seed(seed.as_mut_ptr(), 64) };
+        let mut key = unsafe { slice::from_raw_parts_mut((*key_resp).data, 32) };
+        let pt = unsafe {
+            rust_aes256_cbc_decrypt(data, key.as_mut_ptr(), 32, iv_bytes.as_mut_ptr(), 16)
+        };
         assert!(!pt.is_null());
         let ct_vec = unsafe { (*pt).data };
         let value = unsafe { recover_c_char(ct_vec) };
@@ -1277,13 +1420,13 @@ mod tests {
     fn test_dep_aes256() {
         let mut data = b"hello world";
         let seed = hex::decode("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").unwrap();
-        let iv_path = "m/44'/1557192335'/0'/2'/0'".to_string();
-        let iv = get_private_key_by_seed(&seed, &iv_path).unwrap();
-        let mut iv_bytes = [0; 16];
-        iv_bytes.copy_from_slice(&iv[..16]);
-        let key = sha256(b"password");
+        // AES key derived from the seed at the dedicated path.
+        let key_bytes =
+            get_private_key_by_seed(&seed, &"m/44'/1557192335'/0'/3'/0'".to_string()).unwrap();
+        let mut iv_bytes = [0u8; 16];
+        iv_bytes.copy_from_slice(&hex::decode("73e6ca87d5cd5622cdc747367905efe7").unwrap());
         let iv = GenericArray::from_slice(&iv_bytes);
-        let key = GenericArray::from_slice(&key);
+        let key = GenericArray::from_slice(&key_bytes);
 
         let encrypter = Aes256CbcEnc::new(key, iv);
         let decrypter = Aes256CbcDec::new(key, iv);

@@ -277,10 +277,12 @@ pub struct ParsedLegacyTransaction {
     pub(crate) input: String,
     pub(crate) chain_id: u64,
     pub(crate) max_txn_fee: String,
+    pub(crate) replay_protected: bool,
 }
 
 impl From<LegacyTransaction> for ParsedLegacyTransaction {
     fn from(value: LegacyTransaction) -> Self {
+        let replay_protected = value.is_eip155_compatible();
         Self {
             nonce: value.nonce.to_string(),
             gas_price: normalize_price(value.gas_price),
@@ -290,6 +292,7 @@ impl From<LegacyTransaction> for ParsedLegacyTransaction {
             input: hex::encode(value.get_data()),
             chain_id: value.chain_id(),
             max_txn_fee: normalize_value(value.gas_price.mul(value.gas_limit)),
+            replay_protected,
         }
     }
 }
@@ -561,6 +564,7 @@ mod tests {
             "".to_string(),
         );
         assert_eq!(tx.chain_id(), 1); // Default chain_id for unsigned
+        assert!(!tx.is_eip155_compatible());
 
         // Test EIP-155 compatible transaction (v > 35)
         // For signed transactions, s should not be zero

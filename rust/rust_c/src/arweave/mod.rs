@@ -192,6 +192,14 @@ pub unsafe extern "C" fn ar_check_tx(
 
     if let Ok(mfp) = mfp.try_into() as Result<[u8; 4], _> {
         if hex::encode(mfp) == hex::encode(ur_mfp) {
+            // DataItem headers are part of the signed payload. Reject malformed
+            // tag metadata during the pre-check so an invalid request never
+            // reaches the transaction confirmation page.
+            if matches!(sign_request.get_sign_type(), SignType::DataItem) {
+                if let Err(e) = parse_data_item(&sign_request.get_sign_data()) {
+                    return TransactionCheckResult::from(e).c_ptr();
+                }
+            }
             return TransactionCheckResult::new().c_ptr();
         } else {
             return TransactionCheckResult::from(RustCError::MasterFingerprintMismatch).c_ptr();

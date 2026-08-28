@@ -488,7 +488,9 @@ static PtrT_TransactionCheckResult GuiGetPsbtStrCheckResult(void)
     }
 
     result = btc_check_psbt_bytes(g_psbtBytes, g_psbtBytesLen, mfp, sizeof(mfp), public_keys, verify_without_mfp, wallet_config);
-    if (result->error_code != 0 && strnlen_s(verify_without_mfp, MAX_VERIFY_CODE_LEN) == 0) {
+    if (result != NULL && result->error_code != 0 &&
+            verify_without_mfp != NULL &&
+            strnlen_s(verify_without_mfp, MAX_VERIFY_CODE_LEN) == 0) {
         free_TransactionCheckResult(result);
         result = btc_check_psbt_bytes(g_psbtBytes, g_psbtBytesLen, mfp, sizeof(mfp), public_keys, verify_code, wallet_config);
     }
@@ -528,10 +530,12 @@ static PtrT_TransactionCheckResult CheckPsbt(void *crypto, uint8_t *mfp, uint32_
         }
     }
 
-    result = btc_check_psbt(crypto, mfp, sizeof(mfp), public_keys, verify_without_mfp, wallet_config);
-    if (result->error_code != 0 && strnlen_s(verify_without_mfp, MAX_VERIFY_CODE_LEN) == 0) {
+    result = btc_check_psbt(crypto, mfp, mfpLen, public_keys, verify_without_mfp, wallet_config);
+    if (result != NULL && result->error_code != 0 &&
+            verify_without_mfp != NULL &&
+            strnlen_s(verify_without_mfp, MAX_VERIFY_CODE_LEN) == 0) {
         free_TransactionCheckResult(result);
-        result = btc_check_psbt(crypto, mfp, sizeof(mfp), public_keys, verify_code, wallet_config);
+        result = btc_check_psbt(crypto, mfp, mfpLen, public_keys, verify_code, wallet_config);
     }
     SRAM_FREE(verify_without_mfp);
     SRAM_FREE(verify_code);
@@ -1094,8 +1098,8 @@ static lv_obj_t *CreateOverviewFromView(lv_obj_t *parent, DisplayTxOverview *ove
 
         if (hasMultiFromAddress) {
             orderLabel = lv_label_create(formInnerContainer);
-            char str[4] = {0};
-            sprintf(str, "%d", (i + 1));
+            char str[BUFFER_SIZE_16] = {0};
+            snprintf(str, sizeof(str), "%d", (i + 1));
             lv_label_set_text(orderLabel, str);
             lv_obj_align(orderLabel, LV_ALIGN_DEFAULT, 0, 0);
             SetTitleLabelStyle(orderLabel);
@@ -1166,8 +1170,8 @@ static lv_obj_t *CreateOverviewToView(lv_obj_t *parent, DisplayTxOverview *overv
 
         if (hasMultiToAddress) {
             toOrderLabel = lv_label_create(toInnerContainer);
-            char str[4] = {0};
-            sprintf(str, "%d", (i + 1));
+            char str[BUFFER_SIZE_16] = {0};
+            snprintf(str, sizeof(str), "%d", (i + 1));
             lv_label_set_text(toOrderLabel, str);
             lv_obj_align(toOrderLabel, LV_ALIGN_DEFAULT, 0, 0);
             SetTitleLabelStyle(toOrderLabel);
@@ -1308,8 +1312,8 @@ static lv_obj_t *CreateDetailFromView(lv_obj_t *parent, DisplayTxDetail *detailD
         lv_obj_set_style_bg_opa(formInnerContainer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
         orderLabel = lv_label_create(formInnerContainer);
-        char str[4] = {0};
-        sprintf(str, "%d", (i + 1));
+        char str[BUFFER_SIZE_16] = {0};
+        snprintf(str, sizeof(str), "%d", (i + 1));
         lv_label_set_text(orderLabel, str);
         lv_obj_align(orderLabel, LV_ALIGN_DEFAULT, 0, 0);
         SetTitleLabelStyle(orderLabel);
@@ -1394,8 +1398,8 @@ static lv_obj_t *CreateDetailToView(lv_obj_t *parent, DisplayTxDetail *detailDat
         lv_obj_set_style_bg_opa(toInnerContainer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
         orderLabel = lv_label_create(toInnerContainer);
-        char str[4] = {0};
-        sprintf(str, "%d", (i + 1));
+        char str[BUFFER_SIZE_16] = {0};
+        snprintf(str, sizeof(str), "%d", (i + 1));
         lv_label_set_text(orderLabel, str);
         lv_obj_align(orderLabel, LV_ALIGN_DEFAULT, 0, 0);
         SetTitleLabelStyle(orderLabel);
@@ -1465,7 +1469,7 @@ void GuiBtcTxOverview(lv_obj_t *parent, void *totalData)
     }
 
     if (overviewData->is_large_fee) {
-        lastView = CreateSighashWarningView(parent, lastView, _("btc_large_fee_warning"));
+        lastView = CreateSighashWarningView(parent, lastView, _("utxo_large_fee_warning"));
     }
 
     if (NeedShowCheckInputValueHint(txData)) {

@@ -8,6 +8,15 @@ use crate::common::ur::{QRCodeType, UREncodeResult};
 use crate::extract_array;
 use alloc::boxed::Box;
 use alloc::string::ToString;
+use ur_registry::pb::protoc;
+
+fn is_supported_legacy_utxo_payload(payload: &protoc::Payload) -> bool {
+    matches!(
+        payload.content.as_ref(),
+        Some(protoc::payload::Content::SignTx(sign_tx))
+            if app_bitcoin::network::is_supported_legacy_utxo_transaction(sign_tx)
+    )
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn utxo_parse_keystone(
@@ -29,6 +38,12 @@ pub unsafe extern "C" fn utxo_parse_keystone(
     build_payload(ptr, ur_type).map_or_else(
         |e| TransactionParseResult::from(e).c_ptr(),
         |payload| {
+            if !is_supported_legacy_utxo_payload(&payload) {
+                return TransactionParseResult::from(RustCError::UnsupportedTransaction(
+                    app_bitcoin::network::UNSUPPORTED_LEGACY_UTXO_MESSAGE.to_string(),
+                ))
+                .c_ptr();
+            }
             build_parse_context(master_fingerprint, x_pub).map_or_else(
                 |e| TransactionParseResult::from(e).c_ptr(),
                 |context| {

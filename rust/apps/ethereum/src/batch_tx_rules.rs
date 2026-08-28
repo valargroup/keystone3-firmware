@@ -64,6 +64,7 @@ mod tests {
             max_priority: None,
             gas_limit: "21000".to_string(),
             max_txn_fee: "0".to_string(),
+            replay_protected: true,
         }
     }
 

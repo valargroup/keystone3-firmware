@@ -39,10 +39,7 @@ impl TryFrom<DataItem> for AOTransferTransaction {
         }
         let token_id = value.get_target();
         let rest_tags = tags.iter().filter(|v| {
-            v.name().ne("Data-Protocol")
-                && v.name().ne("Action")
-                && v.name().ne("Recipient")
-                && v.name().ne("Quantity")
+            v.name().ne("Action") && v.name().ne("Recipient") && v.name().ne("Quantity")
         });
         if let Some(token_id) = token_id {
             let from = value.get_owner();
@@ -107,6 +104,10 @@ mod tests {
         );
         assert_eq!(ao_transfer.quantity, "0.01 AR");
         assert_eq!(ao_transfer.token_id, "Wrapped AR");
+        assert!(ao_transfer
+            .other_info
+            .iter()
+            .any(|tag| tag.name() == "Data-Protocol" && tag.value() == "ao"));
 
         let mut tags = result.get_tags();
         let mut tag_data = tags.get_data();

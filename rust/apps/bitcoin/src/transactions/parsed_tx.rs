@@ -234,14 +234,14 @@ pub trait TxParser {
             has_unlocked_outputs || (has_anyone_can_pay && total_input_value < total_output_value);
         let fee_is_lower_bound = has_anyone_can_pay && !fee_is_unknown;
         let fee = total_input_value.saturating_sub(total_output_value);
-        const LARGE_FEE_SATS: u64 = 5_000_000;
-        const LARGE_FEE_RATE_SAT_PER_VBYTE: u64 = 100;
+        let large_fee_policy = network.large_fee_policy();
         let is_large_fee = !fee_is_unknown
-            && (fee > LARGE_FEE_SATS
-                || estimated_signed_vbytes
-                    .filter(|vbytes| *vbytes > 0)
-                    .is_some_and(|vbytes| {
-                        fee > LARGE_FEE_RATE_SAT_PER_VBYTE.saturating_mul(vbytes)
+            && (fee > large_fee_policy.absolute_threshold
+                || large_fee_policy
+                    .rate_threshold_per_vbyte
+                    .zip(estimated_signed_vbytes.filter(|vbytes| *vbytes > 0))
+                    .is_some_and(|(rate_threshold, vbytes)| {
+                        fee > rate_threshold.saturating_mul(vbytes)
                     }));
         let fee_amount = Self::format_amount(fee, network);
         let fee_sat = Self::format_sat(fee);
@@ -287,7 +287,8 @@ pub trait TxParser {
             from: overview_from,
             to: overview_to,
             network: network.normalize(),
-            fee_larger_than_amount: fee > overview_amount,
+            fee_larger_than_amount: large_fee_policy.warn_fee_larger_than_amount
+                && fee > overview_amount,
             is_large_fee,
             is_multisig: inputs.iter().any(|v| v.is_multisig),
             need_sign: Self::is_need_sign(&inputs),
@@ -544,5 +545,55 @@ mod tests {
             )
             .unwrap();
         assert!(!exact_limits.overview.is_large_fee);
+    }
+
+    #[test]
+    fn test_dogecoin_large_fee_uses_dogecoin_policy() {
+        // Dogecoin Core's recommended 0.01 DOGE/kB fee must not be compared
+        // against Bitcoin's 100 sat/vB warning threshold.
+        let normal_doge_fee = DummyParser
+            .normalize(
+                vec![build_input_with_value(101_000_000, 0x01)],
+                vec![build_output(100_000_000)],
+                &Network::Dogecoin,
+                false,
+                Some(1_000),
+            )
+            .unwrap();
+        assert!(!normal_doge_fee.overview.is_large_fee);
+
+        let normal_small_doge_transfer = DummyParser
+            .normalize(
+                vec![build_input_with_value(23_482_934, 0x01)],
+                vec![build_output(10_000_000)],
+                &Network::Dogecoin,
+                false,
+                Some(200),
+            )
+            .unwrap();
+        assert!(!normal_small_doge_transfer.overview.is_large_fee);
+        assert!(!normal_small_doge_transfer.overview.fee_larger_than_amount);
+
+        let high_doge_rate = DummyParser
+            .normalize(
+                vec![build_input_with_value(120_000_001, 0x01)],
+                vec![build_output(100_000_000)],
+                &Network::Dogecoin,
+                false,
+                Some(200),
+            )
+            .unwrap();
+        assert!(high_doge_rate.overview.is_large_fee);
+
+        let high_doge_absolute_fee = DummyParser
+            .normalize(
+                vec![build_input_with_value(200_000_001, 0x01)],
+                vec![build_output(100_000_000)],
+                &Network::Dogecoin,
+                false,
+                Some(20_000),
+            )
+            .unwrap();
+        assert!(high_doge_absolute_fee.overview.is_large_fee);
     }
 }

@@ -44,6 +44,37 @@ use {
     },
 };
 
+fn validate_transaction_by_type(tx_data: Vec<u8>) -> Result<(), AvaxError> {
+    let type_id = get_avax_tx_type_id(tx_data.clone())?;
+
+    macro_rules! validate_tx {
+        ($tx_type:ty) => {
+            parse_avax_tx::<$tx_type>(tx_data).map(|_| ())
+        };
+    }
+
+    match type_id {
+        TypeId::BaseTx => {
+            let header = get_avax_tx_header(tx_data.clone())?;
+            if header.get_blockchain_id() == C_BLOCKCHAIN_ID
+                || header.get_blockchain_id() == C_TEST_BLOCKCHAIN_ID
+            {
+                validate_tx!(CchainImportTx)
+            } else {
+                validate_tx!(BaseTx)
+            }
+        }
+        TypeId::PchainExportTx | TypeId::XchainExportTx => validate_tx!(ExportTx),
+        TypeId::XchainImportTx | TypeId::PchainImportTx => validate_tx!(ImportTx),
+        TypeId::CchainExportTx => validate_tx!(CchainExportTx),
+        TypeId::AddPermissionlessValidator => validate_tx!(AddPermissionlessValidatorTx),
+        TypeId::AddPermissionlessDelegator => validate_tx!(AddPermissionlessDelegatorTx),
+        _ => Err(AvaxError::UnsupportedTransaction(format!(
+            "{type_id:?} not support"
+        ))),
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn avax_parse_transaction(
     ptr: PtrUR,
@@ -297,7 +328,32 @@ pub unsafe extern "C" fn avax_check_transaction(
     };
 
     match first_path.get_source_fingerprint() {
-        Some(fingerprint) if fingerprint == mfp => TransactionCheckResult::new().c_ptr(),
+        Some(fingerprint) if fingerprint == mfp => {
+            match validate_transaction_by_type(avax_tx.get_tx_data()) {
+                Ok(()) => TransactionCheckResult::new().c_ptr(),
+                Err(e) => TransactionCheckResult::from(e).c_ptr(),
+            }
+        }
         _ => TransactionCheckResult::from(RustCError::MasterFingerprintMismatch).c_ptr(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FUJI_BASE_TX: &str = "00000000000000000005ab68eb1ee142a05cfe768c36e11f0b596db5a3c6c77aabe665dad9e638ca94f7000000023d9bdac0ed1d761330cf680efdeb1a42159eb387d6d2950c96f7d28f61bbe2aa000000070000000001312d00000000000000000000000001000000018771921301d5bffff592dae86695a615bdb4a4413d9bdac0ed1d761330cf680efdeb1a42159eb387d6d2950c96f7d28f61bbe2aa000000070000000004b571c0000000000000000000000001000000010969ea62e2bb30e66d82e82fe267edf6871ea5f7000000019eae34633c2103aaee5253bb3ca3046c2ab4718a109ffcdb77b51d0427be6bb7000000003d9bdac0ed1d761330cf680efdeb1a42159eb387d6d2950c96f7d28f61bbe2aa000000050000000005f5e100000000010000000000000000";
+
+    #[test]
+    fn check_rejects_replaced_first_output_asset_id() {
+        let valid_tx = hex::decode(FUJI_BASE_TX).unwrap();
+        assert!(validate_transaction_by_type(valid_tx.clone()).is_ok());
+
+        let mut replaced_asset_tx = valid_tx;
+        // codec + type + network + blockchain id + outputs count
+        const FIRST_OUTPUT_ASSET_OFFSET: usize = 2 + 4 + 4 + 32 + 4;
+        replaced_asset_tx[FIRST_OUTPUT_ASSET_OFFSET..FIRST_OUTPUT_ASSET_OFFSET + 32].fill(0xaa);
+
+        assert!(validate_transaction_by_type(replaced_asset_tx).is_err());
     }
 }

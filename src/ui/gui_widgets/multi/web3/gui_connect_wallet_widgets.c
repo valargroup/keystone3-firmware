@@ -853,6 +853,9 @@ static void GuiCreateBtcWalletTutorialWidget(lv_obj_t *parent)
 
     tutorial = GuiCreateWalletTutorialWidget(parent, BULL_WALLET_TITLE, BULL_WALLET_LINK);
     lv_obj_align(tutorial, LV_ALIGN_TOP_MID, 0, 630);
+
+    tutorial = GuiCreateWalletTutorialWidget(parent, "Lace", "https://keyst.one/t/3rd/lace");
+    lv_obj_align(tutorial, LV_ALIGN_TOP_MID, 0, 756);
 }
 
 static void GuiCreateQrCodeWidget(lv_obj_t *parent)

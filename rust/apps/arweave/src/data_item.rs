@@ -272,6 +272,8 @@ impl DataItem {
 mod tests {
 
     use super::{DataItem, Tags};
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
 
     use hex;
 
@@ -307,6 +309,23 @@ mod tests {
     #[test]
     fn test_reject_trailing_avro_tag_bytes() {
         assert!(Tags::deserialize(&[0x00, 0x02]).is_err());
+    }
+
+    #[test]
+    fn test_reject_header_tag_count_mismatch() {
+        let raw_tags = [0x02, 0x02, b'A', 0x02, b'B', 0x00];
+        let mut binary = Vec::new();
+        binary.extend_from_slice(&1u16.to_le_bytes());
+        binary.extend_from_slice(&[0u8; 512]);
+        binary.extend_from_slice(&[0u8; 512]);
+        binary.push(0); // no target
+        binary.push(0); // no anchor
+        binary.extend_from_slice(&2u64.to_le_bytes()); // header claims two tags
+        binary.extend_from_slice(&(raw_tags.len() as u64).to_le_bytes());
+        binary.extend_from_slice(&raw_tags); // Avro payload contains one tag
+
+        let error = DataItem::deserialize(&binary).unwrap_err();
+        assert!(error.to_string().contains("tags count mismatch"));
     }
 
     #[test]

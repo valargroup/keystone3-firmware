@@ -65,6 +65,7 @@ pub struct ParsedEthereumTransaction {
 
     pub gas_limit: String,
     pub max_txn_fee: String,
+    pub replay_protected: bool,
 }
 
 impl ParsedEthereumTransaction {
@@ -87,6 +88,7 @@ impl ParsedEthereumTransaction {
             max_priority_fee_per_gas: None,
             max_fee: None,
             max_priority: None,
+            replay_protected: tx.replay_protected,
         })
     }
 
@@ -108,6 +110,7 @@ impl ParsedEthereumTransaction {
             max_fee: Some(tx.max_fee),
             max_priority: Some(tx.max_priority),
             gas_price: None,
+            replay_protected: true,
         })
     }
 }

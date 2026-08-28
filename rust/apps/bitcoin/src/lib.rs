@@ -21,6 +21,7 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use bitcoin::secp256k1::Message;
 use bitcoin::sign_message;
 use either::{Left, Right};
+#[allow(deprecated)]
 pub use transactions::legacy::sign_legacy_tx;
 pub use transactions::parsed_tx;
 pub use transactions::psbt::parsed_psbt;
@@ -28,6 +29,7 @@ use ur_registry::pb::protoc;
 
 use crate::errors::{BitcoinError, Result};
 use crate::parsed_tx::{ParseContext, ParsedTx, TxParser};
+#[allow(deprecated)]
 use crate::transactions::legacy::TxData;
 use crate::transactions::psbt::wrapped_psbt::WrappedPsbt;
 use crate::transactions::tx_checker::TxChecker;

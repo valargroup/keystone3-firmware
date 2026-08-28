@@ -261,19 +261,26 @@ fn get_view_type_from_keystone(bytes: Vec<u8>) -> Result<ViewType, URError> {
         .ok_or(URError::NotSupportURTypeError("empty payload".to_string()))?;
     let result = match payload.content {
         Some(protoc::payload::Content::SignTx(sign_tx_content)) => {
+            #[cfg(feature = "bitcoin")]
+            if app_bitcoin::network::is_legacy_utxo_transaction(&sign_tx_content) {
+                if !app_bitcoin::network::is_supported_legacy_utxo_transaction(&sign_tx_content) {
+                    return Err(URError::NotSupportURTypeError(
+                        app_bitcoin::network::UNSUPPORTED_LEGACY_UTXO_MESSAGE.to_string(),
+                    ));
+                }
+                return match sign_tx_content.transaction.as_ref() {
+                    #[cfg(feature = "bch")]
+                    Some(protoc::sign_transaction::Transaction::BchTx(_)) => Ok(ViewType::BchTx),
+                    #[cfg(feature = "dash")]
+                    Some(protoc::sign_transaction::Transaction::DashTx(_)) => Ok(ViewType::DashTx),
+                    #[cfg(feature = "ltc")]
+                    Some(protoc::sign_transaction::Transaction::LtcTx(_)) => Ok(ViewType::LtcTx),
+                    _ => Err(URError::NotSupportURTypeError(
+                        app_bitcoin::network::UNSUPPORTED_LEGACY_UTXO_MESSAGE.to_string(),
+                    )),
+                };
+            }
             match sign_tx_content.coin_code.as_str() {
-                "BTC_NATIVE_SEGWIT" => ViewType::BtcNativeSegwitTx,
-                "BTC_SEGWIT" => ViewType::BtcSegwitTx,
-                "BTC_LEGACY" => ViewType::BtcLegacyTx,
-                "BTC" => ViewType::BtcSegwitTx,
-                #[cfg(feature = "ltc")]
-                "LTC" => ViewType::LtcTx,
-                #[cfg(feature = "doge")]
-                "DOGE" => ViewType::DogeTx,
-                #[cfg(feature = "dash")]
-                "DASH" => ViewType::DashTx,
-                #[cfg(feature = "bch")]
-                "BCH" => ViewType::BchTx,
                 #[cfg(feature = "ethereum")]
                 "ETH" => ViewType::EthTx,
                 #[cfg(feature = "tron")]

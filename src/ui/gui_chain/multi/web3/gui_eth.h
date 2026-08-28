@@ -31,6 +31,7 @@ void GetEthPersonalMessageType(void *indata, void *param, uint32_t maxLen);
 void GetMessageFrom(void *indata, void *param, uint32_t maxLen);
 void GetMessageUtf8(void *indata, void *param, uint32_t maxLen);
 void GetMessageRaw(void *indata, void *param, uint32_t maxLen);
+void GuiShowEthMessagePaged(lv_obj_t *parent, void *param, bool raw);
 void EthContractCheckRawDataCallback(void);
 
 void *GuiGetEthTypeData(void);

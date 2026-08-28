@@ -18,11 +18,15 @@
 #include "gui_views.h"
 #include "gui_chain_components.h"
 
+#define ETH_COMPONENT_WIDTH 376
+#define ETH_COMPONENT_CONTENT_WIDTH (ETH_COMPONENT_WIDTH - 48)
+
 static void decodeEthContractData(void *parseResult);
 static bool GetEthErc20ContractData(void *parseResult);
 static lv_obj_t *CreateEthOverviewValueView(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView);
 static uint16_t CreateEthOverviewValueRow(lv_obj_t *container, const char *title, const char *value, uint16_t y);
 static lv_obj_t *CreateEthOverviewNetworkView(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView);
+static lv_obj_t *CreateEthReplayProtectionWarning(lv_obj_t *parent, lv_obj_t *lastView);
 static lv_obj_t *CreateEthAddressView(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView, bool details);
 static lv_obj_t *CreateEthDetailsFeeView(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView);
 static lv_obj_t *CreateEthDetailsContractViews(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView);
@@ -1101,13 +1105,19 @@ void GetEthPersonalMessageType(void *indata, void *param, uint32_t maxLen)
 void GetMessageFrom(void *indata, void *param, uint32_t maxLen)
 {
     DisplayETHPersonalMessage *message = (DisplayETHPersonalMessage *)param;
-    if (message->from == NULL) {
-        strcpy_s((char *)indata, maxLen, "");
+    if (indata == NULL || maxLen == 0) {
+        return;
+    }
+    if (message == NULL || message->from == NULL) {
+        ((char *)indata)[0] = '\0';
         return;
     }
     if (strlen(message->from) >= maxLen) {
-        snprintf((char *)indata, maxLen - 3, "%s", message->from);
-        strcat((char *)indata, "...");
+        if (maxLen <= 4) {
+            snprintf((char *)indata, maxLen, "%.*s", (int)(maxLen - 1), "...");
+        } else {
+            snprintf((char *)indata, maxLen, "%.*s...", (int)(maxLen - 4), message->from);
+        }
     } else {
         strcpy_s((char *)indata, maxLen, message->from);
     }
@@ -1115,9 +1125,19 @@ void GetMessageFrom(void *indata, void *param, uint32_t maxLen)
 void GetMessageUtf8(void *indata, void *param, uint32_t maxLen)
 {
     DisplayETHPersonalMessage *message = (DisplayETHPersonalMessage *)param;
+    if (indata == NULL || maxLen == 0) {
+        return;
+    }
+    if (message == NULL || message->utf8_message == NULL) {
+        ((char *)indata)[0] = '\0';
+        return;
+    }
     if (strlen(message->utf8_message) >= maxLen) {
-        snprintf((char *)indata, maxLen - 3, "%s", message->utf8_message);
-        strcat((char *)indata, "...");
+        if (maxLen <= 4) {
+            snprintf((char *)indata, maxLen, "%.*s", (int)(maxLen - 1), "...");
+        } else {
+            snprintf((char *)indata, maxLen, "%.*s...", (int)(maxLen - 4), message->utf8_message);
+        }
     } else {
         snprintf((char *)indata, maxLen, "%s", message->utf8_message);
     }
@@ -1125,14 +1145,35 @@ void GetMessageUtf8(void *indata, void *param, uint32_t maxLen)
 
 void GetMessageRaw(void *indata, void *param, uint32_t maxLen)
 {
-    int len = strlen("\n#F5C131 The data is not parseable. Please#\n#F5C131 refer to the software wallet interface#\n#F5C131 for viewing.#");
+    const char *warning = "\n#F5C131 The data is not parseable. Please#\n#F5C131 refer to the software wallet interface#\n#F5C131 for viewing.#";
+    size_t warningLen = strlen(warning);
     DisplayETHPersonalMessage *message = (DisplayETHPersonalMessage *)param;
-    if (strlen(message->raw_message) >= maxLen - len) {
-        snprintf((char *)indata, maxLen - 3 - len, "%s", message->raw_message);
-        strcat((char *)indata, "...");
-    } else {
-        snprintf((char *)indata, maxLen, "%s%s", message->raw_message, "\n#F5C131 The data is not parseable. Please#\n#F5C131 refer to the software wallet interface#\n#F5C131 for viewing.#");
+    if (indata == NULL || maxLen == 0) {
+        return;
     }
+    if (message == NULL || message->raw_message == NULL) {
+        ((char *)indata)[0] = '\0';
+        return;
+    }
+    if (warningLen + 4 >= maxLen) {
+        snprintf((char *)indata, maxLen, "%.*s", (int)(maxLen - 1), "...");
+    } else if (strlen(message->raw_message) + warningLen >= maxLen) {
+        snprintf((char *)indata, maxLen, "%.*s...", (int)(maxLen - warningLen - 4), message->raw_message);
+    } else {
+        snprintf((char *)indata, maxLen, "%s%s", message->raw_message, warning);
+    }
+}
+
+void GuiShowEthMessagePaged(lv_obj_t *parent, void *param, bool raw)
+{
+    DisplayETHPersonalMessage *message = (DisplayETHPersonalMessage *)param;
+    const char *text = raw ? message->raw_message : message->utf8_message;
+    GuiShowPagedMessageText(
+        parent,
+        text,
+        !raw,
+        raw ? _("solana_blind_sign_title") : NULL,
+        raw ? _("solana_unparsed_message_warning") : NULL);
 }
 
 static uint8_t GetEthPublickeyIndex(char* rootPath)
@@ -1197,13 +1238,21 @@ PtrT_TransactionCheckResult GuiGetEthCheckResult(void)
 void GuiEthTxOverview(lv_obj_t *parent, void *totalData)
 {
     DisplayETH *eth = (DisplayETH *)totalData;
-    lv_obj_set_size(parent, 408, 444);
+    lv_obj_set_size(parent, ETH_COMPONENT_WIDTH, 444);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *lastView = NULL;
+    if (!eth->replay_protected) {
+        lastView = CreateEthReplayProtectionWarning(parent, lastView);
+    }
     if (eth->overview->from == NULL) {
-        lastView = CreateNoticeCard(parent, _("custom_path_parse_notice"));
+        lv_obj_t *notice = CreateNoticeCardWithWidth(
+            parent, _("custom_path_parse_notice"), ETH_COMPONENT_WIDTH);
+        if (lastView != NULL) {
+            lv_obj_align_to(notice, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+        }
+        lastView = notice;
     }
     lastView = CreateEthOverviewValueView(parent, eth, lastView);
     lastView = CreateEthOverviewNetworkView(parent, eth, lastView);
@@ -1214,13 +1263,21 @@ void GuiEthTxOverview(lv_obj_t *parent, void *totalData)
 void GuiEthTxDetails(lv_obj_t *parent, void *totalData)
 {
     DisplayETH *eth = (DisplayETH *)totalData;
-    lv_obj_set_size(parent, 408, 444);
+    lv_obj_set_size(parent, ETH_COMPONENT_WIDTH, 444);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *lastView = NULL;
+    if (!eth->replay_protected) {
+        lastView = CreateEthReplayProtectionWarning(parent, lastView);
+    }
     if (eth->overview->from == NULL) {
-        lastView = CreateNoticeCard(parent, _("custom_path_parse_notice"));
+        lv_obj_t *notice = CreateNoticeCardWithWidth(
+            parent, _("custom_path_parse_notice"), ETH_COMPONENT_WIDTH);
+        if (lastView != NULL) {
+            lv_obj_align_to(notice, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+        }
+        lastView = notice;
     }
     lastView = CreateEthDetailsFeeView(parent, eth, lastView);
     lastView = CreateEthOverviewNetworkView(parent, eth, lastView);
@@ -1228,10 +1285,12 @@ void GuiEthTxDetails(lv_obj_t *parent, void *totalData)
     if (g_contractDataExist) {
         char method[96] = {0};
         GetEthMethodName(method, eth, sizeof(method));
-        lastView = CreateTransactionItemView(parent, _("Method"), method, lastView);
+        lastView = CreateTransactionItemViewWithWidth(
+            parent, _("Method"), method, lastView, ETH_COMPONENT_WIDTH);
     }
 
-    lastView = CreateTransactionItemView(parent, _("nonce"), eth->detail->nonce, lastView);
+    lastView = CreateTransactionItemViewWithWidth(
+        parent, _("nonce"), eth->detail->nonce, lastView, ETH_COMPONENT_WIDTH);
     lastView = CreateEthAddressView(parent, eth, lastView, true);
     lastView = CreateEthDetailsContractViews(parent, eth, lastView);
     lv_obj_update_layout(parent);
@@ -1250,14 +1309,15 @@ static lv_obj_t *CreateEthOverviewValueView(lv_obj_t *parent, DisplayETH *eth, l
         GetEthValue(value, eth, sizeof(value));
     }
 
-    lv_obj_t *container = CreateRelativeTransactionContentContainer(parent, 408, 144, lastView);
+    lv_obj_t *container = CreateRelativeTransactionContentContainer(
+        parent, ETH_COMPONENT_WIDTH, 144, lastView);
     lv_obj_t *label = GuiCreateIllustrateLabel(container, title);
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 16);
     lv_obj_set_style_text_opa(label, LV_OPA_64, LV_PART_MAIN);
 
-    label = GuiCreateLittleTitleLabel(container, value);
+    label = GuiCreateLabelWithFont(container, value, GetOverviewAmountFont(value));
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 50);
-    lv_obj_set_width(label, 360);
+    lv_obj_set_width(label, ETH_COMPONENT_CONTENT_WIDTH);
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(label, ORANGE_COLOR, LV_PART_MAIN);
     lv_obj_update_layout(label);
@@ -1269,7 +1329,7 @@ static lv_obj_t *CreateEthOverviewValueView(lv_obj_t *parent, DisplayETH *eth, l
     }
 
     GetEthTxFee(value, eth, sizeof(value));
-    nextY = CreateEthOverviewValueRow(container, _("MaxTxnFee"), value, nextY);
+    nextY = CreateEthOverviewValueRow(container, _("Max Txn Fee"), value, nextY);
     lv_obj_set_height(container, nextY + 8);
     lv_obj_update_layout(container);
     return container;
@@ -1287,13 +1347,13 @@ static uint16_t CreateEthOverviewValueRow(lv_obj_t *container, const char *title
 
     uint16_t titleWidth = lv_obj_get_width(titleLabel);
     uint16_t valueWidth = lv_obj_get_width(valueLabel);
-    if (24 + titleWidth + 16 + valueWidth + 24 <= 408) {
+    if (24 + titleWidth + 16 + valueWidth + 24 <= ETH_COMPONENT_WIDTH) {
         lv_obj_align_to(valueLabel, titleLabel, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
         return y + 38;
     }
 
     lv_obj_align_to(valueLabel, titleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 0);
-    lv_obj_set_width(valueLabel, 360);
+    lv_obj_set_width(valueLabel, ETH_COMPONENT_CONTENT_WIDTH);
     lv_label_set_long_mode(valueLabel, LV_LABEL_LONG_WRAP);
     lv_obj_update_layout(valueLabel);
     return y + lv_obj_get_height(titleLabel) + lv_obj_get_height(valueLabel) + 8;
@@ -1303,7 +1363,31 @@ static lv_obj_t *CreateEthOverviewNetworkView(lv_obj_t *parent, DisplayETH *eth,
 {
     char network[64] = {0};
     GetEthNetWork(network, eth, sizeof(network));
-    return CreateTransactionItemView(parent, _("Network"), network, lastView);
+    return CreateTransactionItemViewWithWidth(
+        parent, _("Network"), network, lastView, ETH_COMPONENT_WIDTH);
+}
+
+static lv_obj_t *CreateEthReplayProtectionWarning(lv_obj_t *parent, lv_obj_t *lastView)
+{
+    lv_obj_t *card = CreateRelativeTransactionContentContainer(
+        parent, ETH_COMPONENT_WIDTH, 128, lastView);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0xF55831), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(card, LV_OPA_20, LV_PART_MAIN);
+
+    lv_obj_t *warningIcon = GuiCreateImg(card, &imgWarningRed);
+    lv_obj_align(warningIcon, LV_ALIGN_TOP_LEFT, 24, 20);
+
+    lv_obj_t *title = GuiCreateTextLabel(card, _("Warning"));
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF55831), LV_PART_MAIN);
+    lv_obj_align_to(title, warningIcon, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    lv_obj_t *content = GuiCreateIllustrateLabel(card, _("eth_replay_protection_warning"));
+    lv_obj_set_width(content, ETH_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(content, LV_LABEL_LONG_WRAP);
+    lv_obj_align(content, LV_ALIGN_TOP_LEFT, 24, 64);
+    lv_obj_update_layout(content);
+    lv_obj_set_height(card, 64 + lv_obj_get_height(content) + 24);
+    return card;
 }
 
 static lv_obj_t *CreateEthAddressView(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView, bool details)
@@ -1323,7 +1407,7 @@ static lv_obj_t *CreateEthAddressView(lv_obj_t *parent, DisplayETH *eth, lv_obj_
 
         GetEthGetFromAddress(address, eth, sizeof(address));
         label = GuiCreateIllustrateLabel(container, address);
-        lv_obj_set_width(label, 360);
+        lv_obj_set_width(label, ETH_COMPONENT_CONTENT_WIDTH);
         lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, y + 38);
 
         y += 114;
@@ -1347,7 +1431,7 @@ static lv_obj_t *CreateEthAddressView(lv_obj_t *parent, DisplayETH *eth, lv_obj_
         GetEthGetToAddress(address, eth, sizeof(address));
     }
     label = GuiCreateIllustrateLabel(container, address);
-    lv_obj_set_width(label, 360);
+    lv_obj_set_width(label, ETH_COMPONENT_CONTENT_WIDTH);
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, y + 38);
 
     if (g_toEnsExist) {
@@ -1368,90 +1452,250 @@ static lv_obj_t *CreateEthAddressView(lv_obj_t *parent, DisplayETH *eth, lv_obj_
         lv_obj_align(icon, LV_ALIGN_TOP_LEFT, 24, y - 1);
         label = GuiCreateIllustrateLabel(container, contractName);
         lv_obj_align(label, LV_ALIGN_TOP_LEFT, 62, y - 4);
-        lv_obj_set_style_text_color(label, lv_color_hex(0xA4877F), LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(0xA485FF), LV_PART_MAIN);
     }
     return container;
 }
 
-static void CreateEthDetailsPair(lv_obj_t *container, const char *title, const char *value, uint16_t y)
+static uint16_t CreateEthDetailsPair(lv_obj_t *container, const char *title, const char *value,
+                                     uint16_t y, bool highlightValue)
 {
     lv_obj_t *titleLabel = GuiCreateIllustrateLabel(container, title);
     lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 24, y);
     lv_obj_set_style_text_opa(titleLabel, LV_OPA_64, LV_PART_MAIN);
+    lv_obj_update_layout(titleLabel);
 
     lv_obj_t *valueLabel = GuiCreateIllustrateLabel(container, value);
-    lv_obj_align_to(valueLabel, titleLabel, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+    if (highlightValue) {
+        lv_obj_set_style_text_color(valueLabel, ORANGE_COLOR, LV_PART_MAIN);
+    }
+    lv_obj_update_layout(valueLabel);
+
+    uint16_t titleWidth = lv_obj_get_width(titleLabel);
+    uint16_t valueWidth = lv_obj_get_width(valueLabel);
+    uint16_t titleHeight = lv_obj_get_height(titleLabel);
+    uint16_t valueHeight = lv_obj_get_height(valueLabel);
+    if (24 + titleWidth + 16 + valueWidth + 24 <= ETH_COMPONENT_WIDTH &&
+        valueHeight <= TEXT_LINE_HEIGHT) {
+        lv_obj_align_to(valueLabel, titleLabel, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+        return y + (titleHeight > valueHeight ? titleHeight : valueHeight) + 8;
+    }
+
+    lv_obj_set_width(valueLabel, ETH_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(valueLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_align_to(valueLabel, titleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+    lv_obj_update_layout(valueLabel);
+    return y + titleHeight + 4 + lv_obj_get_height(valueLabel) + 8;
+}
+
+static uint16_t CreateEthDetailsDescription(lv_obj_t *container, const char *text,
+                                            uint16_t y, const lv_font_t *font)
+{
+    lv_obj_t *label = GuiCreateIllustrateLabel(container, text);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_set_width(label, ETH_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    if (font != NULL) {
+        lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
+    }
+    lv_obj_set_style_text_opa(label, LV_OPA_64, LV_PART_MAIN);
+    lv_obj_update_layout(label);
+    return y + lv_obj_get_height(label) + 8;
 }
 
 static lv_obj_t *CreateEthDetailsFeeView(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView)
 {
     bool feeMarket = strcmp(eth->tx_type, "FeeMarket") == 0;
     bool erc20Transfer = isErc20Transfer(eth);
-    uint16_t offset = erc20Transfer ? 38 : 0;
-    lv_obj_t *container =
-        CreateRelativeTransactionContentContainer(parent, 408, (feeMarket ? 316 : 208) + offset, lastView);
+    uint16_t y = 16;
+    lv_obj_t *container = CreateRelativeTransactionContentContainer(
+        parent, ETH_COMPONENT_WIDTH, 24, lastView);
     char value[96] = {0};
 
     if (erc20Transfer) {
         GetErc20TransferValue(eth, value, sizeof(value));
-        CreateEthDetailsPair(container, _("Value"), value, 16);
+        y = CreateEthDetailsPair(container, _("Value"), value, y, true);
         GetEthValue(value, eth, sizeof(value));
-        CreateEthDetailsPair(container, _("Native Transfer"), value, 54);
+        y = CreateEthDetailsPair(container, _("Native Transfer"), value, y, true);
     } else {
         GetEthValue(value, eth, sizeof(value));
-        CreateEthDetailsPair(container,
-                             strlen(eth->detail->input) > 0 ? _("Native Transfer") : _("Value"),
-                             value, 16);
+        y = CreateEthDetailsPair(
+            container,
+            strlen(eth->detail->input) > 0 ? _("Native Transfer") : _("Value"),
+            value, y, true);
     }
 
     if (feeMarket) {
         GetEthMaxFee(value, eth, sizeof(value));
-        CreateEthDetailsPair(container, _("MaxFee"), value, 54 + offset);
-
-        lv_obj_t *label = GuiCreateIllustrateLabel(container, _("·MaxFeePrice*GasLimit"));
-        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 92 + offset);
-        lv_obj_set_style_text_opa(label, LV_OPA_64, LV_PART_MAIN);
+        y = CreateEthDetailsPair(container, _("Max Fee"), value, y, false);
+        y = CreateEthDetailsDescription(
+            container, "  ·  Max Fee Price * Gas Limit", y, NULL);
 
         GetEthMaxPriority(value, eth, sizeof(value));
-        CreateEthDetailsPair(container, _("MaxPriority"), value, 124 + offset);
-
-        label = GuiCreateIllustrateLabel(container, _("·MaxPriorityFeePrice*GasLimit"));
-        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 162 + offset);
-        lv_obj_set_style_text_opa(label, LV_OPA_64, LV_PART_MAIN);
+        y = CreateEthDetailsPair(container, _("Max Priority Fee"), value, y, false);
+        y = CreateEthDetailsDescription(
+            container, "  ·  Max Priority Fee Price * Gas Limit", y, NULL);
 
         GetEthMaxFeePrice(value, eth, sizeof(value));
-        CreateEthDetailsPair(container, _("MaxFeePrice"), value, 194 + offset);
+        y = CreateEthDetailsPair(container, _("Max Fee Price"), value, y, false);
         GetEthMaxPriorityFeePrice(value, eth, sizeof(value));
-        CreateEthDetailsPair(container, _("MaxPriorityFeePrice"), value, 232 + offset);
-        CreateEthDetailsPair(container, _("GasLimit"), eth->overview->gas_limit, 270 + offset);
+        y = CreateEthDetailsPair(container, _("Max Priority Fee Price"), value, y, false);
+        y = CreateEthDetailsPair(container, _("Gas Limit"), eth->overview->gas_limit, y, false);
     } else {
         GetEthTxFee(value, eth, sizeof(value));
-        CreateEthDetailsPair(container, _("MaxTxnFee"), value, 54 + offset);
-
-        lv_obj_t *label = GuiCreateIllustrateLabel(container, "  \xE2\x80\xA2  Max Txn Fee = Gas Price * Gas Limit");
-        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 92 + offset);
-        lv_obj_set_style_text_font(label, &openSansDesc, LV_PART_MAIN);
-        lv_obj_set_style_text_opa(label, LV_OPA_64, LV_PART_MAIN);
-
-        CreateEthDetailsPair(container, _("GasPrice"), eth->overview->gas_price, 124 + offset);
-        CreateEthDetailsPair(container, _("GasLimit"), eth->overview->gas_limit, 162 + offset);
+        y = CreateEthDetailsPair(container, _("Max Txn Fee"), value, y, false);
+        y = CreateEthDetailsDescription(
+            container, "  ·  Max Txn Fee = Gas Price * Gas Limit", y,
+            &openSansDesc);
+        y = CreateEthDetailsPair(
+            container, _("Gas Price"), eth->overview->gas_price, y, false);
+        y = CreateEthDetailsPair(
+            container, _("Gas Limit"), eth->overview->gas_limit, y, false);
     }
+    lv_obj_set_height(container, y + 8);
     return container;
 }
 
 static lv_obj_t *CreateEthDetailsRawDataButton(lv_obj_t *parent, lv_obj_t *lastView)
 {
     lv_obj_t *button = GuiCreateBtnWithFont(parent, _("Check the Raw Data"), &openSansEnIllustrate);
-    lv_obj_set_size(button, 408, 62);
+    lv_obj_t *label = lv_obj_get_child(button, 0);
+    lv_obj_set_size(button, ETH_COMPONENT_WIDTH, 62);
     lv_obj_set_style_radius(button, 24, LV_PART_MAIN);
     lv_obj_set_style_bg_color(button, WHITE_COLOR, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(button, LV_OPA_12, LV_PART_MAIN);
     lv_obj_set_style_text_color(button, lv_color_hex(0x1BE0C6), LV_PART_MAIN);
+    if (label != NULL) {
+        lv_obj_set_style_text_color(label, lv_color_hex(0x1BE0C6), LV_PART_MAIN);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 24, 0);
+    }
     if (lastView != NULL) {
         lv_obj_align_to(button, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     }
     lv_obj_add_event_cb(button, EthContractCheckRawData, LV_EVENT_CLICKED, NULL);
     return button;
+}
+
+static lv_obj_t *CreateEthUnknownContractView(
+    lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView)
+{
+    char input[64] = {0};
+    GetEthTransactionData(input, eth, sizeof(input));
+
+    lv_obj_t *container = CreateRelativeTransactionContentContainer(
+        parent, ETH_COMPONENT_WIDTH, 0, lastView);
+    uint16_t y = 16;
+
+    lv_obj_t *title = GuiCreateIllustrateLabel(container, _("InputData"));
+    lv_obj_set_style_text_opa(title, LV_OPA_64, LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_update_layout(title);
+    y += lv_obj_get_height(title) + 8;
+
+    lv_obj_t *value = GuiCreateIllustrateLabel(container, input);
+    lv_obj_set_width(value, ETH_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(value, LV_LABEL_LONG_WRAP);
+    lv_obj_align(value, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_update_layout(value);
+    y += lv_obj_get_height(value) + 8;
+
+    lv_obj_t *unknown = GuiCreateIllustrateLabel(container, _("UnknownContract"));
+    lv_obj_set_width(unknown, ETH_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(unknown, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(unknown, ORANGE_COLOR, LV_PART_MAIN);
+    lv_obj_align(unknown, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_update_layout(unknown);
+    y += lv_obj_get_height(unknown) + 8;
+
+    // Keep the learn-more action inside the InputData card, matching the
+    // original layout while allowing the rows above it to grow dynamically.
+    lv_obj_t *learnMore = GuiCreateContainerWithParent(
+        container, ETH_COMPONENT_CONTENT_WIDTH, 30);
+    lv_obj_set_style_bg_opa(learnMore, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(learnMore, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(learnMore, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(learnMore, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(learnMore, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(learnMore, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_add_event_cb(learnMore, EthContractLearnMore, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *learnMoreLabel = GuiCreateIllustrateLabel(learnMore, _("LearnMore"));
+    lv_obj_set_style_text_color(learnMoreLabel, lv_color_hex(0x1BE0C6), LV_PART_MAIN);
+    lv_obj_align(learnMoreLabel, LV_ALIGN_LEFT_MID, 0, 0);
+
+    lv_obj_t *qrIcon = GuiCreateImg(learnMore, &imgQrcodeTurquoise);
+    lv_obj_align_to(qrIcon, learnMoreLabel, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
+
+    lv_obj_set_height(container, y + 30 + 16);
+    return container;
+}
+
+static uint16_t CreateEthContractField(
+    lv_obj_t *container, const char *titleText, const char *valueText, uint16_t y)
+{
+    lv_obj_t *title = GuiCreateIllustrateLabel(container, titleText);
+    lv_obj_set_style_text_opa(title, LV_OPA_64, LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_update_layout(title);
+    y += lv_obj_get_height(title) + 8;
+
+    lv_obj_t *value = GuiCreateIllustrateLabel(container, valueText);
+    lv_obj_set_width(value, ETH_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(value, LV_LABEL_LONG_WRAP);
+    lv_obj_align(value, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_update_layout(value);
+    return y + lv_obj_get_height(value) + 16;
+}
+
+static lv_obj_t *CreateEthParsedContractView(
+    lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView)
+{
+    lv_obj_t *sectionTitle = GuiCreateIllustrateLabel(parent, _("InputData"));
+    lv_obj_set_style_text_opa(sectionTitle, LV_OPA_64, LV_PART_MAIN);
+    if (lastView == NULL) {
+        lv_obj_align(sectionTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+    } else {
+        lv_obj_align_to(sectionTitle, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    }
+
+    lv_obj_t *container = CreateTransactionContentContainer(
+        parent, ETH_COMPONENT_WIDTH, 0);
+    lv_obj_align_to(container, sectionTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+    char method[96] = {0};
+    GetEthMethodName(method, eth, sizeof(method));
+    uint16_t y = CreateEthContractField(container, _("Method"), method, 16);
+
+    Response_DisplayContractData *contractData = (Response_DisplayContractData *)g_contractData;
+    if (contractData != NULL && contractData->data != NULL &&
+        contractData->data->params != NULL) {
+        char truncatedValue[BUFFER_SIZE_512 + 1] = {0};
+        for (size_t i = 0; i < contractData->data->params->size; i++) {
+            DisplayContractParam *param = &contractData->data->params->data[i];
+            const char *displayValue = param->value;
+            if (strnlen_s(param->value, BUFFER_SIZE_512 + 1) > BUFFER_SIZE_512) {
+                memcpy(truncatedValue, param->value, BUFFER_SIZE_512 - 3);
+                memcpy(&truncatedValue[BUFFER_SIZE_512 - 3], "...", 4);
+                displayValue = truncatedValue;
+            }
+            y = CreateEthContractField(container, param->name, displayValue, y);
+        }
+    }
+
+    lv_obj_t *rawDataButton = GuiCreateBtnWithFont(
+        container, _("Check the Raw Data"), &openSansEnIllustrate);
+    lv_obj_t *rawDataLabel = lv_obj_get_child(rawDataButton, 0);
+    lv_obj_set_size(rawDataButton, ETH_COMPONENT_CONTENT_WIDTH, 46);
+    lv_obj_set_style_bg_opa(rawDataButton, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_text_color(rawDataButton, lv_color_hex(0x1BE0C6), LV_PART_MAIN);
+    if (rawDataLabel != NULL) {
+        lv_obj_set_style_text_color(rawDataLabel, lv_color_hex(0x1BE0C6), LV_PART_MAIN);
+        lv_obj_align(rawDataLabel, LV_ALIGN_LEFT_MID, 0, 0);
+    }
+    lv_obj_align(rawDataButton, LV_ALIGN_TOP_LEFT, 24, y);
+    lv_obj_add_event_cb(rawDataButton, EthContractCheckRawData, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_height(container, y + 46 + 16);
+    return container;
 }
 
 static lv_obj_t *CreateEthDetailsContractViews(lv_obj_t *parent, DisplayETH *eth, lv_obj_t *lastView)
@@ -1461,36 +1705,10 @@ static lv_obj_t *CreateEthDetailsContractViews(lv_obj_t *parent, DisplayETH *eth
     }
 
     if (!g_contractDataExist || g_contractData == NULL) {
-        char input[64] = {0};
-        GetEthTransactionData(input, eth, sizeof(input));
-        lastView = CreateTransactionItemViewWithHint(parent, _("InputData"), input, lastView, _("UnknownContract"));
-
-        lv_obj_t *learnMore = GuiCreateBtnWithFont(parent, _("LearnMore"), &openSansEnIllustrate);
-        lv_obj_set_size(learnMore, 144, 46);
-        lv_obj_set_style_radius(learnMore, 23, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(learnMore, lv_color_hex(0x1D1D1D), LV_PART_MAIN);
-        lv_obj_set_style_text_color(learnMore, lv_color_hex(0x1BE0C6), LV_PART_MAIN);
-        lv_obj_align_to(learnMore, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-        lv_obj_add_event_cb(learnMore, EthContractLearnMore, LV_EVENT_CLICKED, NULL);
-        lastView = learnMore;
-    } else {
-        Response_DisplayContractData *contractData = (Response_DisplayContractData *)g_contractData;
-        if (contractData->data != NULL && contractData->data->params != NULL) {
-            // Keep contract parameter rendering bounded. Raw Data is available on demand below.
-            char truncatedValue[BUFFER_SIZE_512 + 1] = {0};
-            for (size_t i = 0; i < contractData->data->params->size; i++) {
-                DisplayContractParam *param = &contractData->data->params->data[i];
-                const char *displayValue = param->value;
-                if (strnlen_s(param->value, BUFFER_SIZE_512 + 1) > BUFFER_SIZE_512) {
-                    memcpy(truncatedValue, param->value, BUFFER_SIZE_512 - 3);
-                    memcpy(&truncatedValue[BUFFER_SIZE_512 - 3], "...", 4);
-                    displayValue = truncatedValue;
-                }
-                lastView = CreateTransactionItemView(parent, param->name, displayValue, lastView);
-            }
-        }
+        lastView = CreateEthUnknownContractView(parent, eth, lastView);
+        return CreateEthDetailsRawDataButton(parent, lastView);
     }
-    return CreateEthDetailsRawDataButton(parent, lastView);
+    return CreateEthParsedContractView(parent, eth, lastView);
 }
 
 static void GetEthTxFee(void *indata, void *param, uint32_t maxLen)
@@ -1638,7 +1856,7 @@ bool GetEthMessageFromNotExist(void *indata, void *param)
 static void GetEthToFromSize(uint16_t *width, uint16_t *height, void *param)
 {
     DisplayETH *eth = (DisplayETH *)param;
-    *width = 408;
+    *width = ETH_COMPONENT_WIDTH;
     *height = (244 - 114) + (eth->overview->from != NULL) * 114 +
               (g_fromEnsExist + g_toEnsExist) * (GAP + TEXT_LINE_HEIGHT) +
               g_contractDataExist * (GAP + TEXT_LINE_HEIGHT);

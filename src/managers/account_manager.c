@@ -813,36 +813,42 @@ int32_t SetupZcashCache(uint8_t accountIndex, const char* password)
         return ret;
     }
 
-    SimpleResponse_u8 *iv_response = rust_derive_iv_from_seed(seed, len);
-    if (iv_response->error_code != 0) {
-        ret = iv_response->error_code;
+    SimpleResponse_u8 *key_response = rust_derive_key_from_seed(seed, len);
+    if (key_response == NULL || key_response->error_code != 0) {
+        ret = key_response ? key_response->error_code : ERR_GENERAL_FAIL;
         CLEAR_ARRAY(seed);
-        printf("error: %s\r\n", iv_response->error_message);
-        free_simple_response_u8(iv_response);
+        if (key_response != NULL) {
+            printf("error: %s\r\n", key_response->error_message);
+            free_simple_response_u8(key_response);
+        }
         return ret;
     }
-
-    uint8_t iv_bytes[16];
-    memcpy_s(iv_bytes, 16, iv_response->data, 16);
-    free_simple_response_u8(iv_response);
+    uint8_t key_bytes[32];
+    memcpy_s(key_bytes, sizeof(key_bytes), key_response->data, sizeof(key_bytes));
+    free_simple_response_u8(key_response);
 
     char *zcashEncrypted = GetCurrentAccountPublicKey(ZCASH_UFVK_ENCRYPTED_0);
     if (zcashEncrypted == NULL) {
         CLEAR_ARRAY(seed);
-        CLEAR_ARRAY(iv_bytes);
+        CLEAR_ARRAY(key_bytes);
         return ERR_GENERAL_FAIL;
     }
 
-    SimpleResponse_c_char *response = rust_aes256_cbc_decrypt(zcashEncrypted, password, iv_bytes, 16);
-    CLEAR_ARRAY(iv_bytes);
+    // Storage format: hex(IV_16) || hex(ciphertext). Legacy blobs (no 32-char IV prefix) fail the
+    // decrypt in Rust and are regenerated from the seed instead of failing the login.
+    SimpleResponse_c_char *response = rust_decrypt_ufvk_blob(zcashEncrypted, key_bytes, sizeof(key_bytes));
+    CLEAR_ARRAY(key_bytes);
     char ufvk[ZCASH_UFVK_BUFFER_SIZE] = {'\0'};
-    if (response->error_code != 0) {
-        // The stored ciphertext is keyed by an older password (e.g. the password was
-        // changed without re-encrypting it). The entered password already passed SE
-        // verification, so regenerate the UFVK from the seed instead of failing the
-        // login and locking the user out.
-        printf("zcash ufvk decrypt failed, regenerating from seed. error: %s\r\n", response->error_message);
-        free_simple_response_c_char(response);
+    if (response == NULL || response->error_code != 0) {
+        // Stale or legacy ciphertext (old password keying / no IV prefix). The entered password
+        // already passed SE verification, so regenerate the UFVK from the seed instead of failing
+        // the login and locking the user out.
+        if (response != NULL) {
+            printf("zcash ufvk decrypt failed, regenerating from seed. error: %s\r\n", response->error_message);
+            free_simple_response_c_char(response);
+        } else {
+            printf("zcash ufvk decrypt failed, regenerating from seed.\r\n");
+        }
         ret = RegenerateZcashUFVK(accountIndex, seed, len, password, ufvk, sizeof(ufvk));
         if (ret != SUCCESS_CODE) {
             CLEAR_ARRAY(ufvk);

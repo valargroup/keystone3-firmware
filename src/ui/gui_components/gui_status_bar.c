@@ -753,9 +753,16 @@ void SetNavBarMidBtn(NavBarWidget_t *navBarWidget, NVS_MID_BUTTON_ENUM button,
 void SetCoinWallet(NavBarWidget_t *navBarWidget, GuiChainCoinType index,
                    const char *name)
 {
+#ifdef WEB3_VERSION
+    if (index == CHAIN_UNKNOWN) {
+        SetMidBtnLabel(navBarWidget, NVS_BAR_MID_LABEL,
+                       (name != NULL) ? name : _("confirm_transaction"));
+        return;
+    }
+#endif
     SetNavBarMidBtn(navBarWidget, NVS_BAR_MID_COIN, NULL, NULL);
     CoinWalletInfo_t *coin = (CoinWalletInfo_t *)g_coinWalletBtn;
-    for (size_t i = 0; i < CHAIN_BUTT; i++) {
+    for (size_t i = 0; i < NUMBER_OF_ARRAYS(g_coinWalletBtn); i++) {
         if (g_coinWalletBtn[i].index == index) {
             coin = &g_coinWalletBtn[i];
             break;

@@ -70,9 +70,23 @@ unsafe fn get_signed_tx(
     x_pub: PtrString,
     seed: &[u8],
 ) -> Result<(String, String), KeystoneError> {
+    #[cfg(feature = "bitcoin")]
+    let legacy_utxo_policy = payload.content.as_ref().and_then(|content| match content {
+        payload::Content::SignTx(sign_tx) => Some((
+            app_bitcoin::network::is_legacy_utxo_transaction(sign_tx),
+            app_bitcoin::network::is_supported_legacy_utxo_transaction(sign_tx),
+        )),
+        _ => None,
+    });
+    #[cfg(feature = "bitcoin")]
+    if matches!(legacy_utxo_policy, Some((true, false))) {
+        return Err(KeystoneError::SignTxFailed(
+            app_bitcoin::network::UNSUPPORTED_LEGACY_UTXO_MESSAGE.to_string(),
+        ));
+    }
     build_parse_context(master_fingerprint, x_pub).and_then(|context| {
         #[cfg(feature = "bitcoin")]
-        if app_bitcoin::network::Network::from_str(coin_code.as_str()).is_ok() {
+        if matches!(legacy_utxo_policy, Some((true, true))) {
             return app_bitcoin::sign_raw_tx(payload, context, seed)
                 .map_err(|e| KeystoneError::SignTxFailed(e.to_string()));
         }
@@ -97,11 +111,20 @@ pub unsafe fn build_check_result(
     let payload_content = payload.content.clone();
     match payload_content {
         Some(payload::Content::SignTx(sign_tx_content)) => {
+            #[cfg(feature = "bitcoin")]
+            let is_legacy_utxo = app_bitcoin::network::is_legacy_utxo_transaction(&sign_tx_content);
+            #[cfg(feature = "bitcoin")]
+            let is_supported_legacy_utxo =
+                app_bitcoin::network::is_supported_legacy_utxo_transaction(&sign_tx_content);
+            #[cfg(feature = "bitcoin")]
+            if is_legacy_utxo && !is_supported_legacy_utxo {
+                return Err(KeystoneError::CheckTxFailed(
+                    app_bitcoin::network::UNSUPPORTED_LEGACY_UTXO_MESSAGE.to_string(),
+                ));
+            }
             build_parse_context(master_fingerprint, x_pub).and_then(|context| {
                 #[cfg(feature = "bitcoin")]
-                if app_bitcoin::network::Network::from_str(sign_tx_content.coin_code.as_str())
-                    .is_ok()
-                {
+                if is_supported_legacy_utxo {
                     return app_bitcoin::check_raw_tx(payload, context)
                         .map_err(|e| KeystoneError::CheckTxFailed(e.to_string()));
                 }

@@ -433,6 +433,18 @@ void GuiWidgetBaseInit(lv_obj_t *obj, cJSON *json)
                 continue;
             }
 #endif
+#ifdef FEATURE_ETHEREUM
+            cJSON *ethType = cJSON_GetObjectItem(child, "type");
+            cJSON *ethTextFunc = cJSON_GetObjectItem(child, "text_func");
+            if (ethType != NULL && ethTextFunc != NULL &&
+                !strcmp(ethType->valuestring, "label") &&
+                (!strcmp(ethTextFunc->valuestring, "GetMessageUtf8") ||
+                 !strcmp(ethTextFunc->valuestring, "GetMessageRaw"))) {
+                GuiShowEthMessagePaged(obj, g_totalData,
+                                       !strcmp(ethTextFunc->valuestring, "GetMessageRaw"));
+                continue;
+            }
+#endif
             GuiWidgetFactoryCreate(obj, child);
         }
     }

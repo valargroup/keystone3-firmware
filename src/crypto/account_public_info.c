@@ -5,6 +5,7 @@
 #include "sha256.h"
 #include "flash_address.h"
 #include "drv_gd25qxx.h"
+#include "drv_trng.h"
 #include "keystore.h"
 #include "user_memory.h"
 #include "account_public_info.h"
@@ -63,6 +64,7 @@ static void PrintInfo(void);
 static void SetIsTempAccount(bool isTemp);
 static void SaveCurrentPublicInfoToFlash(uint8_t accountIndex, uint32_t addr);
 #ifdef CYPHERPUNK_VERSION
+static bool IsValidZcashUfvkBlob(const char *value);
 static SimpleResponse_c_char *DeriveEncryptedZcashUFVK(const uint8_t *seed, int seedLen, const char *password, char *ufvkOut, uint32_t ufvkOutLen);
 #endif
 
@@ -85,7 +87,7 @@ static void LoadCurrentAccountMultiReceiveIndex(void)
         if (GetCurrenMultisigWalletByIndex(i) == NULL) {
             continue;
         }
-        strcpy(g_multiSigReceiveIndex[i].verifyCode, GetCurrenMultisigWalletByIndex(i)->verifyCode);
+        strcpy_s(g_multiSigReceiveIndex[i].verifyCode, BUFFER_SIZE_16, GetCurrenMultisigWalletByIndex(i)->verifyCode);
     }
 }
 
@@ -240,7 +242,7 @@ void SetAccountMultiReceiveIndex(uint32_t index, char *verifyCode)
     for (int i = 0; i < MAX_MULTI_SIG_WALLET_NUMBER; i++) {
         if (strlen(g_multiSigReceiveIndex[i].verifyCode) == 0) {
             g_multiSigReceiveIndex[i].index = index;
-            strcpy(g_multiSigReceiveIndex[i].verifyCode, verifyCode);
+            strcpy_s(g_multiSigReceiveIndex[i].verifyCode, BUFFER_SIZE_16, verifyCode);
             break;
         } else if (strcmp(g_multiSigReceiveIndex[i].verifyCode, verifyCode) == 0) {
             g_multiSigReceiveIndex[i].index = index;
@@ -975,7 +977,7 @@ int32_t AccountPublicInfoSwitch(uint8_t accountIndex, const char *password, bool
 #ifdef CYPHERPUNK_VERSION
         if (!regeneratePubKey && IsZcashSupportedForCurrentMnemonic()) {
             char *zcashEncrypted = GetCurrentAccountPublicKey(ZCASH_UFVK_ENCRYPTED_0);
-            if (!IsHexStringWithLen(zcashEncrypted, 0)) {
+            if (!IsValidZcashUfvkBlob(zcashEncrypted)) {
                 regeneratePubKey = true;
             }
         }
@@ -1029,26 +1031,54 @@ static void SaveCurrentPublicInfoToFlash(uint8_t accountIndex, uint32_t addr)
 }
 
 #ifdef CYPHERPUNK_VERSION
-/// @brief Derive the Zcash UFVK from seed and AES-256-CBC encrypt it with the login password,
-///        using the seed-derived IV. Single source of the UFVK encryption scheme.
+/// @brief Check a stored Zcash UFVK blob has an acceptable layout.
+///        New format is "z2" || hex(IV_16) || hex(ciphertext); legacy blobs are pure hex and
+///        are accepted too so they flow into the decrypt-fail -> regenerate migration path.
+/// @param[in] value Stored value, may be NULL.
+/// @return true if the blob layout is valid.
+static bool IsValidZcashUfvkBlob(const char *value)
+{
+    if (value == NULL) {
+        return false;
+    }
+    if (value[0] == 'z' && value[1] == '2') {
+        return IsHexStringWithLen(value + 2, 0);
+    }
+    // Legacy pure-hex blob (accepted; SetupZcashCache regenerates it on decrypt failure).
+    return IsHexStringWithLen(value, 0);
+}
+
+/// @brief Derive the Zcash UFVK from seed and AES-256-CBC encrypt it with a seed-derived key
+///        and a fresh random IV (prepended to the ciphertext). Single source of the UFVK scheme.
 /// @param[in] seed Wallet seed.
 /// @param[in] seedLen Seed length.
-/// @param[in] password Password to encrypt the UFVK with.
+/// @param[in] password Unused by the encryption (key is seed-derived); kept for interface stability.
 /// @param[out] ufvkOut Optional, receives the plaintext UFVK. Can be NULL if not needed.
 /// @param[in] ufvkOutLen Size of ufvkOut.
-/// @return Encrypted UFVK hex response, or a response carrying the derivation/encryption error. Caller frees.
+/// @return Encrypted UFVK hex response (hex(IV) || hex(ciphertext)), or a response carrying
+///         the derivation/encryption error. Caller frees.
 static SimpleResponse_c_char *DeriveEncryptedZcashUFVK(const uint8_t *seed, int seedLen, const char *password, char *ufvkOut, uint32_t ufvkOutLen)
 {
+    (void)password;
     SimpleResponse_c_char *ufvkResponse = derive_zcash_ufvk((uint8_t *)seed, seedLen, g_chainTable[ZCASH_UFVK_ENCRYPTED_0].path);
     if (ufvkResponse == NULL || ufvkResponse->error_code != 0) {
         return ufvkResponse;
     }
-    SimpleResponse_u8 *ivResponse = rust_derive_iv_from_seed((uint8_t *)seed, seedLen);
-    //iv_response won't fail
+    SimpleResponse_u8 *keyResponse = rust_derive_key_from_seed((uint8_t *)seed, seedLen);
+    if (keyResponse == NULL || keyResponse->error_code != 0) {
+        if (keyResponse != NULL) {
+            free_simple_response_u8(keyResponse);
+        }
+        free_simple_response_c_char(ufvkResponse);
+        return NULL;
+    }
+    uint8_t keyBytes[32];
+    memcpy_s(keyBytes, sizeof(keyBytes), keyResponse->data, sizeof(keyBytes));
+    free_simple_response_u8(keyResponse);
     uint8_t ivBytes[16];
-    memcpy_s(ivBytes, sizeof(ivBytes), ivResponse->data, sizeof(ivBytes));
-    free_simple_response_u8(ivResponse);
-    SimpleResponse_c_char *encryptResult = rust_aes256_cbc_encrypt(ufvkResponse->data, password, ivBytes, 16);
+    TrngGet(ivBytes, sizeof(ivBytes));
+    SimpleResponse_c_char *encryptResult = rust_encrypt_ufvk_blob(ufvkResponse->data, keyBytes, sizeof(keyBytes), ivBytes, sizeof(ivBytes));
+    CLEAR_ARRAY(keyBytes);
     CLEAR_ARRAY(ivBytes);
     if (ufvkOut != NULL && encryptResult != NULL && encryptResult->error_code == 0) {
         strcpy_s(ufvkOut, ufvkOutLen, ufvkResponse->data);
@@ -1057,10 +1087,10 @@ static SimpleResponse_c_char *DeriveEncryptedZcashUFVK(const uint8_t *seed, int 
     return encryptResult;
 }
 
-/// @brief Re-derive the Zcash UFVK from seed, encrypt it with password and replace the stored ciphertext.
-///        The UFVK ciphertext is keyed by the login password: ChangePassword calls this to keep it in
-///        sync, and SetupZcashCache calls it on decrypt failure to migrate wallets whose ciphertext
-///        went stale before the sync existed (or whose sync was interrupted).
+/// @brief Re-derive the Zcash UFVK from seed, encrypt it with a seed-derived key and replace the
+///        stored ciphertext. ChangePassword calls this to keep the blob in sync, and
+///        SetupZcashCache calls it on decrypt failure to migrate wallets whose blob went stale
+///        before the sync existed (or whose sync was interrupted).
 /// @param[in] accountIndex Account index, 0~2.
 /// @param[in] seed Wallet seed, already fetched with a verified password.
 /// @param[in] seedLen Seed length.

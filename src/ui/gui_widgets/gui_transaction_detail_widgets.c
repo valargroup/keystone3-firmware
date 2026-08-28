@@ -166,8 +166,11 @@ void GuiTransactionDetailInit(uint8_t viewType)
     g_pageWidget = CreatePageWidget();
     g_needSign = true;
     GuiTransactionDetailNavBarInit();
-    ParseTransaction(g_viewType);
     g_signSlider = GuiCreateConfirmSlider(g_pageWidget->contentZone, CheckSliderProcessHandler);
+    // A transaction must never be signable before parsing completes.
+    lv_obj_add_state(g_signSlider, LV_STATE_DISABLED);
+    lv_obj_set_style_bg_img_src(g_signSlider, &imgDenySign, LV_PART_KNOB);
+    ParseTransaction(g_viewType);
     g_fingerSignCount = 0;
     GuiPendingHintBoxMoveToTargetParent(lv_scr_act());
 }
@@ -190,6 +193,11 @@ void GuiTransactionDetailDeInit()
 //should get error cod here
 void GuiTransactionParseFailed()
 {
+    g_needSign = false;
+    if (g_signSlider != NULL) {
+        lv_obj_add_state(g_signSlider, LV_STATE_DISABLED);
+        lv_obj_set_style_bg_img_src(g_signSlider, &imgDenySign, LV_PART_KNOB);
+    }
 #ifndef BTC_ONLY
     if (GetCurrentTransactionMode() == TRANSACTION_MODE_USB) {
         const char *data = "UR parsing failed";
@@ -208,7 +216,10 @@ void GuiTransactionDetailRefresh()
 
 static void ThrowError(int32_t errorCode)
 {
-    g_parseErrorHintBox = GuiCreateErrorCodeWindow(errorCode, &g_parseErrorHintBox, NULL);
+    g_parseErrorHintBox = GuiCreateErrorCodeWindow(
+        errorCode,
+        &g_parseErrorHintBox,
+        (ErrorWindowCallback)GuiCloseCurrentWorkingView);
 }
 
 void GuiTransactionDetailParseSuccess(void *param)
@@ -218,15 +229,21 @@ void GuiTransactionDetailParseSuccess(void *param)
     if (!g_needSign) {
         GuiCreateErrorCodeWindow(ERR_MULTISIG_TRANSACTION_ALREADY_SIGNED, NULL, (ErrorWindowCallback)GuiCloseCurrentWorkingView);
     }
-    bool isCanSign = GuiCheckIsTransactionSign();
+    bool isCanSign = g_needSign && GuiCheckIsTransactionSign();
     if (!isCanSign) {
         lv_obj_add_state(g_signSlider, LV_STATE_DISABLED);
         lv_obj_set_style_bg_img_src(g_signSlider, &imgDenySign, LV_PART_KNOB);
+    } else {
+        lv_obj_clear_state(g_signSlider, LV_STATE_DISABLED);
+        lv_obj_set_style_bg_img_src(g_signSlider, &imgConfirmSlider, LV_PART_KNOB);
     }
 }
 
 void GuiTransactionDetailVerifyPasswordSuccess(void)
 {
+    if (!g_needSign) {
+        return;
+    }
     GUI_DEL_OBJ(g_fingerSingContainer)
     GuiDeleteKeyboardWidget(g_keyboardWidget);
 #ifdef BTC_ONLY
@@ -343,6 +360,10 @@ static void CheckSliderProcessHandler(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_RELEASED) {
+        if (!g_needSign) {
+            lv_slider_set_value(lv_event_get_target(e), 0, LV_ANIM_OFF);
+            return;
+        }
         int32_t value = lv_slider_get_value(lv_event_get_target(e));
         if (value >= QRCODE_CONFIRM_SIGN_PROCESS) {
             if ((GetCurrentAccountIndex() < 3) && GetFingerSignFlag() && g_fingerSignCount < 3) {

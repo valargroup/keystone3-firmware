@@ -457,8 +457,6 @@ static GetLabelDataFunc GuiCosmosTextFuncGet(char *type)
         return GetCosmosAddress2Label;
     } else if (!strcmp(type, "GetCosmosAddress2Value")) {
         return GetCosmosAddress2Value;
-    } else if (!strcmp(type, "GetCosmosMaxFee")) {
-        return GetCosmosMaxFee;
     } else if (!strcmp(type, "GetCosmosFee")) {
         return GetCosmosFee;
     } else if (!strcmp(type, "GetCosmosGasLimit")) {

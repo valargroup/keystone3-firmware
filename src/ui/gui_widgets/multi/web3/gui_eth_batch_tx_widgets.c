@@ -92,7 +92,6 @@ static void GuiEthBatchTxNavBarRefresh();
 static void GuiRenderCurrentTransaction(bool showSwapHint, bool showSignSlider);
 static void GuiRenderTransactionFrame(lv_obj_t *parent);
 static void GuiRenderBottomBtn(lv_obj_t *parent, bool showSignSlider);
-static const lv_font_t *GetEthBatchAmountFont(const char *value);
 
 static bool HandleCurrentTransaction(uint32_t index);
 static void HandleCurrentTransactionParseFail(uint32_t errorCode, const char *errorMessage);
@@ -204,7 +203,10 @@ static void HandleClickAddressChecker(lv_event_t *e)
     if (code == LV_EVENT_CLICKED) {
         char *address = lv_event_get_user_data(e);
         char *text = malloc(BUFFER_SIZE_128);
-        sprintf(text, "https://etherscan.io/address/%s", address);
+        if (text == NULL) {
+            return;
+        }
+        snprintf(text, BUFFER_SIZE_128, "https://etherscan.io/address/%s", address);
         GuiQRCodeHintBoxOpen(text, _("Check the Address"), text);
     }
 }
@@ -521,10 +523,13 @@ static void GuiEthBatchTxNavBarInit()
 static void GuiEthBatchTxNavBarRefresh()
 {
     char* text = malloc(BUFFER_SIZE_128);
+    if (text == NULL) {
+        return;
+    }
     if (g_txCount > 1) {
-        sprintf(text, "%s (%d/%d)", _("confirm_transaction"), g_currentTxIndex + 1, g_txCount);
+        snprintf(text, BUFFER_SIZE_128, "%s (%d/%d)", _("confirm_transaction"), g_currentTxIndex + 1, g_txCount);
     } else {
-        sprintf(text, "%s", _("confirm_transaction"));
+        snprintf(text, BUFFER_SIZE_128, "%s", _("confirm_transaction"));
     }
     SetCoinWallet(g_pageWidget->navBarWidget, CHAIN_ETH, text);
     if (g_currentTxIndex == 0) {
@@ -553,18 +558,6 @@ static bool FormatAssetAmount(char *output, size_t outputSize, const char *amoun
         return false;
     }
     return true;
-}
-
-static const lv_font_t *GetEthBatchAmountFont(const char *value)
-{
-    size_t length = strlen(value);
-    if (length <= 24) {
-        return g_defLittleTitleFont;
-    }
-    if (length <= 40) {
-        return g_defTextFont;
-    }
-    return g_defIllustrateFont;
 }
 
 // GUI Impelementation Part
@@ -806,7 +799,19 @@ static void GuiRenderGeneralOverview(lv_obj_t *parent)
     lv_obj_t *last_view = NULL;
 
     const char *valueTitle = strlen(g_currentTransaction->detail->input) > 0 ? _("Native Transfer") : _("Value");
-    last_view = CreateTransactionOvewviewCard(parent, valueTitle, g_currentTransaction->overview->value, _("Max Txn Fee"), g_currentTransaction->overview->max_txn_fee);
+    char nativeValue[ETH_BATCH_ASSET_AMOUNT_BUFFER_SIZE] = {0};
+    char maxTxnFee[ETH_BATCH_ASSET_AMOUNT_BUFFER_SIZE] = {0};
+    bool nativeValueFormatted = FormatAssetAmount(
+        nativeValue, sizeof(nativeValue),
+        g_currentTransaction->overview->value, g_currentNetwork.symbol);
+    bool maxTxnFeeFormatted = FormatAssetAmount(
+        maxTxnFee, sizeof(maxTxnFee),
+        g_currentTransaction->overview->max_txn_fee, g_currentNetwork.symbol);
+    last_view = CreateTransactionOvewviewCard(
+        parent, valueTitle,
+        nativeValueFormatted ? nativeValue : _("Invalid Amount"),
+        _("Max Txn Fee"),
+        maxTxnFeeFormatted ? maxTxnFee : _("Invalid Amount"));
 
     last_view = CreateTransactionItemView(parent, _("Network"), g_currentNetwork.name, last_view);
 
@@ -850,7 +855,9 @@ static lv_obj_t *GuiRenderDetailTransactionInfoCard(lv_obj_t *parent, lv_obj_t *
     char value[ETH_BATCH_ASSET_AMOUNT_BUFFER_SIZE] = {0};
     bool formatted = FormatAssetAmount(value, sizeof(value), g_currentTransaction->detail->value, g_currentNetwork.symbol);
     const char *displayValue = formatted ? value : _("Invalid Amount");
-    valueLabel = GuiCreateLabelWithFont(container, displayValue, GetEthBatchAmountFont(displayValue));
+    // Details values use the regular illustrate font.  The larger adaptive
+    // amount fonts are reserved for overview emphasis cards.
+    valueLabel = GuiCreateIllustrateLabel(container, displayValue);
     lv_obj_set_style_text_color(valueLabel, ORANGE_COLOR, LV_PART_MAIN);
     lv_obj_update_layout(titleLabel);
     lv_obj_update_layout(valueLabel);
@@ -872,7 +879,12 @@ static lv_obj_t *GuiRenderDetailTransactionInfoCard(lv_obj_t *parent, lv_obj_t *
     lv_obj_set_style_text_opa(titleLabel, LV_OPA_64, LV_PART_MAIN);
     lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 24, height);
 
-    valueLabel = GuiCreateIllustrateLabel(container, g_currentTransaction->detail->max_txn_fee);
+    char maxTxnFee[ETH_BATCH_ASSET_AMOUNT_BUFFER_SIZE] = {0};
+    bool maxTxnFeeFormatted = FormatAssetAmount(
+        maxTxnFee, sizeof(maxTxnFee),
+        g_currentTransaction->detail->max_txn_fee, g_currentNetwork.symbol);
+    valueLabel = GuiCreateIllustrateLabel(
+        container, maxTxnFeeFormatted ? maxTxnFee : _("Invalid Amount"));
     lv_obj_align_to(valueLabel, titleLabel, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
 
     height += 30 + 8;
@@ -883,16 +895,22 @@ static lv_obj_t *GuiRenderDetailTransactionInfoCard(lv_obj_t *parent, lv_obj_t *
     height += 30 + 8;
 
     if (g_currentTransaction->detail->max_priority != NULL) {
-        titleLabel = GuiCreateIllustrateLabel(container, _("Max Priority"));
+        titleLabel = GuiCreateIllustrateLabel(container, _("Max Priority Fee"));
         lv_obj_set_style_text_opa(titleLabel, LV_OPA_64, LV_PART_MAIN);
         lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 24, height);
 
-        valueLabel = GuiCreateIllustrateLabel(container, g_currentTransaction->detail->max_priority);
+        char maxPriorityFee[ETH_BATCH_ASSET_AMOUNT_BUFFER_SIZE] = {0};
+        bool maxPriorityFeeFormatted = FormatAssetAmount(
+            maxPriorityFee, sizeof(maxPriorityFee),
+            g_currentTransaction->detail->max_priority, g_currentNetwork.symbol);
+        valueLabel = GuiCreateIllustrateLabel(
+            container,
+            maxPriorityFeeFormatted ? maxPriorityFee : _("Invalid Amount"));
         lv_obj_align_to(valueLabel, titleLabel, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
 
         height += 30 + 8;
 
-        titleLabel = GuiCreateIllustrateLabel(container, "  \xE2\x80\xA2  Max Priority Fee Price * Gas Limit");
+        titleLabel = GuiCreateIllustrateLabel(container, "  ·  Max Priority Fee Price * Gas Limit");
         lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 24, height);
 
         height += 30 + 8;
@@ -984,14 +1002,17 @@ static lv_obj_t *GuiRenderDetailContractData(lv_obj_t *parent, lv_obj_t *last_vi
             bool asset_is_eth = strcmp(param.value, "0x0000000000000000000000000000000000000000") == 0;
             Erc20Contract_t *erc20Contract = FindErc20Contract(param.value);
             char* text = malloc(BUFFER_SIZE_64);
+            if (text == NULL) {
+                continue;
+            }
             if (erc20Contract != NULL) {
-                sprintf(text, "%s (#1BE0C6 %s#)", param.value, erc20Contract->symbol);
+                snprintf(text, BUFFER_SIZE_64, "%s (#1BE0C6 %s#)", param.value, erc20Contract->symbol);
                 showAddressChecker = true;
             } else if (asset_is_eth) {
-                sprintf(text, "%s (#F5870A %s#)", param.value, g_currentNetwork.symbol);
+                snprintf(text, BUFFER_SIZE_64, "%s (#F5870A %s#)", param.value, g_currentNetwork.symbol);
                 showAddressChecker = false;
             } else {
-                sprintf(text, "%s", param.value);
+                snprintf(text, BUFFER_SIZE_64, "%s", param.value);
                 showAddressChecker = true;
             }
             label = GuiCreateIllustrateLabel(container, text);

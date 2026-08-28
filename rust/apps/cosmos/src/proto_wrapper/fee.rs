@@ -133,7 +133,6 @@ pub fn format_fee_from_value(data: serde_json::Value) -> Result<FeeDetail> {
         }
         let formatted_fee = fee.join(",");
         return Ok(FeeDetail {
-            max_fee: formatted_fee.clone(),
             fee: formatted_fee,
             gas_limit,
         });
@@ -154,7 +153,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!("0.002583 ATOM", fee.fee);
-        assert_eq!("0.002583 ATOM", fee.max_fee);
         assert_eq!("103301", fee.gas_limit);
     }
 

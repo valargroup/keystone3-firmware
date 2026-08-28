@@ -33,7 +33,9 @@ static bool g_isAoTransfer = false;
 
 static void ParseRequestType();
 static void GuiArPrepareComponentParent(lv_obj_t *parent, uint16_t height);
-static lv_obj_t *GuiArCreateScrollableItemView(lv_obj_t *parent, const char *title, const char *value, lv_obj_t *lastView);
+static lv_obj_t *GuiArCreatePagedMessageView(lv_obj_t *parent, const char *title, const char *value, bool utf8, lv_obj_t *lastView);
+static lv_obj_t *GuiArCreateTxDetailSummary(lv_obj_t *parent, DisplayArweaveTx *txData);
+static void GuiArCreateTxTagsCard(lv_obj_t *parent, cJSON *root, lv_obj_t *lastView);
 
 static void ParseRequestType()
 {
@@ -158,11 +160,7 @@ void GuiArTxDetails(lv_obj_t *parent, void *totalData)
     DisplayArweaveTx *txData = (DisplayArweaveTx *)totalData;
     GuiArPrepareComponentParent(parent, 444);
 
-    lv_obj_t *lastView = NULL;
-    lastView = CreateTransactionItemViewWithWidth(parent, _("Value"), txData->value, lastView, AR_COMPONENT_WIDTH);
-    lastView = CreateTransactionItemViewWithWidth(parent, _("Fee"), txData->fee, lastView, AR_COMPONENT_WIDTH);
-    lastView = CreateTransactionItemViewWithWidth(parent, _("From"), txData->from, lastView, AR_COMPONENT_WIDTH);
-    lastView = CreateTransactionItemViewWithWidth(parent, _("Destination"), txData->to, lastView, AR_COMPONENT_WIDTH);
+    lv_obj_t *lastView = GuiArCreateTxDetailSummary(parent, txData);
 
     cJSON *root = txData->detail == NULL ? NULL : cJSON_Parse((const char *)txData->detail);
     if (!cJSON_IsArray(root)) {
@@ -170,7 +168,57 @@ void GuiArTxDetails(lv_obj_t *parent, void *totalData)
         return;
     }
 
+    GuiArCreateTxTagsCard(parent, root, lastView);
+    cJSON_Delete(root);
+}
+
+static lv_obj_t *GuiArCreateDetailLabel(lv_obj_t *parent, const char *text, int16_t x, int16_t y, lv_opa_t opa)
+{
+    lv_obj_t *label = GuiCreateIllustrateLabel(parent, text == NULL ? "" : text);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, x, y);
+    lv_obj_set_style_text_opa(label, opa, LV_PART_MAIN);
+    return label;
+}
+
+static lv_obj_t *GuiArCreateTxDetailSummary(lv_obj_t *parent, DisplayArweaveTx *txData)
+{
+    lv_obj_t *card = CreateRelativeTransactionContentContainer(parent, AR_COMPONENT_WIDTH, 358, NULL);
+    lv_obj_t *section = GuiArCreateDetailLabel(card, "#1", 24, 16, LV_OPA_COVER);
+    lv_obj_set_style_text_color(section, lv_color_hex(16090890), LV_PART_MAIN);
+
+    lv_obj_t *title = GuiArCreateDetailLabel(card, _("Value"), 24, 62, LV_OPA_64);
+    lv_obj_t *value = GuiArCreateDetailLabel(card, txData->value, 0, 62, LV_OPA_COVER);
+    lv_obj_set_style_text_color(value, lv_color_hex(16090890), LV_PART_MAIN);
+    lv_obj_align_to(value, title, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    title = GuiArCreateDetailLabel(card, _("Fee"), 24, 100, LV_OPA_64);
+    value = GuiArCreateDetailLabel(card, txData->fee, 0, 100, LV_OPA_COVER);
+    lv_obj_align_to(value, title, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    GuiArCreateDetailLabel(card, _("From"), 24, 138, LV_OPA_64);
+    value = GuiArCreateDetailLabel(card, txData->from, 24, 176, LV_OPA_COVER);
+    lv_obj_set_width(value, AR_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(value, LV_LABEL_LONG_WRAP);
+
+    GuiArCreateDetailLabel(card, _("To"), 24, 244, LV_OPA_64);
+    value = GuiArCreateDetailLabel(card, txData->to, 24, 282, LV_OPA_COVER);
+    lv_obj_set_width(value, AR_COMPONENT_CONTENT_WIDTH);
+    lv_label_set_long_mode(value, LV_LABEL_LONG_WRAP);
+    return card;
+}
+
+static void GuiArCreateTxTagsCard(lv_obj_t *parent, cJSON *root, lv_obj_t *lastView)
+{
     int size = cJSON_GetArraySize(root);
+    if (size <= 0) {
+        return;
+    }
+
+    lv_obj_t *card = CreateRelativeTransactionContentContainer(parent, AR_COMPONENT_WIDTH, 62, lastView);
+    lv_obj_t *section = GuiArCreateDetailLabel(card, "#2", 24, 16, LV_OPA_COVER);
+    lv_obj_set_style_text_color(section, lv_color_hex(16090890), LV_PART_MAIN);
+    int16_t y = 62;
+
     for (int i = 0; i < size; i++) {
         cJSON *item = cJSON_GetArrayItem(root, i);
         cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "name");
@@ -178,29 +226,39 @@ void GuiArTxDetails(lv_obj_t *parent, void *totalData)
         if (!cJSON_IsString(name) || !cJSON_IsString(value)) {
             continue;
         }
-        lastView = CreateTransactionItemViewWithWidth(parent, name->valuestring, value->valuestring, lastView, AR_COMPONENT_WIDTH);
+
+        GuiArCreateDetailLabel(card, _("Name"), 24, y, LV_OPA_64);
+        lv_obj_t *text = GuiArCreateDetailLabel(card, name->valuestring, 96, y, LV_OPA_COVER);
+        lv_obj_set_style_text_color(text, lv_color_hex(16090890), LV_PART_MAIN);
+        lv_obj_set_width(text, AR_COMPONENT_WIDTH - 120);
+        lv_label_set_long_mode(text, LV_LABEL_LONG_WRAP);
+        lv_obj_update_layout(text);
+        y += LV_MAX(30, lv_obj_get_height(text)) + 8;
+
+        GuiArCreateDetailLabel(card, _("Value"), 24, y, LV_OPA_64);
+        text = GuiArCreateDetailLabel(card, value->valuestring, 96, y, LV_OPA_COVER);
+        lv_obj_set_width(text, AR_COMPONENT_WIDTH - 120);
+        lv_label_set_long_mode(text, LV_LABEL_LONG_WRAP);
+        lv_obj_update_layout(text);
+        y += LV_MAX(30, lv_obj_get_height(text)) + 16;
     }
-    cJSON_Delete(root);
+
+    lv_obj_set_height(card, y);
 }
 
-static lv_obj_t *GuiArCreateScrollableItemView(lv_obj_t *parent, const char *title, const char *value, lv_obj_t *lastView)
+static lv_obj_t *GuiArCreatePagedMessageView(lv_obj_t *parent, const char *title, const char *value, bool utf8, lv_obj_t *lastView)
 {
-    lv_obj_t *container = CreateRelativeTransactionContentContainer(parent, AR_COMPONENT_WIDTH, 260, lastView);
+    lv_obj_t *container = CreateRelativeTransactionContentContainer(parent, AR_COMPONENT_WIDTH, 420, lastView);
 
     lv_obj_t *titleLabel = GuiCreateIllustrateLabel(container, title);
     lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 24, 16);
-    lv_obj_set_style_text_opa(titleLabel, LV_OPA_64, LV_PART_MAIN);
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(16090890), LV_PART_MAIN);
+    lv_obj_set_style_text_opa(titleLabel, LV_OPA_COVER, LV_PART_MAIN);
 
-    lv_obj_t *content = GuiCreateContainerWithParent(container, AR_COMPONENT_CONTENT_WIDTH, 190);
+    lv_obj_t *content = GuiCreateContainerWithParent(container, AR_COMPONENT_CONTENT_WIDTH, 350);
     lv_obj_align(content, LV_ALIGN_TOP_LEFT, 24, 54);
     lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(content, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t *valueLabel = GuiCreateIllustrateLabel(content, value == NULL ? "" : value);
-    lv_obj_set_width(valueLabel, AR_COMPONENT_CONTENT_WIDTH - 24);
-    lv_label_set_long_mode(valueLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_align(valueLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+    GuiShowPagedMessageText(content, value, utf8, NULL, NULL);
     return container;
 }
 
@@ -214,8 +272,8 @@ void GuiArMessageOverview(lv_obj_t *parent, void *totalData)
 
     lv_obj_t *lastView = NULL;
     lastView = CreateTransactionItemViewWithWidth(parent, _("Address"), address, lastView, AR_COMPONENT_WIDTH);
-    lastView = GuiArCreateScrollableItemView(parent, _("Message (UTF-8)"), messageData->message, lastView);
-    GuiArCreateScrollableItemView(parent, _("Raw Message"), messageData->raw_message, lastView);
+    lastView = GuiArCreatePagedMessageView(parent, _("Message (UTF-8)"), messageData->message, true, lastView);
+    GuiArCreatePagedMessageView(parent, _("Raw Message"), messageData->raw_message, false, lastView);
 }
 
 UREncodeResult *GuiGetArweaveSignQrCodeData(void)

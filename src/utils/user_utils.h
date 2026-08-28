@@ -2,6 +2,7 @@
 #define _USER_UTILS_H
 
 #include <ctype.h>
+#include <stdio.h>
 #include "stdint.h"
 #include "stdbool.h"
 #include "string.h"

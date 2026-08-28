@@ -53,11 +53,6 @@ pub struct ParsedCosmosTx {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FeeDetail {
-    #[serde(
-        skip_serializing_if = "String::is_empty",
-        rename(serialize = "Max Fee")
-    )]
-    pub max_fee: String,
     #[serde(skip_serializing_if = "String::is_empty", rename(serialize = "Fee"))]
     pub fee: String,
     #[serde(

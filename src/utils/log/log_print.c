@@ -2,11 +2,14 @@
 #include "stdio.h"
 #include "librust_c.h"
 
+#ifndef COMPILE_SIMULATOR
+#include "safe_str_lib.h"
+#endif
+
 #ifdef RUST_MEMORY_DEBUG
 #include "user_memory.h"
 #include "assert.h"
 #include "string.h"
-#include "safe_str_lib.h"
 
 #define MEM_DEBUG_BUF_SIZE 128
 
@@ -173,32 +176,36 @@ void LogRustPanic(char* panic_info)
 #else
 
 #include "draw_on_lcd.h"
+#include "mhscpu.h"
 #include "presetting.h"
 #include "version.h"
 #include "hardware_version.h"
+#include "define.h"
 
 LV_FONT_DECLARE(openSans_20);
 
 void LogRustPanic(char* panic_info)
 {
+    // Show only a fixed, user-facing error message on the LCD.
     PrintOnLcd(&openSans_20, 0xFFFF, "The error was caused by a failed data request.\nYour assets remain safe.\n");
     PrintErrorInfoOnLcd();
-    uint32_t c = 0x666666;
-    uint16_t color = (uint16_t)(((c & 0xF80000) >> 16) | ((c & 0xFC00) >> 13) | ((c & 0x1C00) << 3) | ((c & 0xF8) << 5));
-    PrintOnLcd(&openSans_20, color, "Rust Panic: %s\r\n", panic_info);
-    while (1);
+    NVIC_SystemReset();
 }
 
 void PrintErrorInfoOnLcd(void)
 {
     char serialNumber[SERIAL_NUMBER_MAX_LEN];
+    char line[BUFFER_SIZE_128];
     PrintOnLcd(&openSans_20, 0xFFFF, "Request failed. Restart by long-pressing power\nbutton for 12 secs.\n");
     PrintOnLcd(&openSans_20, 0xFFFF, "If issue persists, please contact\n");
     PrintOnLcd(&openSans_20, 0x1927, "support@Keyst.one\n");
     GetSerialNumber(serialNumber);
-    PrintOnLcd(&openSans_20, 0xFFFF, "Serial No.%s\n", serialNumber);
-    PrintOnLcd(&openSans_20, 0xFFFF, "Software:%s\n", GetSoftwareVersionString());
-    PrintOnLcd(&openSans_20, 0xFFFF, "Hardware:%s\n", GetHardwareVersionString());
+    snprintf_s(line, sizeof(line), "Serial No.%s\n", serialNumber);
+    PrintOnLcd(&openSans_20, 0xFFFF, line);
+    snprintf_s(line, sizeof(line), "Software:%s\n", GetSoftwareVersionString());
+    PrintOnLcd(&openSans_20, 0xFFFF, line);
+    snprintf_s(line, sizeof(line), "Hardware:%s\n", GetHardwareVersionString());
+    PrintOnLcd(&openSans_20, 0xFFFF, line);
 }
 
 #endif

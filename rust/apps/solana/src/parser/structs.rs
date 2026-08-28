@@ -2,12 +2,16 @@ use alloc::string::{String, ToString};
 
 use alloc::vec::Vec;
 
-use crate::parser::overview::SolanaOverview;
+use crate::parser::overview::{ProgramOverviewGeneral, SolanaOverview};
 
 #[derive(Clone, Debug)]
 pub struct ParsedSolanaTx {
     pub display_type: SolanaTxDisplayType,
     pub overview: SolanaOverview,
+    /// Parsed sibling instructions which must be shown after a specialized
+    /// overview such as Jupiter. This keeps the richer primary UI without
+    /// hiding any other instruction committed by the signature.
+    pub additional_overviews: Vec<ProgramOverviewGeneral>,
     pub unknown_programs: Vec<String>,
     pub detail: String,
     pub network: String,

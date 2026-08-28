@@ -91,6 +91,51 @@ static void GuiAvaxPrepareComponentParent(lv_obj_t *parent)
     lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLL_ELASTIC);
 }
 
+static lv_obj_t *GuiAvaxCreateDetailsAddressCard(
+    lv_obj_t *parent,
+    lv_obj_t *lastView,
+    const char *title,
+    const DisplayUtxoFromTo *item)
+{
+    lv_obj_t *card = CreateRelativeTransactionContentContainer(
+        parent, AVAX_COMPONENT_WIDTH, 0, lastView);
+    uint16_t height = 16;
+
+    lv_obj_t *label = GuiCreateIllustrateLabel(card, title);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, height);
+    lv_obj_set_style_text_opa(label, LV_OPA_64, LV_PART_MAIN);
+    height += 34;
+
+    label = GuiCreateIllustrateLabel(card, item->amount);
+    lv_obj_set_width(label, AVAX_COMPONENT_WIDTH - 48);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(label, ORANGE_COLOR, LV_PART_MAIN);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, height);
+    lv_obj_update_layout(label);
+    height += lv_obj_get_height(label) + 4;
+
+    label = GuiCreateIllustrateLabel(card, item->address);
+    lv_obj_set_width(label, AVAX_COMPONENT_WIDTH - 48);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, height);
+    lv_obj_update_layout(label);
+    height += lv_obj_get_height(label);
+
+    if (item->path != NULL && item->path[0] != '\0') {
+        height += 4;
+        label = GuiCreateNoticeLabel(card, item->path);
+        lv_obj_set_width(label, AVAX_COMPONENT_WIDTH - 48);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, height);
+        lv_obj_update_layout(label);
+        height += lv_obj_get_height(label);
+    }
+
+    lv_obj_set_height(card, height + 16);
+    lv_obj_update_layout(card);
+    return card;
+}
+
 static lv_obj_t *GuiAvaxAppendAddresses(
     lv_obj_t *parent,
     lv_obj_t *lastView,
@@ -111,27 +156,12 @@ static lv_obj_t *GuiAvaxAppendAddresses(
         }
 
         if (showDetails) {
-            lastView = CreateTransactionItemViewWithHintAndWidth(
-                parent,
-                title,
-                ptr[i].address,
-                lastView,
-                ptr[i].amount,
-                AVAX_COMPONENT_WIDTH);
+            lastView = GuiAvaxCreateDetailsAddressCard(parent, lastView, title, &ptr[i]);
         } else {
             lastView = CreateTransactionItemViewWithWidth(
                 parent,
                 title,
                 ptr[i].address,
-                lastView,
-                AVAX_COMPONENT_WIDTH);
-        }
-
-        if (showDetails && ptr[i].path != NULL && strlen(ptr[i].path) > 0) {
-            lastView = CreateTransactionItemViewWithWidth(
-                parent,
-                _("Path"),
-                ptr[i].path,
                 lastView,
                 AVAX_COMPONENT_WIDTH);
         }

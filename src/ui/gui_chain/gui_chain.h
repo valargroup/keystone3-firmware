@@ -93,6 +93,9 @@ typedef enum {
     CHAIN_QCK,
     CHAIN_TGD,
     // cosmos end
+
+    // Transactions whose chain cannot be identified use a text-only title.
+    CHAIN_UNKNOWN,
 #endif
 
 #ifndef BTC_ONLY

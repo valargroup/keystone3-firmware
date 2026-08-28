@@ -23,7 +23,7 @@ bool g_reboot = false;
 bool g_otpProtect = false;
 
 // Comment out this macro if you need to retrieve data from the file
-// #define GET_QR_DATA_FROM_SCREEN
+#define GET_QR_DATA_FROM_SCREEN
 
 void OTP_PowerOn(void)
 {
@@ -70,10 +70,11 @@ void NftLockDecodeTouchQuit()
 
 int32_t GetUpdatePubKey(uint8_t *pubKey)
 {
-    sprintf(pubKey, "%02x", 0x4);
+    pubKey[0] = 0x04;
     for (int i = 1; i < 65; i++) {
-        sprintf(&pubKey[i], "%02x", i);
+        pubKey[i] = (uint8_t)i;
     }
+    return 0;
 }
 
 void TrngGet(void *buf, uint32_t len)

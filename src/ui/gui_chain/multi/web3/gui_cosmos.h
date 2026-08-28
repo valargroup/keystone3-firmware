@@ -42,7 +42,6 @@ void GetCosmosAddress1Value(void *indata, void *param, uint32_t maxLen);
 void GetCosmosAddress1Label(void *indata, void *param, uint32_t maxLen);
 void GetCosmosAddress2Value(void *indata, void *param, uint32_t maxLen);
 void GetCosmosAddress2Label(void *indata, void *param, uint32_t maxLen);
-void GetCosmosMaxFee(void *indata, void *param, uint32_t maxLen);
 void GetCosmosFee(void *indata, void *param, uint32_t maxLen);
 void GetCosmosGasLimit(void *indata, void *param, uint32_t maxLen);
 void GetCosmosChainId(void *indata, void *param, uint32_t maxLen);

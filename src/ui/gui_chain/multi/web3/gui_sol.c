@@ -9,32 +9,11 @@
 #include "screen_manager.h"
 #include "account_manager.h"
 #include "assert.h"
-#include "cjson/cJSON.h"
-#include "user_memory.h"
 #include "gui_qr_hintbox.h"
 
 #define SQUADS_V4_CREATE_MULTISIG_CONTRACT_ADDRESS "5DH2e3cJmFpyi6mk65EGFediunm4ui6BiKNUNrhWtD1b"
 #define SOL_COMPONENT_WIDTH 376
 #define SOL_COMPONENT_CONTENT_WIDTH (SOL_COMPONENT_WIDTH - 48)
-#define SOL_MESSAGE_PAGE_BYTES 512
-
-typedef struct {
-    const char *text;
-    const char *suffix;
-    size_t text_len;
-    size_t suffix_len;
-    size_t offset;
-    size_t page;
-    size_t page_count;
-    bool utf8;
-    lv_obj_t *viewport;
-    lv_obj_t *warning;
-    lv_obj_t *label;
-    lv_obj_t *page_label;
-    lv_obj_t *prev;
-    lv_obj_t *next;
-} SolMessagePager_t;
-
 typedef struct SolanaLearnMoreData {
     PtrString title;
     PtrString content;
@@ -192,10 +171,19 @@ void GetSolMessageType(void *indata, void *param, uint32_t maxLen)
 void GetSolMessageFrom(void *indata, void *param, uint32_t maxLen)
 {
     DisplaySolanaMessage *message = (DisplaySolanaMessage *)param;
+    if (indata == NULL || maxLen == 0) {
+        return;
+    }
+    if (message == NULL || message->from == NULL) {
+        ((char *)indata)[0] = '\0';
+        return;
+    }
     if (strlen(message->from) >= maxLen) {
-        snprintf((char *)indata, maxLen - 3, "%s", message->from);
-        strcat((char *)indata, "...");
-        snprintf((char *)indata, maxLen, "%.*s...", maxLen - 4, message->from);
+        if (maxLen <= 4) {
+            snprintf((char *)indata, maxLen, "%.*s", (int)(maxLen - 1), "...");
+        } else {
+            snprintf((char *)indata, maxLen, "%.*s...", (int)(maxLen - 4), message->from);
+        }
     } else {
         strcpy_s((char *)indata, maxLen, message->from);
     }
@@ -213,216 +201,16 @@ void GetSolMessageRaw(void *indata, void *param, uint32_t maxLen)
     snprintf_s((char *)indata, maxLen, "%.*s", maxLen - 1, message->raw_message);
 }
 
-static size_t SolMessagePagerLength(const SolMessagePager_t *pager)
-{
-    return pager->text_len + pager->suffix_len;
-}
-
-static char SolMessagePagerByteAt(const SolMessagePager_t *pager, size_t offset)
-{
-    if (offset < pager->text_len) {
-        return pager->text[offset];
-    }
-    return pager->suffix[offset - pager->text_len];
-}
-
-static bool SolMessageIsUtf8Continuation(char value)
-{
-    return (((uint8_t)value) & 0xC0) == 0x80;
-}
-
-static size_t SolMessagePageEnd(const SolMessagePager_t *pager, size_t offset)
-{
-    size_t total = SolMessagePagerLength(pager);
-    if (offset >= total) {
-        return total;
-    }
-    size_t remaining = total - offset;
-    size_t length = remaining < SOL_MESSAGE_PAGE_BYTES
-        ? remaining
-        : SOL_MESSAGE_PAGE_BYTES;
-
-    if (pager->utf8 && offset + length < total) {
-        while (length > 0 &&
-               SolMessageIsUtf8Continuation(SolMessagePagerByteAt(pager, offset + length))) {
-            length--;
-        }
-
-    }
-    return offset + length;
-}
-
-static size_t SolMessagePageOffset(const SolMessagePager_t *pager, size_t page)
-{
-    size_t offset = 0;
-    for (size_t i = 0; i < page && offset < SolMessagePagerLength(pager); i++) {
-        offset = SolMessagePageEnd(pager, offset);
-    }
-    return offset;
-}
-
-static void SolMessagePagerRefresh(SolMessagePager_t *pager)
-{
-    char page_text[SOL_MESSAGE_PAGE_BYTES + 1];
-    size_t end = SolMessagePageEnd(pager, pager->offset);
-    size_t length = end - pager->offset;
-    for (size_t i = 0; i < length; i++) {
-        page_text[i] = SolMessagePagerByteAt(pager, pager->offset + i);
-    }
-    page_text[length] = '\0';
-
-    lv_coord_t label_y = 0;
-    if (pager->warning != NULL) {
-        if (pager->page == 0) {
-            lv_obj_clear_flag(pager->warning, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_update_layout(pager->warning);
-            label_y = lv_obj_get_height(pager->warning) + 16;
-        } else {
-            lv_obj_add_flag(pager->warning, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-    lv_obj_set_y(pager->label, label_y);
-    lv_label_set_text(pager->label, page_text);
-    lv_obj_set_height(pager->label, LV_SIZE_CONTENT);
-    lv_obj_update_layout(pager->viewport);
-    lv_obj_scroll_to_y(pager->viewport, 0, LV_ANIM_OFF);
-    lv_label_set_text_fmt(pager->page_label, "%u / %u",
-                          (unsigned)(pager->page + 1),
-                          (unsigned)pager->page_count);
-    if (pager->page == 0) {
-        lv_obj_add_state(pager->prev, LV_STATE_DISABLED);
-    } else {
-        lv_obj_clear_state(pager->prev, LV_STATE_DISABLED);
-    }
-    if (pager->page + 1 >= pager->page_count) {
-        lv_obj_add_state(pager->next, LV_STATE_DISABLED);
-    } else {
-        lv_obj_clear_state(pager->next, LV_STATE_DISABLED);
-    }
-}
-
-static void SolMessagePagerEvent(lv_event_t *event)
-{
-    SolMessagePager_t *pager = lv_event_get_user_data(event);
-    lv_obj_t *target = lv_event_get_target(event);
-    if (target == pager->prev && pager->page > 0) {
-        pager->page--;
-    } else if (target == pager->next && pager->page + 1 < pager->page_count) {
-        pager->page++;
-    } else {
-        return;
-    }
-    pager->offset = SolMessagePageOffset(pager, pager->page);
-    SolMessagePagerRefresh(pager);
-}
-
-static void SolMessagePagerDelete(lv_event_t *event)
-{
-    SolMessagePager_t *pager = lv_event_get_user_data(event);
-    SRAM_FREE(pager);
-}
-
-static lv_obj_t *SolMessagePagerButton(lv_obj_t *parent, const char *text)
-{
-    lv_obj_t *button = lv_btn_create(parent);
-    lv_obj_set_size(button, 72, 48);
-    lv_obj_set_style_radius(button, 12, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(button, WHITE_COLOR, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(button, 30, LV_PART_MAIN);
-    lv_obj_t *label = lv_label_create(button);
-    lv_obj_set_style_text_font(label, g_defIllustrateFont, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, WHITE_COLOR, LV_PART_MAIN);
-    lv_label_set_text(label, text);
-    lv_obj_center(label);
-    return button;
-}
-
-static lv_obj_t *SolMessageRiskWarning(lv_obj_t *parent)
-{
-    lv_obj_t *warning = lv_obj_create(parent);
-    lv_obj_set_width(warning, 360);
-    lv_obj_set_height(warning, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(warning, 16, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(warning, 8, LV_PART_MAIN);
-    lv_obj_set_style_border_width(warning, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(warning, 8, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(warning, lv_color_hex(0xF55831), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(warning, 48, LV_PART_MAIN);
-    lv_obj_set_flex_flow(warning, LV_FLEX_FLOW_COLUMN);
-
-    lv_obj_t *title = GuiCreateTextLabel(warning, _("solana_blind_sign_title"));
-    lv_obj_set_width(title, 328);
-    lv_obj_set_style_text_color(title, lv_color_hex(0xF55831), LV_PART_MAIN);
-
-    lv_obj_t *content = GuiCreateIllustrateLabel(
-        warning, _("solana_unparsed_message_warning"));
-    lv_obj_set_width(content, 328);
-    lv_label_set_long_mode(content, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(content, WHITE_COLOR, LV_PART_MAIN);
-    return warning;
-}
-
 void GuiShowSolMessagePaged(lv_obj_t *parent, void *param, bool raw)
 {
     DisplaySolanaMessage *message = (DisplaySolanaMessage *)param;
     const char *text = raw ? message->raw_message : message->utf8_message;
-    if (text == NULL) {
-        text = "";
-    }
-
-    SolMessagePager_t *pager = SRAM_MALLOC(sizeof(SolMessagePager_t));
-    memset(pager, 0, sizeof(SolMessagePager_t));
-    pager->text = text;
-    pager->suffix = "";
-    pager->text_len = strlen(pager->text);
-    pager->suffix_len = strlen(pager->suffix);
-    pager->utf8 = !raw;
-
-    size_t offset = 0;
-    do {
-        pager->page_count++;
-        offset = SolMessagePageEnd(pager, offset);
-    } while (offset < SolMessagePagerLength(pager));
-
-    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_update_layout(parent);
-    lv_coord_t viewport_height = lv_obj_get_height(parent) - 64;
-    pager->viewport = lv_obj_create(parent);
-    lv_obj_set_pos(pager->viewport, 0, 0);
-    lv_obj_set_size(pager->viewport, 360, viewport_height);
-    lv_obj_set_style_pad_all(pager->viewport, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_width(pager->viewport, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(pager->viewport, 0, LV_PART_MAIN);
-    lv_obj_set_scrollbar_mode(pager->viewport, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_scroll_dir(pager->viewport, LV_DIR_VER);
-    lv_obj_add_flag(pager->viewport, LV_OBJ_FLAG_SCROLLABLE);
-
-    if (raw) {
-        pager->warning = SolMessageRiskWarning(pager->viewport);
-        lv_obj_set_pos(pager->warning, 0, 0);
-    }
-
-    pager->label = lv_label_create(pager->viewport);
-    lv_obj_set_pos(pager->label, 0, 0);
-    lv_obj_set_width(pager->label, 360);
-    lv_obj_set_height(pager->label, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(pager->label, g_defIllustrateFont, LV_PART_MAIN);
-    lv_obj_set_style_text_color(pager->label, WHITE_COLOR, LV_PART_MAIN);
-    lv_label_set_long_mode(pager->label, LV_LABEL_LONG_WRAP);
-
-    pager->prev = SolMessagePagerButton(parent, "<");
-    lv_obj_align(pager->prev, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    pager->next = SolMessagePagerButton(parent, ">");
-    lv_obj_align(pager->next, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    pager->page_label = lv_label_create(parent);
-    lv_obj_set_style_text_font(pager->page_label, g_defIllustrateFont, LV_PART_MAIN);
-    lv_obj_set_style_text_color(pager->page_label, WHITE_COLOR, LV_PART_MAIN);
-    lv_obj_align(pager->page_label, LV_ALIGN_BOTTOM_MID, 0, -9);
-
-    lv_obj_add_event_cb(pager->prev, SolMessagePagerEvent, LV_EVENT_CLICKED, pager);
-    lv_obj_add_event_cb(pager->next, SolMessagePagerEvent, LV_EVENT_CLICKED, pager);
-    lv_obj_add_event_cb(parent, SolMessagePagerDelete, LV_EVENT_DELETE, pager);
-    SolMessagePagerRefresh(pager);
+    GuiShowPagedMessageText(
+        parent,
+        text,
+        !raw,
+        raw ? _("solana_blind_sign_title") : NULL,
+        raw ? _("solana_unparsed_message_warning") : NULL);
 }
 
 static void SetContainerDefaultStyle(lv_obj_t *container)
@@ -771,7 +559,7 @@ static lv_obj_t * GuiShowSplTokenInfoOverviewCard(lv_obj_t *parent, PtrT_Display
     }
     return container;
 }
-static void GuiShowJupiterV6SwapOverview(lv_obj_t *parent, PtrT_DisplaySolanaTxOverview overviewData)
+static lv_obj_t *GuiShowJupiterV6SwapOverview(lv_obj_t *parent, PtrT_DisplaySolanaTxOverview overviewData)
 {
     lv_obj_t *swapOverviewContainer = GuiCreateAutoHeightContainer(parent, SOL_COMPONENT_WIDTH, 16);
     SetContainerDefaultStyle(swapOverviewContainer);
@@ -909,26 +697,35 @@ static void GuiShowJupiterV6SwapOverview(lv_obj_t *parent, PtrT_DisplaySolanaTxO
     lv_obj_align_to(partnerReferralFeeValueLabel, partnerReferralFeeLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
     // platform container align to swap container
     lv_obj_align_to(platformOverviewContainer, swapOverviewContainer, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    return platformOverviewContainer;
 }
 static void GuiShowSplTokenTransferOverview(lv_obj_t *parent, PtrT_DisplaySolanaTxOverview overviewData)
 {
-    lv_obj_t *tokenInfoCard = GuiShowSplTokenInfoOverviewCard(parent, overviewData);
     PtrT_DisplaySolanaTxSplTokenTransferOverview splTokenTransfer = overviewData->spl_token_transfer;
-    lv_obj_t *lastInfoCard = tokenInfoCard;
-    if (strcmp(splTokenTransfer->token_name, "Unknown") == 0) {
-        lv_obj_t *noticeCard = GuiCreateSolNoticeCard(parent);
-        lv_obj_align_to(tokenInfoCard, noticeCard, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    lv_obj_t *lastInfoCard = NULL;
+    // Plain SPL Token `Transfer` instructions do not contain mint metadata.
+    // In that case keep the original Amount/Account review card and its three
+    // account explanations, but do not render an empty token-info card.
+    if (strlen(splTokenTransfer->token_mint_account) > 0) {
+        lv_obj_t *tokenInfoCard = GuiShowSplTokenInfoOverviewCard(parent, overviewData);
         lastInfoCard = tokenInfoCard;
-    }
-    if (splTokenTransfer->unusual_decimals) {
-        lv_obj_t *warningCard =
-            GuiCreateUnusualDecimalsWarningCard(parent, splTokenTransfer->decimals);
-        lv_obj_align_to(warningCard, lastInfoCard, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
-        lastInfoCard = warningCard;
+        if (strcmp(splTokenTransfer->token_name, "Unknown") == 0) {
+            lv_obj_t *noticeCard = GuiCreateSolNoticeCard(parent);
+            lv_obj_align_to(tokenInfoCard, noticeCard, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+            lastInfoCard = tokenInfoCard;
+        }
+        if (splTokenTransfer->unusual_decimals) {
+            lv_obj_t *warningCard =
+                GuiCreateUnusualDecimalsWarningCard(parent, splTokenTransfer->decimals);
+            lv_obj_align_to(warningCard, lastInfoCard, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+            lastInfoCard = warningCard;
+        }
     }
     lv_obj_t *container = GuiCreateAutoHeightContainer(parent, SOL_COMPONENT_WIDTH, 16);
     SetContainerDefaultStyle(container);
-    lv_obj_align_to(container, lastInfoCard, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    if (lastInfoCard != NULL) {
+        lv_obj_align_to(container, lastInfoCard, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    }
 
 
     lv_obj_t *label = lv_label_create(container);
@@ -1017,7 +814,8 @@ static void GuiShowSolTxSquadsProposalOverview(lv_obj_t *parent, PtrT_DisplaySol
         if (strcmp(method, "Transfer") != 0) {
             continue;
         }
-        lv_obj_t *feeContainer =  GuiCreateAutoHeightContainer(parent, 408, 16);
+        lv_obj_t *feeContainer = GuiCreateAutoHeightContainer(
+            parent, SOL_COMPONENT_WIDTH, 16);
         lv_obj_t *feeLabel = lv_label_create(feeContainer);
         lv_label_set_text(feeLabel, "Fee");
         lv_obj_set_style_text_color(feeLabel, WHITE_COLOR, LV_PART_MAIN);
@@ -1096,25 +894,41 @@ static void GuiShowSolTxVoteOverview(lv_obj_t *parent, PtrT_DisplaySolanaTxOverv
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 54);
 }
 
-static void GuiShowSolTxGeneralOverview(lv_obj_t *parent, PtrT_DisplaySolanaTxOverview overviewData)
+static lv_obj_t *GuiShowSolTxGeneralOverview(
+    lv_obj_t *parent,
+    PtrT_DisplaySolanaTxOverview overviewData,
+    lv_obj_t *lastView)
 {
     PtrT_VecFFI_DisplaySolanaTxOverviewGeneral general = overviewData->general;
-    lv_obj_t *lastView = NULL;
+
+    if (general == NULL) {
+        return lastView;
+    }
 
     for (int i = 0; i < general->size; i++) {
         char *program = general->data[i].program;
         char order[BUFFER_SIZE_16] = {0};
-        snprintf_s(order, BUFFER_SIZE_16, "#%d", i + 1);
+        snprintf_s(order, BUFFER_SIZE_16, "#%u", (unsigned int)general->data[i].instruction_index);
         const char *method = strlen(general->data[i].method) > 0
             ? general->data[i].method
             : "Unknown";
-        lv_obj_t *actionCard = CreateTransactionOverviewCardWithWidth(
-            parent,
-            order,
-            program,
-            _("Method"),
-            method,
-            SOL_COMPONENT_WIDTH);
+        lv_obj_t *actionCard;
+        if (strcmp(method, "VaultTransactionCreate") == 0 &&
+            strlen(general->data[i].memo) > 0) {
+            // Preserve the established Squads review card even when a mixed
+            // transaction reaches the General/addon path.  The memo belongs
+            // to VaultTransactionCreate, not ProposalCreate.
+            actionCard = CreateSolanaSquadsProposalOverviewCard(
+                parent, "Squads", method, general->data[i].memo, "");
+        } else {
+            actionCard = CreateTransactionOverviewCardWithWidth(
+                parent,
+                order,
+                program,
+                _("Method"),
+                method,
+                SOL_COMPONENT_WIDTH);
+        }
         if (lastView != NULL) {
             lv_obj_align_to(actionCard, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
         }
@@ -1161,33 +975,47 @@ static void GuiShowSolTxGeneralOverview(lv_obj_t *parent, PtrT_DisplaySolanaTxOv
                 parent, _("Destination"), general->data[i].destination, lastView, SOL_COMPONENT_WIDTH);
         }
     }
+    return lastView;
 }
 
-static void GuiShowSolTxAdditionalUnknownPrograms(
-    lv_obj_t *parent,
+/*
+ * Specialized overviews own their layout, so they do not all expose the
+ * final card they created.  Find the bottom-most direct child and use it as
+ * the anchor for generic sibling instructions.  This keeps the specialized
+ * overview intact and appends addons after it instead of replacing it.
+ */
+static lv_obj_t *GuiGetSolTxBottomView(lv_obj_t *parent)
+{
+    lv_obj_update_layout(parent);
+    lv_obj_t *bottomView = NULL;
+    int32_t bottom = 0;
+    uint32_t childCount = lv_obj_get_child_cnt(parent);
+    for (uint32_t i = 0; i < childCount; i++) {
+        lv_obj_t *child = lv_obj_get_child(parent, i);
+        int32_t childBottom = lv_obj_get_y(child) + lv_obj_get_height(child);
+        if (bottomView == NULL || childBottom > bottom) {
+            bottomView = child;
+            bottom = childBottom;
+        }
+    }
+    return bottomView;
+}
+
+static bool GuiHasSolTxAdditionalUnknownPrograms(
     PtrT_DisplaySolanaTxOverview overviewData)
 {
     PtrT_VecFFI_PtrString programs = overviewData->additional_unknown_programs;
-    if (programs == NULL || programs->size == 0) {
-        return;
-    }
+    return programs != NULL && programs->size > 0;
+}
 
-    int32_t contentChildCount = lv_obj_get_child_cnt(parent);
-    lv_obj_t *warningCard = GuiCreateWarningCard(parent);
-    lv_obj_align(warningCard, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_update_layout(warningCard);
-    int32_t contentOffset = lv_obj_get_height(warningCard) + 16;
-
-    lv_obj_t *lastView = warningCard;
-    int32_t lastBottom = lv_obj_get_height(warningCard);
-    for (int32_t i = 0; i < contentChildCount; i++) {
-        lv_obj_t *child = lv_obj_get_child(parent, i);
-        lv_obj_set_y(child, lv_obj_get_y(child) + contentOffset);
-        int32_t childBottom = lv_obj_get_y(child) + lv_obj_get_height(child);
-        if (childBottom > lastBottom) {
-            lastBottom = childBottom;
-            lastView = child;
-        }
+static lv_obj_t *GuiAppendSolTxAdditionalUnknownProgramCards(
+    lv_obj_t *parent,
+    PtrT_DisplaySolanaTxOverview overviewData,
+    lv_obj_t *lastView)
+{
+    PtrT_VecFFI_PtrString programs = overviewData->additional_unknown_programs;
+    if (programs == NULL) {
+        return lastView;
     }
 
     for (int i = 0; i < programs->size; i++) {
@@ -1200,9 +1028,48 @@ static void GuiShowSolTxAdditionalUnknownPrograms(
             "Program Address",
             programs->data[i],
             SOL_COMPONENT_WIDTH);
-        lv_obj_align_to(programCard, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+        if (lastView != NULL) {
+            lv_obj_align_to(programCard, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+        }
         lastView = programCard;
     }
+    return lastView;
+}
+
+static void GuiShowSolTxAdditionalUnknownPrograms(
+    lv_obj_t *parent,
+    PtrT_DisplaySolanaTxOverview overviewData)
+{
+    PtrT_VecFFI_PtrString programs = overviewData->additional_unknown_programs;
+    if (programs == NULL || programs->size == 0) {
+        return;
+    }
+
+    lv_obj_t *warningCard = GuiCreateWarningCard(parent);
+    lv_obj_align(warningCard, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_update_layout(warningCard);
+    int32_t contentOffset = lv_obj_get_height(warningCard) + 16;
+
+    lv_obj_t *lastView = warningCard;
+    int32_t lastBottom = lv_obj_get_height(warningCard);
+    int32_t childCount = lv_obj_get_child_cnt(parent);
+    for (int32_t i = 0; i < childCount; i++) {
+        lv_obj_t *child = lv_obj_get_child(parent, i);
+        // LVGL's child order is an implementation detail.  Identify the new
+        // warning by pointer so every pre-existing overview card is shifted
+        // exactly once, regardless of where the warning appears in the list.
+        if (child == warningCard) {
+            continue;
+        }
+        lv_obj_set_y(child, lv_obj_get_y(child) + contentOffset);
+        int32_t childBottom = lv_obj_get_y(child) + lv_obj_get_height(child);
+        if (childBottom > lastBottom) {
+            lastBottom = childBottom;
+            lastView = child;
+        }
+    }
+
+    GuiAppendSolTxAdditionalUnknownProgramCards(parent, overviewData, lastView);
 }
 static void GuiShowSolTxUnknownOverview(lv_obj_t *parent)
 {
@@ -1338,7 +1205,7 @@ static void GuiShowSolTxMultiSigCreateDetail(lv_obj_t *parent, PtrT_DisplaySolan
         lv_obj_set_style_pad_all(memberItem, 0, LV_PART_MAIN); // remove all default padding
         lv_obj_set_style_pad_left(memberItem, 24, LV_PART_MAIN);
         lv_obj_set_style_pad_top(memberItem, 16, LV_PART_MAIN);
-        lv_obj_add_flag(memberItem, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(memberItem, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_t *memberItemLabel = lv_label_create(memberItem);
         char memberText[64];
         snprintf(memberText, sizeof(memberText), "Member %d", i + 1);
@@ -1621,12 +1488,20 @@ void GuiShowSolTxOverview(lv_obj_t *parent, void *totalData)
     lv_obj_add_flag(parent, LV_OBJ_FLAG_CLICKABLE);
     DisplaySolanaTx *txData = (DisplaySolanaTx*)totalData;
     PtrT_DisplaySolanaTxOverview overviewData = txData->overview;
+    bool unknownProgramsRendered = false;
     if (0 == strcmp(overviewData->display_type, "Transfer")) {
         GuiShowSolTxTransferOverview(parent, overviewData);
     } else if (0 == strcmp(overviewData->display_type, "Vote")) {
         GuiShowSolTxVoteOverview(parent, overviewData);
     } else if (0 == strcmp(overviewData->display_type, "General")) {
-        GuiShowSolTxGeneralOverview(parent, overviewData);
+        lv_obj_t *lastView = NULL;
+        if (GuiHasSolTxAdditionalUnknownPrograms(overviewData)) {
+            lastView = GuiCreateWarningCard(parent);
+            lv_obj_align(lastView, LV_ALIGN_TOP_LEFT, 0, 0);
+        }
+        lastView = GuiShowSolTxGeneralOverview(parent, overviewData, lastView);
+        GuiAppendSolTxAdditionalUnknownProgramCards(parent, overviewData, lastView);
+        unknownProgramsRendered = true;
     } else if (0 == strcmp(overviewData->display_type, "squads_multisig_create")) {
         GuiShowSolTxMultiSigCreateOverview(parent, overviewData);
     } else if (0 == strcmp(overviewData->display_type, "TokenTransfer")) {
@@ -1634,28 +1509,36 @@ void GuiShowSolTxOverview(lv_obj_t *parent, void *totalData)
     } else if (0 == strcmp(overviewData->display_type, "squads_proposal")) {
         GuiShowSolTxSquadsProposalOverview(parent, overviewData);
     } else if (0 == strcmp(overviewData->display_type, "jupiterv6_swap")) {
-        // todo add jupiterv6 swap overview
-        GuiShowJupiterV6SwapOverview(parent, overviewData);
+        lv_obj_t *lastView = GuiShowJupiterV6SwapOverview(parent, overviewData);
+        GuiShowSolTxGeneralOverview(parent, overviewData, lastView);
     } else {
         GuiShowSolTxInstructionsOverview(parent, overviewData);
         return;
     }
-    GuiShowSolTxAdditionalUnknownPrograms(parent, overviewData);
+
+    /*
+     * Transfer, token-transfer, vote and Squads pages retain their original
+     * purpose-built cards.  Any sibling instructions prepared by the parser
+     * are appended below those cards as generic addons.
+     */
+    if (0 != strcmp(overviewData->display_type, "General") &&
+        0 != strcmp(overviewData->display_type, "jupiterv6_swap")) {
+        GuiShowSolTxGeneralOverview(parent, overviewData, GuiGetSolTxBottomView(parent));
+    }
+    if (!unknownProgramsRendered) {
+        GuiShowSolTxAdditionalUnknownPrograms(parent, overviewData);
+    }
+    lv_obj_update_layout(parent);
+    lv_obj_scroll_to_y(parent, 0, LV_ANIM_OFF);
 }
 
-void GuiShowSolTxDetail(lv_obj_t *parent, void *totalData)
+static void GuiShowSolTxRawDetailCard(
+    lv_obj_t *parent,
+    PtrString txDetail,
+    lv_obj_t *lastView)
 {
-    lv_obj_set_size(parent, 408, LV_SIZE_CONTENT);
-    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(parent, LV_OBJ_FLAG_CLICKABLE);
-    DisplaySolanaTx *txData = (DisplaySolanaTx*)totalData;
-    PtrT_DisplaySolanaTxOverview overviewData = txData->overview;
-    if (0 == strcmp(overviewData->display_type, "squads_multisig_create")) {
-        GuiShowSolTxMultiSigCreateDetail(parent, overviewData);
-        return ;
-    }
     lv_obj_t *cont = lv_obj_create(parent);
-    lv_obj_set_size(cont, SOL_COMPONENT_WIDTH, 444);
+    lv_obj_set_size(cont, SOL_COMPONENT_WIDTH, LV_SIZE_CONTENT);
     lv_obj_set_style_border_width(cont, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_clip_corner(cont, 0, 0);
     lv_obj_set_style_radius(cont, 24, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -1667,20 +1550,40 @@ void GuiShowSolTxDetail(lv_obj_t *parent, void *totalData)
     lv_obj_set_style_pad_left(cont, 24, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_pad_right(cont, 24, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_align(cont, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(cont, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
 
-    PtrString txDetail = txData->detail;
-
     lv_obj_t *label = lv_label_create(cont);
-    cJSON *root = cJSON_Parse((const char *)txDetail);
-    char *retStr = cJSON_PrintBuffered(root, BUFFER_SIZE_1024, false);
-    lv_label_set_text(label, retStr);
-    EXT_FREE(retStr);
-    cJSON_Delete(root);
+    const char *rawDetail = txDetail == NULL ? "" : txDetail;
+    lv_label_set_text(label, rawDetail);
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(label, SOL_COMPONENT_CONTENT_WIDTH);
     SetTitleLabelStyle(label);
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_update_layout(label);
+    lv_obj_set_height(cont, lv_obj_get_height(label) + 32);
+    if (lastView == NULL) {
+        lv_obj_align(cont, LV_ALIGN_TOP_LEFT, 0, 0);
+    } else {
+        lv_obj_align_to(cont, lastView, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
+    }
+}
+
+void GuiShowSolTxDetail(lv_obj_t *parent, void *totalData)
+{
+    lv_obj_set_size(parent, 408, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_CLICKABLE);
+    DisplaySolanaTx *txData = (DisplaySolanaTx*)totalData;
+    PtrT_DisplaySolanaTxOverview overviewData = txData->overview;
+    if (0 == strcmp(overviewData->display_type, "squads_multisig_create")) {
+        GuiShowSolTxMultiSigCreateDetail(parent, overviewData);
+        lv_obj_update_layout(parent);
+        GuiShowSolTxRawDetailCard(
+            parent, txData->detail, GuiGetSolTxBottomView(parent));
+        lv_obj_update_layout(parent);
+        return;
+    }
+    GuiShowSolTxRawDetailCard(parent, txData->detail, NULL);
 }
