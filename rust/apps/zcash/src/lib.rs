@@ -2057,8 +2057,8 @@ mod tests {
         assert!(signed.ironwood().actions().is_empty());
     }
 
-    /// Removes spend FVKs as the wallet's batch request does, so the device must
-    /// verify each spend against its own account FVK.
+    /// Removes spend FVKs as the wallet's batch request does for ordinary spends,
+    /// so the device must verify each spend against its own account FVK.
     fn without_spend_fvks(bytes: &[u8]) -> Vec<u8> {
         ::pczt::roles::redactor::Redactor::new(Pczt::parse(bytes).unwrap())
             .redact_ironwood_with(|mut r| r.redact_actions(|mut ar| ar.clear_spend_fvk()))
@@ -2067,58 +2067,111 @@ mod tests {
             .unwrap()
     }
 
-    /// Checks, parses and signs `bytes` as both a single and a batch request.
-    fn check_parse_and_sign_both_policies(
+    /// Checks and signs `bytes` under the single or batch policy, returning the
+    /// signed response.
+    fn check_and_sign(
         sample: &pczt::test_support::SamplePczt,
         bytes: &[u8],
-    ) -> Result<()> {
+        batch: bool,
+    ) -> Result<Pczt> {
         let params = pczt::test_support::Nu6_3Network;
-        parse_pczt_cypherpunk(&params, bytes, &sample.ufvk_text, &sample.seed_fingerprint)?;
-        let checked = check_pczt_cypherpunk(
+        let check = if batch {
+            check_batch_pczt_cypherpunk
+        } else {
+            check_pczt_cypherpunk
+        };
+        let checked = check(
             &params,
             bytes,
             &sample.ufvk_text,
             &sample.seed_fingerprint,
             0,
         )?;
-        let signed = Pczt::parse(&sign_checked_pczt(
-            &params,
-            &checked,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )?)
-        .unwrap();
-        assert!(signed
-            .ironwood()
-            .actions()
-            .iter()
-            .any(|a| a.spend().spend_auth_sig().is_some()));
-        let checked = check_batch_pczt_cypherpunk(
-            &params,
+        let sign = if batch {
+            sign_checked_batch_pczt
+        } else {
+            sign_checked_pczt
+        };
+        let signed = sign(&params, &checked, &sample.seed, &sample.seed_fingerprint, 0)?;
+        Ok(Pczt::parse(&signed).unwrap())
+    }
+
+    /// Asserts that `bytes` signs under both policies, and that each response
+    /// signs exactly the sample's funded Ironwood spend with a signature valid
+    /// for its `rk` under the transaction's sighash.
+    fn assert_signs_funded_spend(sample: &pczt::test_support::SamplePczt, bytes: &[u8]) {
+        use zcash_vendor::orchard::primitives::redpallas::{Signature, SpendAuth, VerificationKey};
+
+        let original = Pczt::parse(&sample.bytes).unwrap();
+        let sighash = ::pczt::roles::signer::Signer::new(original.clone())
+            .unwrap()
+            .shielded_sighash();
+        let mut funded = None;
+        zcash_vendor::pczt::roles::verifier::Verifier::new(original)
+            .with_ironwood::<ZcashError, _>(|bundle| {
+                funded = bundle
+                    .actions()
+                    .iter()
+                    .position(|a| matches!(a.spend().value(), Some(v) if v.inner() != 0));
+                Ok(())
+            })
+            .unwrap();
+        let funded = funded.unwrap();
+        for batch in [false, true] {
+            let signed = check_and_sign(sample, bytes, batch).unwrap();
+            let signed_actions = signed
+                .ironwood()
+                .actions()
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.spend().spend_auth_sig().is_some())
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            assert_eq!(signed_actions, vec![funded], "batch: {batch}");
+            let spend = signed.ironwood().actions()[funded].spend();
+            let sig: Signature<SpendAuth> = spend.spend_auth_sig().unwrap().into();
+            VerificationKey::<SpendAuth>::try_from(*spend.rk())
+                .unwrap()
+                .verify(&sighash, &sig)
+                .unwrap();
+        }
+    }
+
+    /// Asserts that parsing succeeds but both the single and the batch check
+    /// reject `bytes` with `expected`.
+    fn assert_rejected_by_both_policies(
+        sample: &pczt::test_support::SamplePczt,
+        bytes: &[u8],
+        expected: &str,
+    ) {
+        parse_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
             bytes,
             &sample.ufvk_text,
             &sample.seed_fingerprint,
-            0,
-        )?;
-        let signed = Pczt::parse(&sign_checked_batch_pczt(
-            &params,
-            &checked,
-            &sample.seed,
-            &sample.seed_fingerprint,
-            0,
-        )?)
+        )
         .unwrap();
-        assert!(signed
-            .ironwood()
-            .actions()
-            .iter()
-            .any(|a| a.spend().spend_auth_sig().is_some()));
-        Ok(())
+        for batch in [false, true] {
+            assert_eq!(
+                check_and_sign(sample, bytes, batch).unwrap_err(),
+                ZcashError::InvalidPczt(expected.to_string()),
+                "batch: {batch}"
+            );
+        }
+    }
+
+    fn sample_account_fvk(
+        sample: &pczt::test_support::SamplePczt,
+    ) -> orchard::keys::FullViewingKey {
+        UnifiedFullViewingKey::decode(&pczt::test_support::Nu6_3Network, &sample.ufvk_text)
+            .unwrap()
+            .orchard()
+            .unwrap()
+            .clone()
     }
 
     #[test]
-    fn test_one_time_ironwood_spend_checks_parses_and_signs() {
+    fn test_one_time_ironwood_spend_signs_with_its_fvk() {
         let sample = pczt::test_support::sample_one_time_ironwood_pczt();
         let parsed = parse_pczt_cypherpunk(
             &pczt::test_support::Nu6_3Network,
@@ -2131,9 +2184,45 @@ mod tests {
         assert!(ironwood.get_from().first().unwrap().get_is_mine());
         assert!(ironwood.get_to().iter().all(|to| !to.get_is_change()));
 
-        // The wallet's full PCZT carries the one-time FVK; its batch request carries none.
-        check_parse_and_sign_both_policies(&sample, &sample.bytes).unwrap();
-        check_parse_and_sign_both_policies(&sample, &without_spend_fvks(&sample.bytes)).unwrap();
+        assert_signs_funded_spend(&sample, &sample.bytes);
+    }
+
+    #[test]
+    fn test_ironwood_spend_from_any_same_authority_rivk_signs() {
+        // The device checks spend authority, not the wallet's one-time KDF.
+        let sample = pczt::test_support::sample_ironwood_pczt_spending_from(|account| {
+            pczt::test_support::fvk_with_rivk_seed(account, 7)
+        });
+        assert_signs_funded_spend(&sample, &sample.bytes);
+    }
+
+    #[test]
+    fn test_one_time_ironwood_spend_without_its_fvk_is_rejected() {
+        // Without the one-time FVK the device cannot tie the note's address to
+        // its key, exactly as for a made-up note at an unrelated address.
+        let sample = pczt::test_support::sample_one_time_ironwood_pczt();
+        assert_rejected_by_both_policies(
+            &sample,
+            &without_spend_fvks(&sample.bytes),
+            "invalid Ironwood action nullifier: WrongFvkForNote",
+        );
+    }
+
+    #[test]
+    fn test_one_time_ironwood_spend_with_another_same_authority_fvk_is_rejected() {
+        let sample = pczt::test_support::sample_one_time_ironwood_pczt();
+        let account = sample_account_fvk(&sample);
+        let mut bytes = sample.bytes.clone();
+        replace_unique_serialized_field(
+            &mut bytes,
+            &pczt::test_support::one_time_fvk(&account, 0, 3).to_bytes(),
+            &pczt::test_support::one_time_fvk(&account, 0, 4).to_bytes(),
+        );
+        assert_rejected_by_both_policies(
+            &sample,
+            &bytes,
+            "invalid Ironwood action nullifier: WrongFvkForNote",
+        );
     }
 
     #[test]
@@ -2150,18 +2239,15 @@ mod tests {
         let sample = pczt::test_support::sample_ironwood_pczt_spending_from(|_| {
             pczt::test_support::one_time_fvk(&foreign, 0, 3)
         });
-        assert_eq!(
-            check_parse_and_sign_both_policies(&sample, &sample.bytes).unwrap_err(),
-            ZcashError::InvalidPczt(
-                "invalid Ironwood action nullifier: MismatchedFullViewingKey".to_string()
-            )
+        assert_rejected_by_both_policies(
+            &sample,
+            &sample.bytes,
+            "invalid Ironwood action nullifier: MismatchedFullViewingKey",
         );
-        assert_eq!(
-            check_parse_and_sign_both_policies(&sample, &without_spend_fvks(&sample.bytes))
-                .unwrap_err(),
-            ZcashError::InvalidPczt(
-                "invalid Ironwood action nullifier: InvalidNullifier".to_string()
-            )
+        assert_rejected_by_both_policies(
+            &sample,
+            &without_spend_fvks(&sample.bytes),
+            "invalid Ironwood action nullifier: WrongFvkForNote",
         );
     }
 

@@ -558,6 +558,18 @@ pub(crate) mod test_support {
         orchard::keys::FullViewingKey::from_bytes(&bytes).unwrap()
     }
 
+    /// The FVK with `account`'s `ak` and `nk` and a `rivk` unrelated to any wallet
+    /// derivation, taken from `seed`.
+    pub(crate) fn fvk_with_rivk_seed(
+        account: &orchard::keys::FullViewingKey,
+        seed: u64,
+    ) -> orchard::keys::FullViewingKey {
+        use zcash_vendor::pasta_curves::{group::ff::PrimeField, pallas};
+        let mut bytes = account.to_bytes();
+        bytes[64..].copy_from_slice(&pallas::Scalar::from(seed).to_repr());
+        orchard::keys::FullViewingKey::from_bytes(&bytes).unwrap()
+    }
+
     /// Spends a note received by `note_fvk(account FVK)` at its external address zero
     /// into an Ironwood output to the account's external address.
     pub(crate) fn sample_ironwood_pczt_spending_from(
