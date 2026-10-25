@@ -521,14 +521,58 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn sample_ironwood_pczt() -> SamplePczt {
+        sample_ironwood_pczt_spending_from(|account| account.clone())
+    }
+
+    /// An Ironwood spend of a note received at the account's v1 one-time refund key
+    /// at index 3 (see `zakura-one-time-ivk`), paying the account's external address.
+    pub(crate) fn sample_one_time_ironwood_pczt() -> SamplePczt {
+        sample_ironwood_pczt_spending_from(|account| one_time_fvk(account, 0, 3))
+    }
+
+    /// The v1 one-time FVK from `zakura-one-time-ivk`'s `KeyId::derive`: the account's
+    /// `ak` and `nk` with `rivk = ToScalar(PRF^expand_rivk([0x85] || ak || nk ||
+    /// [purpose] || index_le))`.
+    pub(crate) fn one_time_fvk(
+        account: &orchard::keys::FullViewingKey,
+        purpose: u8,
+        index: u64,
+    ) -> orchard::keys::FullViewingKey {
+        use zcash_vendor::pasta_curves::{
+            group::ff::{FromUniformBytes, PrimeField},
+            pallas,
+        };
+        let mut bytes = account.to_bytes();
+        let wide = blake2b_simd::Params::new()
+            .hash_length(64)
+            .personal(b"Zcash_ExpandSeed")
+            .to_state()
+            .update(&bytes[64..])
+            .update(&[0x85])
+            .update(&bytes[..64])
+            .update(&[purpose])
+            .update(&index.to_le_bytes())
+            .finalize();
+        let rivk = pallas::Scalar::from_uniform_bytes(wide.as_array()).to_repr();
+        bytes[64..].copy_from_slice(&rivk);
+        orchard::keys::FullViewingKey::from_bytes(&bytes).unwrap()
+    }
+
+    /// Spends a note received by `note_fvk(account FVK)` at its external address zero
+    /// into an Ironwood output to the account's external address.
+    pub(crate) fn sample_ironwood_pczt_spending_from(
+        note_fvk: impl FnOnce(&orchard::keys::FullViewingKey) -> orchard::keys::FullViewingKey,
+    ) -> SamplePczt {
         let params = Nu6_3Network;
         let seed = [7u8; 32];
         let ufvk_text = derive_ufvk(&params, &seed, "m/32'/133'/0'").unwrap();
         let ufvk = UnifiedFullViewingKey::decode(&params, &ufvk_text).unwrap();
-        let orchard_fvk = ufvk.orchard().unwrap().clone();
+        let account_fvk = ufvk.orchard().unwrap().clone();
+        let orchard_fvk = note_fvk(&account_fvk);
         let orchard_ivk = orchard_fvk.to_ivk(orchard::keys::Scope::External);
-        let orchard_ovk = orchard_fvk.to_ovk(orchard::keys::Scope::External);
-        let recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::External);
+        let orchard_ovk = account_fvk.to_ovk(orchard::keys::Scope::External);
+        let note_recipient = orchard_fvk.address_at(0u32, orchard::keys::Scope::External);
+        let recipient = account_fvk.address_at(0u32, orchard::keys::Scope::External);
 
         let value = orchard::value::NoteValue::from_raw(1_000_000);
         let note = {
@@ -540,7 +584,12 @@ pub(crate) mod test_support {
             )
             .expect("default flags are representable under the bundle version");
             orchard_builder
-                .add_output(None, recipient, value, Memo::Empty.encode().into_bytes())
+                .add_output(
+                    None,
+                    note_recipient,
+                    value,
+                    Memo::Empty.encode().into_bytes(),
+                )
                 .unwrap();
             let (bundle, meta) = orchard_builder.build::<i64>(&mut OsRng).unwrap().unwrap();
             let action = bundle

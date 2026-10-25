@@ -2057,6 +2057,114 @@ mod tests {
         assert!(signed.ironwood().actions().is_empty());
     }
 
+    /// Removes spend FVKs as the wallet's batch request does, so the device must
+    /// verify each spend against its own account FVK.
+    fn without_spend_fvks(bytes: &[u8]) -> Vec<u8> {
+        ::pczt::roles::redactor::Redactor::new(Pczt::parse(bytes).unwrap())
+            .redact_ironwood_with(|mut r| r.redact_actions(|mut ar| ar.clear_spend_fvk()))
+            .finish()
+            .serialize()
+            .unwrap()
+    }
+
+    /// Checks, parses and signs `bytes` as both a single and a batch request.
+    fn check_parse_and_sign_both_policies(
+        sample: &pczt::test_support::SamplePczt,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let params = pczt::test_support::Nu6_3Network;
+        parse_pczt_cypherpunk(&params, bytes, &sample.ufvk_text, &sample.seed_fingerprint)?;
+        let checked = check_pczt_cypherpunk(
+            &params,
+            bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )?;
+        let signed = Pczt::parse(&sign_checked_pczt(
+            &params,
+            &checked,
+            &sample.seed,
+            &sample.seed_fingerprint,
+            0,
+        )?)
+        .unwrap();
+        assert!(signed
+            .ironwood()
+            .actions()
+            .iter()
+            .any(|a| a.spend().spend_auth_sig().is_some()));
+        let checked = check_batch_pczt_cypherpunk(
+            &params,
+            bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+            0,
+        )?;
+        let signed = Pczt::parse(&sign_checked_batch_pczt(
+            &params,
+            &checked,
+            &sample.seed,
+            &sample.seed_fingerprint,
+            0,
+        )?)
+        .unwrap();
+        assert!(signed
+            .ironwood()
+            .actions()
+            .iter()
+            .any(|a| a.spend().spend_auth_sig().is_some()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_one_time_ironwood_spend_checks_parses_and_signs() {
+        let sample = pczt::test_support::sample_one_time_ironwood_pczt();
+        let parsed = parse_pczt_cypherpunk(
+            &pczt::test_support::Nu6_3Network,
+            &sample.bytes,
+            &sample.ufvk_text,
+            &sample.seed_fingerprint,
+        )
+        .unwrap();
+        let ironwood = parsed.get_ironwood().unwrap();
+        assert!(ironwood.get_from().first().unwrap().get_is_mine());
+        assert!(ironwood.get_to().iter().all(|to| !to.get_is_change()));
+
+        // The wallet's full PCZT carries the one-time FVK; its batch request carries none.
+        check_parse_and_sign_both_policies(&sample, &sample.bytes).unwrap();
+        check_parse_and_sign_both_policies(&sample, &without_spend_fvks(&sample.bytes)).unwrap();
+    }
+
+    #[test]
+    fn test_ironwood_spend_from_foreign_spend_authority_is_rejected() {
+        let foreign = {
+            let params = pczt::test_support::Nu6_3Network;
+            let ufvk_text = derive_ufvk(&params, &[8u8; 32], "m/32'/133'/0'").unwrap();
+            UnifiedFullViewingKey::decode(&params, &ufvk_text)
+                .unwrap()
+                .orchard()
+                .unwrap()
+                .clone()
+        };
+        let sample = pczt::test_support::sample_ironwood_pczt_spending_from(|_| {
+            pczt::test_support::one_time_fvk(&foreign, 0, 3)
+        });
+        assert_eq!(
+            check_parse_and_sign_both_policies(&sample, &sample.bytes).unwrap_err(),
+            ZcashError::InvalidPczt(
+                "invalid Ironwood action nullifier: MismatchedFullViewingKey".to_string()
+            )
+        );
+        assert_eq!(
+            check_parse_and_sign_both_policies(&sample, &without_spend_fvks(&sample.bytes))
+                .unwrap_err(),
+            ZcashError::InvalidPczt(
+                "invalid Ironwood action nullifier: InvalidNullifier".to_string()
+            )
+        );
+    }
+
     #[test]
     fn test_parse_ignores_and_check_rejects_unsupported_ironwood_spend_zip32_path() {
         let sample = pczt::test_support::sample_ironwood_pczt();

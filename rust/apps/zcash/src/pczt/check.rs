@@ -601,15 +601,68 @@ fn check_action_spend<P: consensus::Parameters>(
     };
 
     if let Some(expected_fvk) = can_verify_nf_rk {
-        spend.verify_nullifier(expected_fvk).map_err(|e| {
-            ZcashError::InvalidPczt(format!("invalid {pool} action nullifier: {e:?}"))
-        })?;
+        let expected_fvk = one_time_spend_fvk(expected_fvk, spend, pool);
+        match (spend.verify_nullifier(expected_fvk), expected_fvk) {
+            (Err(orchard::pczt::VerifyError::WrongFvkForNote), Some(account))
+                if matches!(pool, ShieldedPool::Ironwood) && spend.fvk().is_none() =>
+            {
+                verify_nullifier_with_nk(spend, account)
+            }
+            (result, _) => result,
+        }
+        .map_err(|e| ZcashError::InvalidPczt(format!("invalid {pool} action nullifier: {e:?}")))?;
         spend
             .verify_rk(expected_fvk)
             .map_err(|e| ZcashError::InvalidPczt(format!("invalid {pool} action rk: {e:?}")))?;
     }
 
     Ok(())
+}
+
+/// Returns the spend's own FVK in place of the account's when it is a one-time
+/// Ironwood key: one with the account's `ak` and `nk` and another `rivk`, which
+/// the account's spend authority covers. Otherwise returns `account`.
+#[cfg(feature = "cypherpunk")]
+fn one_time_spend_fvk<'a>(
+    account: Option<&'a FullViewingKey>,
+    spend: &'a orchard::pczt::Spend,
+    pool: ShieldedPool,
+) -> Option<&'a FullViewingKey> {
+    match (account, spend.fvk()) {
+        (Some(account), Some(fvk))
+            if matches!(pool, ShieldedPool::Ironwood)
+                && fvk.to_bytes()[..64] == account.to_bytes()[..64] =>
+        {
+            Some(fvk)
+        }
+        _ => account,
+    }
+}
+
+/// Checks the spend's nullifier against `account`'s `nk` without requiring the
+/// note's recipient to derive from `account`. A batch request omits spend FVKs,
+/// so a one-time Ironwood note's recipient is unknown to the device, but its
+/// nullifier still uses the account's `nk` and its `rk` the account's `ak`.
+#[cfg(feature = "cypherpunk")]
+fn verify_nullifier_with_nk(
+    spend: &orchard::pczt::Spend,
+    account: &FullViewingKey,
+) -> Result<(), orchard::pczt::VerifyError> {
+    use orchard::pczt::VerifyError;
+    let note = orchard::Note::from_parts(
+        spend.recipient().ok_or(VerifyError::MissingRecipient)?,
+        spend.value().ok_or(VerifyError::MissingValue)?,
+        spend.rho().ok_or(VerifyError::MissingRho)?,
+        spend.rseed().ok_or(VerifyError::MissingRandomSeed)?,
+        *spend.note_version(),
+    )
+    .into_option()
+    .ok_or(VerifyError::InvalidSpendNote)?;
+    if note.nullifier(account) == *spend.nullifier() {
+        Ok(())
+    } else {
+        Err(VerifyError::InvalidNullifier)
+    }
 }
 
 #[cfg(feature = "cypherpunk")]
