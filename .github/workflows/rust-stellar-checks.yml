@@ -11,12 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e # v2
 
       - name: Read Rust toolchain
         run: echo "RUST_TOOLCHAIN=$(cat rust-toolchain)" >> $GITHUB_ENV
 
-      - uses: actions-rs/toolchain@v1
+      - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           override: true
@@ -24,7 +24,7 @@ jobs:
           target: x86_64-apple-darwin
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@c3076e6fa5aeb9a93daf1bd8eff73345250a8a9c # cargo-llvm-cov
 
       - name: Run rust/apps/stellar
         run: cd rust/apps/stellar && cargo +$RUST_TOOLCHAIN llvm-cov --fail-under-regions 73 --fail-under-functions 89 --fail-under-lines 86 --ignore-filename-regex 'keystore/*|utils/*'
