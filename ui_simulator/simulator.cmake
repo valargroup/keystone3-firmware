@@ -48,6 +48,7 @@ endif()
 file(GLOB_RECURSE UTILS
     "src/utils/user_utils.c"
     "src/utils/log/log_print.c"
+    "src/utils/pq_bench.c"
     "src/error_codes/*.c"
     "src/config/*.c"
     "src/managers/keystore.c"

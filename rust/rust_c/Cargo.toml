@@ -46,6 +46,7 @@ zeroize = { workspace = true }
 #apps
 app_wallets = { workspace = true }
 app_babylon = { workspace = true, optional = true }
+app_pq_bench = { workspace = true, optional = true }
 app_bitcoin = { workspace = true, optional = true }
 app_ethereum = { workspace = true, optional = true }
 app_cardano = { workspace = true, optional = true }
@@ -94,6 +95,8 @@ monero = ["dep:app_monero"]
 avalanche = ["dep:app_avalanche"]
 iota = ["dep:app_iota", "dep:bcs"]
 test_cmd = []
+# Hash-based signature benchmark (UART command and About screen); debug and simulator builds only.
+pq-bench = ["dep:app_pq_bench"]
 
 debug-memory = ["multi-coins"]
 
@@ -132,11 +135,11 @@ production-multi-coins = ["use-allocator", "multi-coins"]
 production-btc-only = ["use-allocator", "btc-only"]
 production-cypherpunk = ["use-allocator", "cypherpunk"]
 # debug
-debug-multi-coins = ["test_cmd", "use-allocator", "multi-coins"]
+debug-multi-coins = ["test_cmd", "use-allocator", "multi-coins", "pq-bench"]
 debug-btc-only = ["test_cmd", "use-allocator", "btc-only"]
 debug-cypherpunk = ["test_cmd", "use-allocator", "cypherpunk"]
 # simulator
-simulator-multi-coins = ["simulator", "multi-coins"]
+simulator-multi-coins = ["simulator", "multi-coins", "pq-bench"]
 simulator-btc-only = ["simulator", "btc-only"]
 simulator-cypherpunk = ["simulator", "cypherpunk"]
 # make IDE happy

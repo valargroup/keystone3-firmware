@@ -38,6 +38,7 @@
 #include "secret_cache.h"
 #include "anti_tamper.h"
 #include "account_manager.h"
+#include "pq_bench.h"
 #include "librust_c.h"
 #include "log.h"
 #include "background_task.h"
@@ -116,6 +117,9 @@ static void DeviceSettingsTestFunc(int argc, char *argv[]);
 static void ScreenShotFunc(int argc, char *argv[]);
 static void BpkPrintFunc(int argc, char *argv[]);
 static void SdCardTestFunc(int argc, char *argv[]);
+#ifdef FEATURE_PQ_BENCH
+static void PqBenchFunc(int argc, char *argv[]);
+#endif
 
 #ifdef WEB3_VERSION
 static void RustTestDecodeKeystoneSignRequest(int argc, char *argv[]);
@@ -322,6 +326,9 @@ const static UartTestCmdItem_t g_uartTestCmdTable[] = {
     {"rust test aptos check tx:", RustTestAptosCheckTx},
     {"rust test aptos parse tx:", RustTestAptosParseTx},
     {"rust ada test", RustADATest},
+#endif
+#ifdef FEATURE_PQ_BENCH
+    {"pq bench:", PqBenchFunc},
 #endif
 };
 
@@ -892,6 +899,38 @@ static void BackgroundTestFunc(int argc, char *argv[])
     sscanf(argv[0], "%d", &delay);
     AsyncDelayExecute(__BackgroundTestFunc, data, sizeof(data), delay);
 }
+
+#ifdef FEATURE_PQ_BENCH
+// pq bench:<all|scheme index|scheme name> [iterations]
+static void PqBenchFunc(int argc, char *argv[])
+{
+    int32_t scheme = PQ_BENCH_ALL_SCHEMES;
+    uint32_t iterations = 0;
+
+    if (argc < 1) {
+        printf("usage: #pq bench:<all|index|name> [iterations]\r\n");
+        for (uint32_t i = 0; i < pq_bench_scheme_count(); i++) {
+            printf("  %u: %s\r\n", (unsigned int)i, pq_bench_scheme_name(i));
+        }
+        return;
+    }
+    if (strcmp(argv[0], "all") != 0) {
+        scheme = -2;
+        for (uint32_t i = 0; i < pq_bench_scheme_count(); i++) {
+            if (strcmp(argv[0], pq_bench_scheme_name(i)) == 0) {
+                scheme = (int32_t)i;
+            }
+        }
+        if (scheme == -2) {
+            sscanf(argv[0], "%d", (int *)&scheme);
+        }
+    }
+    if (argc > 1) {
+        sscanf(argv[1], "%u", (unsigned int *)&iterations);
+    }
+    PqBenchStart(scheme, iterations);
+}
+#endif
 
 static void GetReceiveAddress(int argc, char *argv[])
 {

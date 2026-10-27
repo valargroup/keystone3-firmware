@@ -9,6 +9,7 @@
  *********************/
 #define _DEFAULT_SOURCE /* needed for usleep() */
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #define SDL_MAIN_HANDLED /*To fix SDL's "undefined reference to WinMain" \
                             issue*/
@@ -22,6 +23,7 @@
 #include "gui_api.h"
 #include "gui_framework.h"
 #include "gui_views.h"
+#include "pq_bench.h"
 extern bool g_reboot;
 
 /*********************
@@ -87,6 +89,31 @@ int main(int argc, char **argv)
     (void)argv; /*Unused*/
 
     printf("start");
+
+#ifdef FEATURE_PQ_BENCH
+    // PQ_BENCH="all 5" (or a scheme name or index, and optional iterations) prints the
+    // benchmark as CSV and exits without opening a window.
+    const char *pqBench = getenv("PQ_BENCH");
+    if (pqBench != NULL) {
+        char target[32] = "all";
+        unsigned int iterations = 0;
+        int32_t scheme = PQ_BENCH_ALL_SCHEMES;
+        sscanf(pqBench, "%31s %u", target, &iterations);
+        if (strcmp(target, "all") != 0) {
+            scheme = -2;
+            for (uint32_t i = 0; i < pq_bench_scheme_count(); i++) {
+                if (strcmp(target, pq_bench_scheme_name(i)) == 0) {
+                    scheme = (int32_t)i;
+                }
+            }
+            if (scheme == -2) {
+                sscanf(target, "%d", (int *)&scheme);
+            }
+        }
+        printf("\n");
+        return PqBenchStart(scheme, iterations) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+#endif
 
     /*Initialize LVGL*/
     lv_init();

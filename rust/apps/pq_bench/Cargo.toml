@@ -1,0 +1,15 @@
+[package]
+name = "app_pq_bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# FORS is still a prototype (p0mvn/pq-crypto#8). This commit is that branch plus no_std support,
+# built on the RustCrypto pre-releases this workspace already locks (branch
+# roman/mac/claude/pq-crypto-keystone-pin).
+pq-crypto = { git = "https://github.com/p0mvn/pq-crypto", rev = "3ff578533ce51f948080dc2da3b912415667f9fa" }
+# zakura-core/common benchmarks slh-dsa 0.2.0-rc.5, which needs the final RustCrypto 0.11 releases;
+# zcash_primitives pins this workspace to their pre-releases. This is slh-dsa 0.0.3 (stable RustCrypto
+# crates) plus 0.2's SHA-2 seed-state caching (RustCrypto/signatures#1116), without which signing
+# costs about twice as much with software SHA-256. Signatures are byte-identical to 0.2.0-rc.5.
+slh-dsa = { git = "https://github.com/valargroup/signatures", rev = "98213188e6333ef9eb63cdec07bf2589a5ec620f", default-features = false }
