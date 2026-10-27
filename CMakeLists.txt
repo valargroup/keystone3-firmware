@@ -427,7 +427,8 @@ else()
         target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreFoundation")
         target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreGraphics")
         
-        set(CODESIGN_IDENTITY "keystone simulator")
+        # Pass -DCODESIGN_IDENTITY=- to sign ad hoc without a Keychain identity.
+        set(CODESIGN_IDENTITY "keystone simulator" CACHE STRING "Simulator code signing identity")
         set(ENTITLEMENTS_FILE "${CMAKE_SOURCE_DIR}/entitlements.plist")
         set(CODESIGN_COMMAND codesign --force --options runtime --entitlements ${ENTITLEMENTS_FILE} --sign "${CODESIGN_IDENTITY}")
         add_custom_command(TARGET ${PROJECT_NAME}
