@@ -11,7 +11,7 @@
 // WOTS+, FORS and SLH-DSA (the Rust side is rust/apps/pq_bench).
 
 #define PQ_BENCH_ALL_SCHEMES        (-1)
-#define PQ_BENCH_MAX_SCHEMES        8
+#define PQ_BENCH_MAX_SCHEMES        12
 
 typedef enum {
     PQ_BENCH_IDLE,

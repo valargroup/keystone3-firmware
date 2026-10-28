@@ -6,7 +6,8 @@ verification of hash-based signatures on the device:
 | Name | Scheme | Library |
 |---|---|---|
 | `WOTS+` | RFC 8391 WOTS+, n=32, w=16, SHA-256 | `pq-crypto` |
-| `FORS-256f` | FIPS 205 FORS with the SLH-DSA-SHA2-256f parameters | `pq-crypto` (prototype) |
+| `FORS-256f`, `FORS-256s`, `FORS-128s` | FIPS 205 FORS with the trees, height and hash length of that SLH-DSA-SHA2 set (35×9, 22×14, 14×12) | `pq-crypto` (prototype) |
+| `FORS-16x16` | FORS with 16 trees of height 16 and 32-byte hashes, used by no SLH-DSA set | `pq-crypto` (prototype) |
 | `SLH-128s`, `SLH-128f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
@@ -21,7 +22,7 @@ signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with sof
 ## Running it
 
 - **Device screen**: Settings → About → PQ Bench → Run. It runs every scheme with the default
-  iterations (one for SLH-128s and SLH-256s, five for the others) and shows the median times.
+  iterations (one for SLH-128s, SLH-256s, FORS-256s and FORS-16x16, five for the others) and shows the median times.
 - **UART** (debug builds, UART0 at 512000 baud): send `#pq bench:all 10` followed by CR LF,
   or a scheme name or index in place of `all`. The iteration count is optional; `#pq bench:`
   with no arguments lists the schemes. Results are CSV lines starting with `pqbench,`, with

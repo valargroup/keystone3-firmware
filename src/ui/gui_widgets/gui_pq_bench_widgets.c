@@ -31,7 +31,7 @@ static void ShowResults(void)
 {
     const PqBenchResult_t *results;
     uint32_t count = PqBenchGetResults(&results);
-    char text[640] = "scheme  keygen / sign / verify\n";
+    char text[768] = "scheme  keygen / sign / verify\n";
     size_t used = strlen(text);
 
     for (uint32_t i = 0; i < count && used < sizeof(text); i++) {

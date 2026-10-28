@@ -21,16 +21,24 @@ use pq_crypto::{fors, wots, MessageDigest, PublicSeed, SecretSeed};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
     Wots,
-    Fors,
+    /// FORS shapes, named by the SLH-DSA parameter set that uses them.
+    Fors256f,
+    Fors256s,
+    /// 16 trees of height 16 with 32-byte hashes; no SLH-DSA set uses it.
+    Fors16x16,
+    Fors128s,
     SlhDsa128s,
     SlhDsa128f,
     SlhDsa256s,
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 5] = [
+    pub const ALL: [Scheme; 8] = [
         Scheme::Wots,
-        Scheme::Fors,
+        Scheme::Fors256f,
+        Scheme::Fors256s,
+        Scheme::Fors16x16,
+        Scheme::Fors128s,
         Scheme::SlhDsa128s,
         Scheme::SlhDsa128f,
         Scheme::SlhDsa256s,
@@ -40,19 +48,23 @@ impl Scheme {
     pub fn name(self) -> &'static CStr {
         match self {
             Scheme::Wots => c"WOTS+",
-            Scheme::Fors => c"FORS-256f",
+            Scheme::Fors256f => c"FORS-256f",
+            Scheme::Fors256s => c"FORS-256s",
+            Scheme::Fors16x16 => c"FORS-16x16",
+            Scheme::Fors128s => c"FORS-128s",
             Scheme::SlhDsa128s => c"SLH-128s",
             Scheme::SlhDsa128f => c"SLH-128f",
             Scheme::SlhDsa256s => c"SLH-256s",
         }
     }
 
-    /// Iterations for a default run: one for the SLH-DSA "s" sets, whose signing takes
-    /// tens of seconds on the device, so a full pass stays within a few minutes.
+    /// Iterations for a default run: one for the slow shapes (SLH-DSA "s" sets and the
+    /// tall FORS trees), whose signing takes seconds to tens of seconds on the device, so
+    /// a full pass stays within a few minutes.
     pub fn default_iterations(self) -> u32 {
         match self {
-            Scheme::SlhDsa128s | Scheme::SlhDsa256s => 1,
-            Scheme::Wots | Scheme::Fors | Scheme::SlhDsa128f => 5,
+            Scheme::SlhDsa128s | Scheme::SlhDsa256s | Scheme::Fors256s | Scheme::Fors16x16 => 1,
+            Scheme::Wots | Scheme::Fors256f | Scheme::Fors128s | Scheme::SlhDsa128f => 5,
         }
     }
 
@@ -60,7 +72,10 @@ impl Scheme {
     pub fn run(self, iterations: u32, now_ns: &mut dyn FnMut() -> u64) -> Result<Report, Error> {
         match self {
             Scheme::Wots => measure::<Wots>(iterations, now_ns),
-            Scheme::Fors => measure::<Fors>(iterations, now_ns),
+            Scheme::Fors256f => measure::<Fors<35, 9, 32, 40>>(iterations, now_ns),
+            Scheme::Fors256s => measure::<Fors<22, 14, 32, 39>>(iterations, now_ns),
+            Scheme::Fors16x16 => measure::<Fors<16, 16, 32, 32>>(iterations, now_ns),
+            Scheme::Fors128s => measure::<Fors<14, 12, 16, 21>>(iterations, now_ns),
             Scheme::SlhDsa128s => measure::<SlhDsa<slh_dsa::Sha2_128s>>(iterations, now_ns),
             Scheme::SlhDsa128f => measure::<SlhDsa<slh_dsa::Sha2_128f>>(iterations, now_ns),
             Scheme::SlhDsa256s => measure::<SlhDsa<slh_dsa::Sha2_256s>>(iterations, now_ns),
@@ -93,7 +108,8 @@ pub enum Error {
     VerifyFailed,
 }
 
-/// Fixed message the signatures cover; FORS signs a 40-byte digest, the others 32 bytes.
+/// Fixed message the signatures cover. FORS signs its first ceil(K * A / 8) bytes (at most
+/// 40), the others the first 32.
 const MESSAGE: [u8; 40] = *b"keystone pq signature benchmark message.";
 /// SLH-DSA context string, as in zakura-core/common.
 const SLH_DSA_CONTEXT: &[u8] = b"Zcash/PQ/spend/v1";
@@ -149,19 +165,28 @@ fn wots_digest() -> MessageDigest {
     MessageDigest::from_bytes(core::array::from_fn(|i| MESSAGE[i]))
 }
 
-struct Fors;
+/// FORS with `K` trees of height `A` and `N`-byte hashes, signing an `L`-byte digest
+/// (`L` must be ceil(K * A / 8); another value fails to compile).
+struct Fors<const K: usize, const A: usize, const N: usize, const L: usize>;
 
-impl Bench for Fors {
-    type SigningKey = fors::SigningKey;
-    type VerifyingKey = fors::VerifyingKey;
-    type Signature = fors::Signature;
-    const SIGNATURE_BYTES: usize = fors::SIGNATURE_BYTES;
-    const PUBLIC_KEY_BYTES: usize = fors::VERIFYING_KEY_BYTES;
+impl<const K: usize, const A: usize, const N: usize, const L: usize> Fors<K, A, N, L> {
+    fn digest() -> fors::IndexDigest<K, A> {
+        fors::IndexDigest::from_bytes::<L>(core::array::from_fn(|i| MESSAGE[i]))
+    }
+}
+
+impl<const K: usize, const A: usize, const N: usize, const L: usize> Bench for Fors<K, A, N, L> {
+    type SigningKey = fors::SigningKey<K, A, N>;
+    type VerifyingKey = fors::VerifyingKey<K, A, N>;
+    type Signature = fors::Signature<K, A, N>;
+    const SIGNATURE_BYTES: usize = fors::Signature::<K, A, N>::BYTES;
+    const PUBLIC_KEY_BYTES: usize = fors::VerifyingKey::<K, A, N>::BYTES;
 
     fn keygen(iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
+        let (secret, public) = (seed(3, iteration), seed(4, iteration));
         let key = fors::SigningKey::from_seeds(
-            SecretSeed::from_bytes(seed(3, iteration)),
-            PublicSeed::from_bytes(seed(4, iteration)),
+            SecretSeed::from_bytes(core::array::from_fn(|i| secret[i])),
+            PublicSeed::from_bytes(core::array::from_fn(|i| public[i])),
         )
         .expect("the secret and public seeds differ");
         let public = key.verifying_key();
@@ -169,12 +194,11 @@ impl Bench for Fors {
     }
 
     fn sign(key: Self::SigningKey) -> Self::Signature {
-        key.sign_digest(&fors::IndexDigest::from_bytes(MESSAGE))
+        key.sign_digest(&Self::digest())
     }
 
     fn verify(key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
-        key.verify_digest(&fors::IndexDigest::from_bytes(MESSAGE), signature)
-            .is_ok()
+        key.verify_digest(&Self::digest(), signature).is_ok()
     }
 }
 
@@ -318,6 +342,16 @@ mod tests {
         let signature =
             SlhDsa::<slh_dsa::Sha2_128f>::sign(SlhDsa::<slh_dsa::Sha2_128f>::keygen(0).0);
         assert_eq!(signature.to_bytes().len(), 17_088);
+    }
+
+    #[test]
+    fn fors_shapes_have_the_expected_sizes() {
+        assert_eq!(<Fors<35, 9, 32, 40> as Bench>::SIGNATURE_BYTES, 11_200);
+        assert_eq!(<Fors<22, 14, 32, 39> as Bench>::SIGNATURE_BYTES, 10_560);
+        assert_eq!(<Fors<16, 16, 32, 32> as Bench>::SIGNATURE_BYTES, 8_704);
+        assert_eq!(<Fors<14, 12, 16, 21> as Bench>::SIGNATURE_BYTES, 2_912);
+        assert_eq!(<Fors<35, 9, 32, 40> as Bench>::PUBLIC_KEY_BYTES, 64);
+        assert_eq!(<Fors<14, 12, 16, 21> as Bench>::PUBLIC_KEY_BYTES, 32);
     }
 
     #[test]
