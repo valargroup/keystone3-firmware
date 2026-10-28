@@ -31,11 +31,13 @@ pub enum Scheme {
     Fors128s,
     SlhDsa128s,
     SlhDsa128f,
+    SlhDsa192s,
+    SlhDsa192f,
     SlhDsa256s,
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 10] = [
+    pub const ALL: [Scheme; 12] = [
         Scheme::Wots,
         Scheme::Fors256f,
         Scheme::Fors256s,
@@ -45,6 +47,8 @@ impl Scheme {
         Scheme::Fors128s,
         Scheme::SlhDsa128s,
         Scheme::SlhDsa128f,
+        Scheme::SlhDsa192s,
+        Scheme::SlhDsa192f,
         Scheme::SlhDsa256s,
     ];
 
@@ -60,6 +64,8 @@ impl Scheme {
             Scheme::Fors128s => c"FORS-128s",
             Scheme::SlhDsa128s => c"SLH-128s",
             Scheme::SlhDsa128f => c"SLH-128f",
+            Scheme::SlhDsa192s => c"SLH-192s",
+            Scheme::SlhDsa192f => c"SLH-192f",
             Scheme::SlhDsa256s => c"SLH-256s",
         }
     }
@@ -82,6 +88,8 @@ impl Scheme {
             Scheme::Fors128s => measure::<Fors<14, 12, 16, 21>>(iterations, now_ns),
             Scheme::SlhDsa128s => measure::<SlhDsa<slh_dsa::Sha2_128s>>(iterations, now_ns),
             Scheme::SlhDsa128f => measure::<SlhDsa<slh_dsa::Sha2_128f>>(iterations, now_ns),
+            Scheme::SlhDsa192s => measure::<SlhDsa<slh_dsa::Sha2_192s>>(iterations, now_ns),
+            Scheme::SlhDsa192f => measure::<SlhDsa<slh_dsa::Sha2_192f>>(iterations, now_ns),
             Scheme::SlhDsa256s => measure::<SlhDsa<slh_dsa::Sha2_256s>>(iterations, now_ns),
         }
     }
@@ -220,6 +228,16 @@ impl SlhDsaSizes for slh_dsa::Sha2_128s {
 impl SlhDsaSizes for slh_dsa::Sha2_128f {
     const N: usize = 16;
     const SIGNATURE_BYTES: usize = 17_088;
+}
+
+impl SlhDsaSizes for slh_dsa::Sha2_192s {
+    const N: usize = 24;
+    const SIGNATURE_BYTES: usize = 16_224;
+}
+
+impl SlhDsaSizes for slh_dsa::Sha2_192f {
+    const N: usize = 24;
+    const SIGNATURE_BYTES: usize = 35_664;
 }
 
 impl SlhDsaSizes for slh_dsa::Sha2_256s {
