@@ -13,28 +13,26 @@
 #include "task.h"
 #include "mhscpu.h"
 #include "psram_heap_4.h"
+#include "drv_gd25qxx.h"
+#include "flash_address.h"
 #endif
 
 // slh-dsa builds each signature on the stack and copies it several times on the way out, so
-// the large SLH-DSA sets need up to about 200 KB (pq_bench_stack_bytes). The SRAM heap has
-// less than that free, so the stack lives in PSRAM, allocated on the first run and kept for
-// later ones. FreeRTOS counts the stack in 16-bit words of 4 bytes, so it cannot exceed
-// 256 KB - 4.
+// SLH-DSA-SHA2-192f needs about 200 KB of stack. The SRAM heap has less than that free, so the
+// stack lives in PSRAM, allocated on the first run and kept for later ones. FreeRTOS counts the
+// stack in 16-bit words of 4 bytes, so it cannot exceed 256 KB - 4.
 #define PQ_BENCH_STACK_BYTES        (240 * 1024)
-// The C frames below the Rust call.
-#define PQ_BENCH_STACK_MARGIN_BYTES (4 * 1024)
 // Above this the cycle counter (32 bits at 204 MHz, about 21 s) may have wrapped, so elapsed
 // time comes from the 1 ms tick instead.
 #define PQ_BENCH_CYCLE_LIMIT_MS     10000
+#define PQ_BENCH_RECORD_MAGIC       0x50514231  // "PQB1"
 
 static volatile PqBenchState_t g_pqBenchState = PQ_BENCH_IDLE;
-static PqBenchResult_t g_pqBenchResults[PQ_BENCH_MAX_SCHEMES];
-static uint32_t g_pqBenchResultCount = 0;
 static int32_t g_pqBenchScheme;
 static uint32_t g_pqBenchIterations;
-static uint32_t g_pqBenchStackBytes;
-static volatile int32_t g_pqBenchCurrent = -1;
 static char g_pqBenchError[96];
+static PqBenchRecord_t g_pqBenchRecord;
+static bool g_pqBenchRecordLoaded;
 
 #ifdef COMPILE_SIMULATOR
 
@@ -43,6 +41,14 @@ static uint64_t PqBenchNowNs(void)
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static void LoadRecord(void)
+{
+}
+
+static void SaveRecord(void)
+{
 }
 
 #else
@@ -76,7 +82,40 @@ static uint64_t PqBenchNowNs(void)
     return nowNs;
 }
 
+static void LoadRecord(void)
+{
+    Gd25FlashReadBuffer(SPI_FLASH_ADDR_PQ_BENCH, (uint8_t *)&g_pqBenchRecord, sizeof(g_pqBenchRecord));
+}
+
+static void SaveRecord(void)
+{
+    Gd25FlashSectorErase(SPI_FLASH_ADDR_PQ_BENCH);
+    Gd25FlashWriteBuffer(SPI_FLASH_ADDR_PQ_BENCH, (const uint8_t *)&g_pqBenchRecord, sizeof(g_pqBenchRecord));
+}
+
 #endif
+
+_Static_assert(sizeof(PqBenchRecord_t) <= 0x1000, "the record must fit one flash sector");
+
+static void EnsureRecordLoaded(void)
+{
+    if (g_pqBenchRecordLoaded) {
+        return;
+    }
+    g_pqBenchRecordLoaded = true;
+    LoadRecord();
+    if (g_pqBenchRecord.magic != PQ_BENCH_RECORD_MAGIC ||
+            g_pqBenchRecord.resultCount > PQ_BENCH_MAX_SCHEMES ||
+            g_pqBenchRecord.scheme >= pq_bench_scheme_count() || g_pqBenchRecord.step > 2) {
+        memset(&g_pqBenchRecord, 0, sizeof(g_pqBenchRecord));
+        return;
+    }
+    if (g_pqBenchRecord.running) {
+        printf("pqbench,last_run_reset_during,%s,%s,%lu,%lu\r\n", pq_bench_scheme_name(g_pqBenchRecord.scheme),
+               PqBenchStepName(g_pqBenchRecord.step), (unsigned long)g_pqBenchRecord.iteration + 1,
+               (unsigned long)g_pqBenchRecord.iterations);
+    }
+}
 
 static unsigned long ToMicros(uint64_t ns)
 {
@@ -100,45 +139,47 @@ static void PrintResult(const PqBenchResult_t *result)
            (unsigned long)r->signature_bytes, (unsigned long)r->public_key_bytes);
 }
 
+// Called before each step, outside the timed part. Saving the step first means a reset
+// during it leaves the step in flash.
+static void PqBenchProgress(uint32_t step, uint32_t iteration)
+{
+    g_pqBenchRecord.step = step;
+    g_pqBenchRecord.iteration = iteration;
+    SaveRecord();
+    printf("pqbench,step,%s,%s,%lu,%lu\r\n", pq_bench_scheme_name(g_pqBenchRecord.scheme), PqBenchStepName(step),
+           (unsigned long)iteration + 1, (unsigned long)g_pqBenchRecord.iterations);
+}
+
 static void PqBenchRun(void)
 {
-    uint32_t count = pq_bench_scheme_count();
-    uint32_t first = 0, last = count - 1;
+    uint32_t first = 0, last = pq_bench_scheme_count() - 1;
 
     if (g_pqBenchScheme != PQ_BENCH_ALL_SCHEMES) {
         first = last = (uint32_t)g_pqBenchScheme;
     }
-    g_pqBenchResultCount = 0;
+    memset(&g_pqBenchRecord, 0, sizeof(g_pqBenchRecord));
+    g_pqBenchRecord.magic = PQ_BENCH_RECORD_MAGIC;
+    g_pqBenchRecord.running = 1;
+    g_pqBenchRecord.iterations = g_pqBenchIterations;
     printf("pqbench,scheme,n,keygen_median_us,keygen_min_us,keygen_max_us,"
            "sign_median_us,sign_min_us,sign_max_us,verify_median_us,verify_min_us,verify_max_us,"
            "signature_bytes,public_key_bytes\r\n");
-    for (uint32_t scheme = first; scheme <= last && g_pqBenchResultCount < PQ_BENCH_MAX_SCHEMES; scheme++) {
-        PqBenchResult_t *result = &g_pqBenchResults[g_pqBenchResultCount];
-        uint32_t iterations = g_pqBenchIterations ? g_pqBenchIterations : pq_bench_default_iterations(scheme);
+    for (uint32_t scheme = first; scheme <= last; scheme++) {
+        PqBenchResult_t *result = &g_pqBenchRecord.results[g_pqBenchRecord.resultCount];
 
-        memset(result, 0, sizeof(*result));
+        g_pqBenchRecord.scheme = scheme;
         result->scheme = scheme;
-        if (pq_bench_stack_bytes(scheme) + PQ_BENCH_STACK_MARGIN_BYTES > g_pqBenchStackBytes) {
-            result->status = PQ_BENCH_SKIPPED_STACK;
-            g_pqBenchResultCount++;
-            printf("pqbench,%s,skipped,needs %lu KB of stack; the task has %lu KB\r\n",
-                   pq_bench_scheme_name(scheme), (unsigned long)(pq_bench_stack_bytes(scheme) / 1024),
-                   (unsigned long)(g_pqBenchStackBytes / 1024));
-            continue;
-        }
-        // Printed before the run, so a crash shows which scheme caused it.
-        printf("pqbench,start,%s\r\n", pq_bench_scheme_name(scheme));
-        g_pqBenchCurrent = (int32_t)scheme;
-        result->status = pq_bench_run(scheme, iterations, PqBenchNowNs, &result->report);
-        g_pqBenchResultCount++;
+        result->status = pq_bench_run(scheme, g_pqBenchIterations, PqBenchNowNs, PqBenchProgress, &result->report);
+        g_pqBenchRecord.resultCount++;
         PrintResult(result);
     }
+    g_pqBenchRecord.running = 0;
+    SaveRecord();
 #ifndef COMPILE_SIMULATOR
     printf("pqbench,memory,stack_free_bytes=%lu,heap_min_free_bytes=%lu\r\n",
            (unsigned long)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
            (unsigned long)xPortGetMinimumEverFreeHeapSize());
 #endif
-    g_pqBenchCurrent = -1;
     printf("pqbench,done\r\n");
 }
 
@@ -172,13 +213,15 @@ static bool PqBenchCreateTask(void)
                  PQ_BENCH_STACK_BYTES / 1024, (unsigned long)(PsramGetFreeHeapSize() / 1024));
         return false;
     }
+    // Below every other task but the idle task, so the run never holds up the rest of the
+    // firmware; signing only slows down while something else needs the CPU.
     const osThreadAttr_t attributes = {
         .name = "PqBenchTask",
         .cb_mem = &g_pqBenchTaskControl,
         .cb_size = sizeof(g_pqBenchTaskControl),
         .stack_mem = stack,
         .stack_size = PQ_BENCH_STACK_BYTES,
-        .priority = (osPriority_t)osPriorityBelowNormal,
+        .priority = (osPriority_t)(osPriorityLow - 1),
     };
     g_pqBenchTask = osThreadNew(PqBenchTask, NULL, &attributes);
     if (g_pqBenchTask == NULL) {
@@ -192,6 +235,7 @@ static bool PqBenchCreateTask(void)
 
 bool PqBenchStart(int32_t scheme, uint32_t iterations)
 {
+    EnsureRecordLoaded();
     g_pqBenchError[0] = '\0';
     if (g_pqBenchState == PQ_BENCH_RUNNING) {
         snprintf(g_pqBenchError, sizeof(g_pqBenchError), "A run is already in progress.");
@@ -204,9 +248,8 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations)
         return false;
     }
     g_pqBenchScheme = scheme;
-    g_pqBenchIterations = iterations;
+    g_pqBenchIterations = iterations ? iterations : PQ_BENCH_DEFAULT_ITERATIONS;
 #ifdef COMPILE_SIMULATOR
-    g_pqBenchStackBytes = UINT32_MAX;
     g_pqBenchState = PQ_BENCH_RUNNING;
     PqBenchRun();
     g_pqBenchState = PQ_BENCH_DONE;
@@ -215,8 +258,6 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations)
         printf("pqbench,error,%s\r\n", g_pqBenchError);
         return false;
     }
-    g_pqBenchStackBytes = PQ_BENCH_STACK_BYTES;
-    printf("pqbench,stack_bytes=%lu,in=psram\r\n", (unsigned long)g_pqBenchStackBytes);
     g_pqBenchState = PQ_BENCH_RUNNING;
     g_pqBenchRequested = true;
 #endif
@@ -228,20 +269,27 @@ const char *PqBenchGetError(void)
     return g_pqBenchError;
 }
 
-int32_t PqBenchGetCurrentScheme(void)
-{
-    return g_pqBenchCurrent;
-}
-
 PqBenchState_t PqBenchGetState(void)
 {
     return g_pqBenchState;
 }
 
-uint32_t PqBenchGetResults(const PqBenchResult_t **results)
+const PqBenchRecord_t *PqBenchGetRecord(void)
 {
-    *results = g_pqBenchResults;
-    return g_pqBenchState == PQ_BENCH_DONE ? g_pqBenchResultCount : 0;
+    EnsureRecordLoaded();
+    return g_pqBenchRecord.magic == PQ_BENCH_RECORD_MAGIC ? &g_pqBenchRecord : NULL;
+}
+
+const char *PqBenchStepName(uint32_t step)
+{
+    switch (step) {
+    case 0:
+        return "keygen";
+    case 1:
+        return "sign";
+    default:
+        return "verify";
+    }
 }
 
 #endif

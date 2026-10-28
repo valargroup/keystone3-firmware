@@ -1,6 +1,6 @@
 //! C entry points for the hash-based signature benchmark (`app_pq_bench`).
 
-use app_pq_bench::{Error, Report, Scheme, Stats};
+use app_pq_bench::{Error, Report, Scheme, Stats, Step};
 use cty::c_char;
 
 #[repr(C)]
@@ -40,25 +40,10 @@ pub extern "C" fn pq_bench_scheme_name(scheme: u32) -> *const c_char {
     }
 }
 
-/// Iterations for a default run of the scheme, or 0 for an unknown index.
-#[no_mangle]
-pub extern "C" fn pq_bench_default_iterations(scheme: u32) -> u32 {
-    Scheme::ALL
-        .get(scheme as usize)
-        .map_or(0, |scheme| scheme.default_iterations())
-}
-
-/// Stack, in bytes, a run of the scheme needs (an upper bound), or 0 for an unknown index.
-#[no_mangle]
-pub extern "C" fn pq_bench_stack_bytes(scheme: u32) -> u32 {
-    Scheme::ALL
-        .get(scheme as usize)
-        .map_or(0, |scheme| scheme.stack_bytes())
-}
-
 /// Times `iterations` key generations, signatures and verifications of one scheme.
 ///
-/// `now_ns` returns a monotonic time in nanoseconds. On success fills `out` and returns
+/// `now_ns` returns a monotonic time in nanoseconds. `progress(step, iteration)` is called
+/// before each step (0 keygen, 1 sign, 2 verify), outside the timed part. On success fills `out` and returns
 /// `PQ_BENCH_OK`; otherwise returns a negative `PQ_BENCH_*` code and leaves `out` unchanged.
 ///
 /// # Safety
@@ -68,12 +53,17 @@ pub unsafe extern "C" fn pq_bench_run(
     scheme: u32,
     iterations: u32,
     now_ns: extern "C" fn() -> u64,
+    progress: extern "C" fn(step: u32, iteration: u32),
     out: *mut PqBenchReport,
 ) -> i32 {
     let Some(&scheme) = Scheme::ALL.get(scheme as usize) else {
         return PQ_BENCH_UNKNOWN_SCHEME;
     };
-    match scheme.run(iterations, &mut || now_ns()) {
+    match scheme.run(
+        iterations,
+        &mut || now_ns(),
+        &mut |step: Step, iteration| progress(step as u32, iteration),
+    ) {
         Ok(report) => {
             *out = report.into();
             PQ_BENCH_OK
