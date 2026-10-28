@@ -6,7 +6,7 @@ verification of hash-based signatures on the device:
 | Name | Scheme | Library |
 |---|---|---|
 | `WOTS+` | RFC 8391 WOTS+, n=32, w=16, SHA-256 | `pq-crypto` |
-| `FORS-256f`, `FORS-256s`, `FORS-128s` | FIPS 205 FORS with the trees, height and hash length of that SLH-DSA-SHA2 set (35×9, 22×14, 14×12) | `pq-crypto` (prototype) |
+| `FORS-256f`, `FORS-256s`, `FORS-192f`, `FORS-192s`, `FORS-128s` | FIPS 205 FORS with the trees, height and hash length of that SLH-DSA-SHA2 set (35×9, 22×14, 33×8, 17×14, 14×12) | `pq-crypto` (prototype) |
 | `FORS-16x16` | FORS with 16 trees of height 16 and 32-byte hashes, used by no SLH-DSA set | `pq-crypto` (prototype) |
 | `SLH-128s`, `SLH-128f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
 

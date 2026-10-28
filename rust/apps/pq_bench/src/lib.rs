@@ -24,6 +24,8 @@ pub enum Scheme {
     /// FORS shapes, named by the SLH-DSA parameter set that uses them.
     Fors256f,
     Fors256s,
+    Fors192f,
+    Fors192s,
     /// 16 trees of height 16 with 32-byte hashes; no SLH-DSA set uses it.
     Fors16x16,
     Fors128s,
@@ -33,10 +35,12 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 8] = [
+    pub const ALL: [Scheme; 10] = [
         Scheme::Wots,
         Scheme::Fors256f,
         Scheme::Fors256s,
+        Scheme::Fors192f,
+        Scheme::Fors192s,
         Scheme::Fors16x16,
         Scheme::Fors128s,
         Scheme::SlhDsa128s,
@@ -50,6 +54,8 @@ impl Scheme {
             Scheme::Wots => c"WOTS+",
             Scheme::Fors256f => c"FORS-256f",
             Scheme::Fors256s => c"FORS-256s",
+            Scheme::Fors192f => c"FORS-192f",
+            Scheme::Fors192s => c"FORS-192s",
             Scheme::Fors16x16 => c"FORS-16x16",
             Scheme::Fors128s => c"FORS-128s",
             Scheme::SlhDsa128s => c"SLH-128s",
@@ -70,6 +76,8 @@ impl Scheme {
             Scheme::Wots => measure::<Wots>(iterations, now_ns),
             Scheme::Fors256f => measure::<Fors<35, 9, 32, 40>>(iterations, now_ns),
             Scheme::Fors256s => measure::<Fors<22, 14, 32, 39>>(iterations, now_ns),
+            Scheme::Fors192f => measure::<Fors<33, 8, 24, 33>>(iterations, now_ns),
+            Scheme::Fors192s => measure::<Fors<17, 14, 24, 30>>(iterations, now_ns),
             Scheme::Fors16x16 => measure::<Fors<16, 16, 32, 32>>(iterations, now_ns),
             Scheme::Fors128s => measure::<Fors<14, 12, 16, 21>>(iterations, now_ns),
             Scheme::SlhDsa128s => measure::<SlhDsa<slh_dsa::Sha2_128s>>(iterations, now_ns),
@@ -344,9 +352,12 @@ mod tests {
     fn fors_shapes_have_the_expected_sizes() {
         assert_eq!(<Fors<35, 9, 32, 40> as Bench>::SIGNATURE_BYTES, 11_200);
         assert_eq!(<Fors<22, 14, 32, 39> as Bench>::SIGNATURE_BYTES, 10_560);
+        assert_eq!(<Fors<33, 8, 24, 33> as Bench>::SIGNATURE_BYTES, 7_128);
+        assert_eq!(<Fors<17, 14, 24, 30> as Bench>::SIGNATURE_BYTES, 6_120);
         assert_eq!(<Fors<16, 16, 32, 32> as Bench>::SIGNATURE_BYTES, 8_704);
         assert_eq!(<Fors<14, 12, 16, 21> as Bench>::SIGNATURE_BYTES, 2_912);
         assert_eq!(<Fors<35, 9, 32, 40> as Bench>::PUBLIC_KEY_BYTES, 64);
+        assert_eq!(<Fors<33, 8, 24, 33> as Bench>::PUBLIC_KEY_BYTES, 48);
         assert_eq!(<Fors<14, 12, 16, 21> as Bench>::PUBLIC_KEY_BYTES, 32);
     }
 
