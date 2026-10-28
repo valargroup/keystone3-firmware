@@ -58,14 +58,10 @@ impl Scheme {
         }
     }
 
-    /// Iterations for a default run: one for the slow shapes (SLH-DSA "s" sets and the
-    /// tall FORS trees), whose signing takes seconds to tens of seconds on the device, so
-    /// a full pass stays within a few minutes.
+    /// Iterations for a default run. Every scheme gets the same count so their medians are
+    /// equally reliable; three keeps a full pass to several minutes on the device.
     pub fn default_iterations(self) -> u32 {
-        match self {
-            Scheme::SlhDsa128s | Scheme::SlhDsa256s | Scheme::Fors256s | Scheme::Fors16x16 => 1,
-            Scheme::Wots | Scheme::Fors256f | Scheme::Fors128s | Scheme::SlhDsa128f => 5,
-        }
+        3
     }
 
     /// Runs `iterations` key generations, signatures and verifications.

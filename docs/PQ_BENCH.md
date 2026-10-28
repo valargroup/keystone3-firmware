@@ -21,8 +21,8 @@ signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with sof
 
 ## Running it
 
-- **Device screen**: Settings → About → PQ Bench → Run. It runs every scheme with the default
-  iterations (one for SLH-128s, SLH-256s, FORS-256s and FORS-16x16, five for the others) and shows the median times.
+- **Device screen**: Settings → About → PQ Bench → Run. It runs every scheme three times and
+  shows the median times.
 - **UART** (debug builds, UART0 at 512000 baud): send `#pq bench:all 10` followed by CR LF,
   or a scheme name or index in place of `all`. The iteration count is optional; `#pq bench:`
   with no arguments lists the schemes. Results are CSV lines starting with `pqbench,`, with
