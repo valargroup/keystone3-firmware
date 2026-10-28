@@ -36,6 +36,11 @@ static void ShowResults(void)
 
     for (uint32_t i = 0; i < count && used < sizeof(text); i++) {
         const char *name = pq_bench_scheme_name(results[i].scheme);
+        if (results[i].status == PQ_BENCH_SKIPPED_STACK) {
+            used += snprintf(text + used, sizeof(text) - used, "%s  skipped: needs %luKB stack\n", name,
+                             (unsigned long)(pq_bench_stack_bytes(results[i].scheme) / 1024));
+            continue;
+        }
         if (results[i].status != PQ_BENCH_OK) {
             used += snprintf(text + used, sizeof(text) - used, "%s  error %d\n", name, (int)results[i].status);
             continue;
@@ -53,6 +58,13 @@ static void ShowResults(void)
 static void PollTimerHandler(lv_timer_t *timer)
 {
     if (PqBenchGetState() == PQ_BENCH_RUNNING) {
+        int32_t current = PqBenchGetCurrentScheme();
+        if (current >= 0) {
+            char text[96];
+            snprintf(text, sizeof(text), "Running %s (%ld of %lu)...", pq_bench_scheme_name((uint32_t)current),
+                     (long)current + 1, (unsigned long)pq_bench_scheme_count());
+            lv_label_set_text(g_resultLabel, text);
+        }
         return;
     }
     lv_timer_del(timer);

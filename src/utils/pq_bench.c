@@ -14,8 +14,15 @@
 #include "mhscpu.h"
 #endif
 
-// SLH-DSA-256s returns its ~29 KB signature by value, and signing keeps more state on the stack.
-#define PQ_BENCH_STACK_BYTES        (128 * 1024)
+// slh-dsa builds each signature on the stack and copies it several times on the way out, so
+// the large SLH-DSA sets need up to about 200 KB (pq_bench_stack_bytes). The task takes the
+// largest of these that leaves PQ_BENCH_HEAP_RESERVE_BYTES of the heap free, and skips the
+// schemes that would not fit. FreeRTOS counts the stack in 16-bit words of 4 bytes, so it
+// cannot exceed 256 KB - 4.
+static const uint32_t g_pqBenchStackChoices[] = {240 * 1024, 192 * 1024, 128 * 1024};
+#define PQ_BENCH_HEAP_RESERVE_BYTES (64 * 1024)
+// The C frames below the Rust call.
+#define PQ_BENCH_STACK_MARGIN_BYTES (4 * 1024)
 // Above this the cycle counter (32 bits at 204 MHz, about 21 s) may have wrapped, so elapsed
 // time comes from the 1 ms tick instead.
 #define PQ_BENCH_CYCLE_LIMIT_MS     10000
@@ -25,6 +32,8 @@ static PqBenchResult_t g_pqBenchResults[PQ_BENCH_MAX_SCHEMES];
 static uint32_t g_pqBenchResultCount = 0;
 static int32_t g_pqBenchScheme;
 static uint32_t g_pqBenchIterations;
+static uint32_t g_pqBenchStackBytes;
+static volatile int32_t g_pqBenchCurrent = -1;
 
 #ifdef COMPILE_SIMULATOR
 
@@ -108,6 +117,17 @@ static void PqBenchRun(void)
 
         memset(result, 0, sizeof(*result));
         result->scheme = scheme;
+        if (pq_bench_stack_bytes(scheme) + PQ_BENCH_STACK_MARGIN_BYTES > g_pqBenchStackBytes) {
+            result->status = PQ_BENCH_SKIPPED_STACK;
+            g_pqBenchResultCount++;
+            printf("pqbench,%s,skipped,needs %lu KB of stack; the task has %lu KB\r\n",
+                   pq_bench_scheme_name(scheme), (unsigned long)(pq_bench_stack_bytes(scheme) / 1024),
+                   (unsigned long)(g_pqBenchStackBytes / 1024));
+            continue;
+        }
+        // Printed before the run, so a crash shows which scheme caused it.
+        printf("pqbench,start,%s\r\n", pq_bench_scheme_name(scheme));
+        g_pqBenchCurrent = (int32_t)scheme;
         result->status = pq_bench_run(scheme, iterations, PqBenchNowNs, &result->report);
         g_pqBenchResultCount++;
         PrintResult(result);
@@ -117,6 +137,7 @@ static void PqBenchRun(void)
            (unsigned long)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
            (unsigned long)xPortGetMinimumEverFreeHeapSize());
 #endif
+    g_pqBenchCurrent = -1;
     printf("pqbench,done\r\n");
 }
 
@@ -142,24 +163,40 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations)
     }
     g_pqBenchScheme = scheme;
     g_pqBenchIterations = iterations;
-    g_pqBenchState = PQ_BENCH_RUNNING;
 #ifdef COMPILE_SIMULATOR
+    g_pqBenchStackBytes = UINT32_MAX;
+    g_pqBenchState = PQ_BENCH_RUNNING;
     PqBenchRun();
     g_pqBenchState = PQ_BENCH_DONE;
 #else
+    size_t freeHeap = xPortGetFreeHeapSize();
+    g_pqBenchStackBytes = 0;
+    for (size_t i = 0; i < sizeof(g_pqBenchStackChoices) / sizeof(g_pqBenchStackChoices[0]); i++) {
+        if (freeHeap >= g_pqBenchStackChoices[i] + PQ_BENCH_HEAP_RESERVE_BYTES) {
+            g_pqBenchStackBytes = g_pqBenchStackChoices[i];
+            break;
+        }
+    }
+    printf("pqbench,stack_bytes=%lu,free_heap_bytes=%lu\r\n", (unsigned long)g_pqBenchStackBytes,
+           (unsigned long)freeHeap);
     const osThreadAttr_t attributes = {
         .name = "PqBenchTask",
-        .stack_size = PQ_BENCH_STACK_BYTES,
+        .stack_size = g_pqBenchStackBytes,
         .priority = (osPriority_t)osPriorityBelowNormal,
     };
-    if (osThreadNew(PqBenchTask, NULL, &attributes) == NULL) {
-        printf("pqbench,error,cannot create a task with a %d byte stack; free heap %lu\r\n",
-               PQ_BENCH_STACK_BYTES, (unsigned long)xPortGetFreeHeapSize());
+    g_pqBenchState = PQ_BENCH_RUNNING;
+    if (g_pqBenchStackBytes == 0 || osThreadNew(PqBenchTask, NULL, &attributes) == NULL) {
+        printf("pqbench,error,cannot create the task; free heap %lu\r\n", (unsigned long)freeHeap);
         g_pqBenchState = PQ_BENCH_IDLE;
         return false;
     }
 #endif
     return true;
+}
+
+int32_t PqBenchGetCurrentScheme(void)
+{
+    return g_pqBenchCurrent;
 }
 
 PqBenchState_t PqBenchGetState(void)

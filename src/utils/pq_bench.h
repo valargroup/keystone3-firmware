@@ -12,6 +12,8 @@
 
 #define PQ_BENCH_ALL_SCHEMES        (-1)
 #define PQ_BENCH_MAX_SCHEMES        12
+// Result status for a scheme that needs more stack than the benchmark task has.
+#define PQ_BENCH_SKIPPED_STACK      (-100)
 
 typedef enum {
     PQ_BENCH_IDLE,
@@ -32,6 +34,9 @@ typedef struct {
 bool PqBenchStart(int32_t scheme, uint32_t iterations);
 
 PqBenchState_t PqBenchGetState(void);
+
+// The scheme running now, or -1 between schemes and when idle.
+int32_t PqBenchGetCurrentScheme(void);
 
 // Results of the last run, in run order; returns how many are valid.
 uint32_t PqBenchGetResults(const PqBenchResult_t **results);

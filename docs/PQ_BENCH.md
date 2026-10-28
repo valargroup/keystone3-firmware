@@ -32,7 +32,12 @@ signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with sof
 - **Simulator**: `PQ_BENCH="all 5" ./build/simulator` prints the same CSV and exits without
   opening a window. Simulator times measure the host computer, not the device.
 
-On the device the benchmark runs on its own task with a 128 KB stack at below-normal priority.
+On the device the benchmark runs on its own task at below-normal priority. `slh-dsa` builds
+each signature on the stack and copies it several times, so the large SLH-DSA sets need up to
+about 200 KB of stack. The task takes 240, 192 or 128 KB, the largest that leaves 64 KB of the
+heap free, and skips (and reports) any scheme that needs more. A `pqbench,start,<scheme>` line
+before each scheme, and the screen's progress line, show which scheme was running if the device
+resets.
 Times come from the CPU cycle counter (204 MHz), or from the 1 ms tick for steps longer than 10 s.
 
 ## Measuring on a ForgeBox

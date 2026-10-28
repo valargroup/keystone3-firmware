@@ -76,6 +76,27 @@ impl Scheme {
         3
     }
 
+    /// Stack a run needs, in bytes: the most measured on a 64-bit host, plus 8 KB. `slh-dsa`
+    /// builds each signature on the stack and copies it several times on the way out, so
+    /// SLH-DSA needs about five times its signature size. Device frames are no larger than
+    /// the host's, so these are upper bounds there.
+    pub fn stack_bytes(self) -> u32 {
+        const KB: u32 = 1024;
+        match self {
+            Scheme::Wots
+            | Scheme::Fors256f
+            | Scheme::Fors256s
+            | Scheme::Fors192f
+            | Scheme::Fors192s
+            | Scheme::Fors16x16
+            | Scheme::Fors128s => 64 * KB,
+            Scheme::SlhDsa128s => 90 * KB,
+            Scheme::SlhDsa128f | Scheme::SlhDsa192s => 122 * KB,
+            Scheme::SlhDsa256s => 169 * KB,
+            Scheme::SlhDsa192f => 201 * KB,
+        }
+    }
+
     /// Runs `iterations` key generations, signatures and verifications.
     pub fn run(self, iterations: u32, now_ns: &mut dyn FnMut() -> u64) -> Result<Report, Error> {
         match self {

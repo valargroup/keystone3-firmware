@@ -48,6 +48,14 @@ pub extern "C" fn pq_bench_default_iterations(scheme: u32) -> u32 {
         .map_or(0, |scheme| scheme.default_iterations())
 }
 
+/// Stack, in bytes, a run of the scheme needs (an upper bound), or 0 for an unknown index.
+#[no_mangle]
+pub extern "C" fn pq_bench_stack_bytes(scheme: u32) -> u32 {
+    Scheme::ALL
+        .get(scheme as usize)
+        .map_or(0, |scheme| scheme.stack_bytes())
+}
+
 /// Times `iterations` key generations, signatures and verifications of one scheme.
 ///
 /// `now_ns` returns a monotonic time in nanoseconds. On success fills `out` and returns
