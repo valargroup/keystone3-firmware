@@ -34,8 +34,10 @@ signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with sof
 
 On the device the benchmark runs on its own task at below-normal priority. `slh-dsa` builds
 each signature on the stack and copies it several times, so the large SLH-DSA sets need up to
-about 200 KB of stack. The task takes 240, 192 or 128 KB, the largest that leaves 64 KB of the
-heap free, and skips (and reports) any scheme that needs more. A `pqbench,start,<scheme>` line
+about 200 KB of stack. The SRAM heap has less than that free, so the task's 240 KB stack lives
+in PSRAM, allocated on the first run and kept. Stack accesses may be slower than from SRAM, so
+compare device times with that in mind. A scheme that needs more stack than the task has is
+skipped and reported. A `pqbench,start,<scheme>` line
 before each scheme, and the screen's progress line, show which scheme was running if the device
 resets.
 Times come from the CPU cycle counter (204 MHz), or from the 1 ms tick for steps longer than 10 s.

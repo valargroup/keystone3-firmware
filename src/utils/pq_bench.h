@@ -35,6 +35,9 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations);
 
 PqBenchState_t PqBenchGetState(void);
 
+// Why the last PqBenchStart call returned false, for the screen; empty otherwise.
+const char *PqBenchGetError(void);
+
 // The scheme running now, or -1 between schemes and when idle.
 int32_t PqBenchGetCurrentScheme(void);
 

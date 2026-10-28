@@ -12,15 +12,15 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "mhscpu.h"
+#include "psram_heap_4.h"
 #endif
 
 // slh-dsa builds each signature on the stack and copies it several times on the way out, so
-// the large SLH-DSA sets need up to about 200 KB (pq_bench_stack_bytes). The task takes the
-// largest of these that leaves PQ_BENCH_HEAP_RESERVE_BYTES of the heap free, and skips the
-// schemes that would not fit. FreeRTOS counts the stack in 16-bit words of 4 bytes, so it
-// cannot exceed 256 KB - 4.
-static const uint32_t g_pqBenchStackChoices[] = {240 * 1024, 192 * 1024, 128 * 1024};
-#define PQ_BENCH_HEAP_RESERVE_BYTES (64 * 1024)
+// the large SLH-DSA sets need up to about 200 KB (pq_bench_stack_bytes). The SRAM heap has
+// less than that free, so the stack lives in PSRAM, allocated on the first run and kept for
+// later ones. FreeRTOS counts the stack in 16-bit words of 4 bytes, so it cannot exceed
+// 256 KB - 4.
+#define PQ_BENCH_STACK_BYTES        (240 * 1024)
 // The C frames below the Rust call.
 #define PQ_BENCH_STACK_MARGIN_BYTES (4 * 1024)
 // Above this the cycle counter (32 bits at 204 MHz, about 21 s) may have wrapped, so elapsed
@@ -34,6 +34,7 @@ static int32_t g_pqBenchScheme;
 static uint32_t g_pqBenchIterations;
 static uint32_t g_pqBenchStackBytes;
 static volatile int32_t g_pqBenchCurrent = -1;
+static char g_pqBenchError[96];
 
 #ifdef COMPILE_SIMULATOR
 
@@ -142,22 +143,63 @@ static void PqBenchRun(void)
 }
 
 #ifndef COMPILE_SIMULATOR
+static volatile bool g_pqBenchRequested;
+static osThreadId_t g_pqBenchTask;
+static StaticTask_t g_pqBenchTaskControl;
+
+// Waits for runs for the life of the firmware, so its PSRAM stack is never freed and reused.
 static void PqBenchTask(void *argument)
 {
     (void)argument;
-    PqBenchRun();
-    g_pqBenchState = PQ_BENCH_DONE;
-    osThreadExit();
+    while (1) {
+        if (g_pqBenchRequested) {
+            g_pqBenchRequested = false;
+            PqBenchRun();
+            g_pqBenchState = PQ_BENCH_DONE;
+        }
+        osDelay(100);
+    }
+}
+
+static bool PqBenchCreateTask(void)
+{
+    if (g_pqBenchTask != NULL) {
+        return true;
+    }
+    void *stack = PsramMalloc(PQ_BENCH_STACK_BYTES);
+    if (stack == NULL) {
+        snprintf(g_pqBenchError, sizeof(g_pqBenchError), "No %d KB of PSRAM for the stack (%lu KB free).",
+                 PQ_BENCH_STACK_BYTES / 1024, (unsigned long)(PsramGetFreeHeapSize() / 1024));
+        return false;
+    }
+    const osThreadAttr_t attributes = {
+        .name = "PqBenchTask",
+        .cb_mem = &g_pqBenchTaskControl,
+        .cb_size = sizeof(g_pqBenchTaskControl),
+        .stack_mem = stack,
+        .stack_size = PQ_BENCH_STACK_BYTES,
+        .priority = (osPriority_t)osPriorityBelowNormal,
+    };
+    g_pqBenchTask = osThreadNew(PqBenchTask, NULL, &attributes);
+    if (g_pqBenchTask == NULL) {
+        PsramFree(stack);
+        snprintf(g_pqBenchError, sizeof(g_pqBenchError), "Could not create the benchmark task.");
+        return false;
+    }
+    return true;
 }
 #endif
 
 bool PqBenchStart(int32_t scheme, uint32_t iterations)
 {
+    g_pqBenchError[0] = '\0';
     if (g_pqBenchState == PQ_BENCH_RUNNING) {
+        snprintf(g_pqBenchError, sizeof(g_pqBenchError), "A run is already in progress.");
         printf("pqbench,busy\r\n");
         return false;
     }
     if (scheme != PQ_BENCH_ALL_SCHEMES && (scheme < 0 || (uint32_t)scheme >= pq_bench_scheme_count())) {
+        snprintf(g_pqBenchError, sizeof(g_pqBenchError), "Unknown scheme %d.", (int)scheme);
         printf("pqbench,error,unknown scheme %d\r\n", (int)scheme);
         return false;
     }
@@ -169,29 +211,21 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations)
     PqBenchRun();
     g_pqBenchState = PQ_BENCH_DONE;
 #else
-    size_t freeHeap = xPortGetFreeHeapSize();
-    g_pqBenchStackBytes = 0;
-    for (size_t i = 0; i < sizeof(g_pqBenchStackChoices) / sizeof(g_pqBenchStackChoices[0]); i++) {
-        if (freeHeap >= g_pqBenchStackChoices[i] + PQ_BENCH_HEAP_RESERVE_BYTES) {
-            g_pqBenchStackBytes = g_pqBenchStackChoices[i];
-            break;
-        }
-    }
-    printf("pqbench,stack_bytes=%lu,free_heap_bytes=%lu\r\n", (unsigned long)g_pqBenchStackBytes,
-           (unsigned long)freeHeap);
-    const osThreadAttr_t attributes = {
-        .name = "PqBenchTask",
-        .stack_size = g_pqBenchStackBytes,
-        .priority = (osPriority_t)osPriorityBelowNormal,
-    };
-    g_pqBenchState = PQ_BENCH_RUNNING;
-    if (g_pqBenchStackBytes == 0 || osThreadNew(PqBenchTask, NULL, &attributes) == NULL) {
-        printf("pqbench,error,cannot create the task; free heap %lu\r\n", (unsigned long)freeHeap);
-        g_pqBenchState = PQ_BENCH_IDLE;
+    if (!PqBenchCreateTask()) {
+        printf("pqbench,error,%s\r\n", g_pqBenchError);
         return false;
     }
+    g_pqBenchStackBytes = PQ_BENCH_STACK_BYTES;
+    printf("pqbench,stack_bytes=%lu,in=psram\r\n", (unsigned long)g_pqBenchStackBytes);
+    g_pqBenchState = PQ_BENCH_RUNNING;
+    g_pqBenchRequested = true;
 #endif
     return true;
+}
+
+const char *PqBenchGetError(void)
+{
+    return g_pqBenchError;
 }
 
 int32_t PqBenchGetCurrentScheme(void)

@@ -78,7 +78,7 @@ static void RunHandler(lv_event_t *e)
     lv_label_set_text(g_resultLabel, "Running all schemes...\nSLH-128s and SLH-256s can take minutes.");
     lv_obj_add_state(g_runButton, LV_STATE_DISABLED);
     if (!PqBenchStart(PQ_BENCH_ALL_SCHEMES, 0)) {
-        lv_label_set_text(g_resultLabel, "Could not start; see the UART log.");
+        lv_label_set_text_fmt(g_resultLabel, "Could not start: %s", PqBenchGetError());
         lv_obj_clear_state(g_runButton, LV_STATE_DISABLED);
         return;
     }
