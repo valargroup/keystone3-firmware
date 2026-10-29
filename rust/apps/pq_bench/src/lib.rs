@@ -24,9 +24,9 @@ pub enum Scheme {
     SlhDsa192f,
     SlhDsa256s,
     /// leanSphincs over SHA-256 with one tree of height `h`, pruned to a kept subtree of height
-    /// `kept`, or with `kept == 0` a three-layer hypertree. zakura-core/common signs post-quantum
-    /// accounts with `h = 22, kept = 10`. The full key and `kept = 20` are left out: their trees
-    /// (32 MB and up) do not fit in the device's 8 MB of PSRAM.
+    /// `kept`, or with `kept == 0` a three-layer hypertree. The configurations are those
+    /// sphincs.art shows for a hardware wallet at its lowest and highest lifetime, 2^26 (`h = 22`)
+    /// and 2^32 (`h = 28`): "Uniform" (layered) and "Pruning" with the Ledger's subtree of 2^12.
     LeanSphincs {
         h: u8,
         kept: u8,
@@ -34,35 +34,15 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 29] = [
+    pub const ALL: [Scheme; 9] = [
         Scheme::SlhDsa128s,
         Scheme::SlhDsa128f,
         Scheme::SlhDsa192s,
         Scheme::SlhDsa192f,
         Scheme::SlhDsa256s,
-        Scheme::LeanSphincs { h: 22, kept: 8 },
-        Scheme::LeanSphincs { h: 22, kept: 10 },
         Scheme::LeanSphincs { h: 22, kept: 12 },
-        Scheme::LeanSphincs { h: 22, kept: 13 },
-        Scheme::LeanSphincs { h: 22, kept: 14 },
         Scheme::LeanSphincs { h: 22, kept: 0 },
-        Scheme::LeanSphincs { h: 24, kept: 8 },
-        Scheme::LeanSphincs { h: 24, kept: 10 },
-        Scheme::LeanSphincs { h: 24, kept: 12 },
-        Scheme::LeanSphincs { h: 24, kept: 13 },
-        Scheme::LeanSphincs { h: 24, kept: 14 },
-        Scheme::LeanSphincs { h: 24, kept: 0 },
-        Scheme::LeanSphincs { h: 26, kept: 8 },
-        Scheme::LeanSphincs { h: 26, kept: 10 },
-        Scheme::LeanSphincs { h: 26, kept: 12 },
-        Scheme::LeanSphincs { h: 26, kept: 13 },
-        Scheme::LeanSphincs { h: 26, kept: 14 },
-        Scheme::LeanSphincs { h: 26, kept: 0 },
-        Scheme::LeanSphincs { h: 28, kept: 8 },
-        Scheme::LeanSphincs { h: 28, kept: 10 },
         Scheme::LeanSphincs { h: 28, kept: 12 },
-        Scheme::LeanSphincs { h: 28, kept: 13 },
-        Scheme::LeanSphincs { h: 28, kept: 14 },
         Scheme::LeanSphincs { h: 28, kept: 0 },
     ];
 
@@ -74,29 +54,9 @@ impl Scheme {
             Scheme::SlhDsa192s => c"SLH-192s",
             Scheme::SlhDsa192f => c"SLH-192f",
             Scheme::SlhDsa256s => c"SLH-256s",
-            Scheme::LeanSphincs { h: 22, kept: 8 } => c"lean h22 b8",
-            Scheme::LeanSphincs { h: 22, kept: 10 } => c"lean h22 b10",
             Scheme::LeanSphincs { h: 22, kept: 12 } => c"lean h22 b12",
-            Scheme::LeanSphincs { h: 22, kept: 13 } => c"lean h22 b13",
-            Scheme::LeanSphincs { h: 22, kept: 14 } => c"lean h22 b14",
             Scheme::LeanSphincs { h: 22, kept: 0 } => c"lean h22 layer",
-            Scheme::LeanSphincs { h: 24, kept: 8 } => c"lean h24 b8",
-            Scheme::LeanSphincs { h: 24, kept: 10 } => c"lean h24 b10",
-            Scheme::LeanSphincs { h: 24, kept: 12 } => c"lean h24 b12",
-            Scheme::LeanSphincs { h: 24, kept: 13 } => c"lean h24 b13",
-            Scheme::LeanSphincs { h: 24, kept: 14 } => c"lean h24 b14",
-            Scheme::LeanSphincs { h: 24, kept: 0 } => c"lean h24 layer",
-            Scheme::LeanSphincs { h: 26, kept: 8 } => c"lean h26 b8",
-            Scheme::LeanSphincs { h: 26, kept: 10 } => c"lean h26 b10",
-            Scheme::LeanSphincs { h: 26, kept: 12 } => c"lean h26 b12",
-            Scheme::LeanSphincs { h: 26, kept: 13 } => c"lean h26 b13",
-            Scheme::LeanSphincs { h: 26, kept: 14 } => c"lean h26 b14",
-            Scheme::LeanSphincs { h: 26, kept: 0 } => c"lean h26 layer",
-            Scheme::LeanSphincs { h: 28, kept: 8 } => c"lean h28 b8",
-            Scheme::LeanSphincs { h: 28, kept: 10 } => c"lean h28 b10",
             Scheme::LeanSphincs { h: 28, kept: 12 } => c"lean h28 b12",
-            Scheme::LeanSphincs { h: 28, kept: 13 } => c"lean h28 b13",
-            Scheme::LeanSphincs { h: 28, kept: 14 } => c"lean h28 b14",
             Scheme::LeanSphincs { h: 28, kept: 0 } => c"lean h28 layer",
             Scheme::LeanSphincs { .. } => c"lean (unlisted)",
         }
