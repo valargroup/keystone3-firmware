@@ -5,17 +5,21 @@
 #include "pq_bench.h"
 
 // One row per scheme, each with its own Run button, so schemes run one at a time. Rows show
-// median times from the flash record; the UART log has min/max and sizes.
+// times from the flash record; the UART log has min/max and sizes. Two toggles in the header pick
+// where the stack lives and the task's priority for the next run.
 
 #ifdef FEATURE_PQ_BENCH
 
 #define PQ_BENCH_POLL_MS        500
-#define PQ_BENCH_HEADER_HEIGHT  96
-#define PQ_BENCH_ROW_HEIGHT     112
+#define PQ_BENCH_HEADER_HEIGHT  184
+#define PQ_BENCH_ROW_HEIGHT     156
 
 static PageWidget_t *g_pageWidget;
 static lv_obj_t *g_statusLabel;
 static lv_obj_t *g_rowLabels[PQ_BENCH_MAX_SCHEMES];
+static lv_obj_t *g_stackButton;
+static lv_obj_t *g_priorityButton;
+static uint32_t g_options = PQ_BENCH_DEFAULT_OPTIONS;
 static lv_obj_t *g_runButtons[PQ_BENCH_MAX_SCHEMES];
 static lv_timer_t *g_pollTimer;
 
@@ -54,6 +58,14 @@ static void FormatRow(char *out, size_t outLen, const PqBenchRecord_t *record, u
         snprintf(out, outLen, "Error %d", (int)result->status);
         return;
     }
+    uint32_t blocks = pq_bench_scheme_blocks(scheme);
+    if (blocks > 0) {
+        // Hundredths of a microsecond per 64-byte block.
+        uint64_t perBlock = result->report.sign.median_ns / blocks / 10;
+        snprintf(out, outLen, "%lu.%02luus per 64-byte block (%lu blocks)", (unsigned long)(perBlock / 100),
+                 (unsigned long)(perBlock % 100), (unsigned long)blocks);
+        return;
+    }
     char keygen[16], sign[16], verify[16];
     FormatDuration(keygen, sizeof(keygen), result->report.keygen.median_ns);
     FormatDuration(sign, sizeof(sign), result->report.sign.median_ns);
@@ -64,6 +76,14 @@ static void FormatRow(char *out, size_t outLen, const PqBenchRecord_t *record, u
     } else {
         snprintf(out, outLen, "keygen %s, sign %s, verify %s", keygen, sign, verify);
     }
+}
+
+static void UpdateToggles(void)
+{
+    lv_label_set_text(lv_obj_get_child(g_stackButton, 0),
+                      (g_options & PQ_BENCH_STACK_ON_CHIP) ? "Stack: on-chip" : "Stack: PSRAM");
+    lv_label_set_text(lv_obj_get_child(g_priorityButton, 0),
+                      (g_options & PQ_BENCH_HIGH_PRIORITY) ? "Priority: high" : "Priority: low");
 }
 
 static void UpdateRows(void)
@@ -78,18 +98,28 @@ static void UpdateRows(void)
         lv_label_set_text_fmt(g_statusLabel, "CRASHED: the device reset while running %s.",
                               pq_bench_scheme_name(record->scheme));
     } else {
-        lv_label_set_text(g_statusLabel, "Run each scheme on its own; each Run does one\n"
-                          "key generation, signature and verification.");
+        lv_label_set_text(g_statusLabel, "Each Run: one keygen, sign and verify.\n"
+                          "High priority freezes the screen until done.");
     }
     for (uint32_t i = 0; i < pq_bench_scheme_count() && i < PQ_BENCH_MAX_SCHEMES; i++) {
         FormatRow(text, sizeof(text), record, i, running);
         lv_label_set_text(g_rowLabels[i], text);
+        // A second, grey line says how the shown result ran.
+        if (record != NULL && (record->finished & (1UL << i)) && !(record->running && record->scheme == i)) {
+            lv_label_set_text_fmt(g_rowLabels[i], "%s\n#888888 %s#", text, PqBenchOptionsText(record->results[i].options));
+        }
         if (running) {
             lv_obj_add_state(g_runButtons[i], LV_STATE_DISABLED);
         } else {
             lv_obj_clear_state(g_runButtons[i], LV_STATE_DISABLED);
         }
     }
+}
+
+static void ToggleHandler(lv_event_t *e)
+{
+    g_options ^= (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    UpdateToggles();
 }
 
 static void PollTimerHandler(lv_timer_t *timer)
@@ -105,7 +135,7 @@ static void RunHandler(lv_event_t *e)
 {
     int32_t scheme = (int32_t)(intptr_t)lv_event_get_user_data(e);
 
-    if (!PqBenchStart(scheme, 0)) {
+    if (!PqBenchStart(scheme, 0, g_options)) {
         lv_label_set_text_fmt(g_statusLabel, "Could not start: %s", PqBenchGetError());
         return;
     }
@@ -125,17 +155,33 @@ void GuiPqBenchWidgetsInit(void)
     lv_obj_set_width(g_statusLabel, 432);
     lv_obj_align(g_statusLabel, LV_ALIGN_TOP_LEFT, 24, 12);
 
+    g_stackButton = GuiCreateBtn(cont, "");
+    lv_obj_set_width(g_stackButton, 204);
+    lv_obj_align(g_stackButton, LV_ALIGN_TOP_LEFT, 24, 96);
+    lv_obj_add_event_cb(g_stackButton, ToggleHandler, LV_EVENT_CLICKED, (void *)(uintptr_t)PQ_BENCH_STACK_ON_CHIP);
+    g_priorityButton = GuiCreateBtn(cont, "");
+    lv_obj_set_width(g_priorityButton, 204);
+    lv_obj_align(g_priorityButton, LV_ALIGN_TOP_RIGHT, -24, 96);
+    lv_obj_add_event_cb(g_priorityButton, ToggleHandler, LV_EVENT_CLICKED, (void *)(uintptr_t)PQ_BENCH_HIGH_PRIORITY);
+    // Focusing the first button when the screen opens would scroll the status line out of view.
+    lv_obj_clear_flag(g_stackButton, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_clear_flag(g_priorityButton, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    UpdateToggles();
+
     for (uint32_t i = 0; i < pq_bench_scheme_count() && i < PQ_BENCH_MAX_SCHEMES; i++) {
         lv_coord_t y = PQ_BENCH_HEADER_HEIGHT + i * PQ_BENCH_ROW_HEIGHT;
         lv_obj_t *name = GuiCreateTextLabel(cont, pq_bench_scheme_name(i));
         lv_obj_align(name, LV_ALIGN_TOP_LEFT, 24, y);
 
+        // Below the Run button, so it can use the full width.
         g_rowLabels[i] = GuiCreateIllustrateLabel(cont, "");
-        lv_obj_set_width(g_rowLabels[i], 312);
-        lv_obj_align(g_rowLabels[i], LV_ALIGN_TOP_LEFT, 24, y + 40);
+        lv_label_set_recolor(g_rowLabels[i], true);
+        lv_obj_set_width(g_rowLabels[i], 432);
+        lv_obj_align(g_rowLabels[i], LV_ALIGN_TOP_LEFT, 24, y + 80);
 
         g_runButtons[i] = GuiCreateBtn(cont, "Run");
         lv_obj_align(g_runButtons[i], LV_ALIGN_TOP_RIGHT, -24, y + 8);
+        lv_obj_clear_flag(g_runButtons[i], LV_OBJ_FLAG_SCROLL_ON_FOCUS);
         lv_obj_add_event_cb(g_runButtons[i], RunHandler, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
 

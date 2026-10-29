@@ -11,13 +11,18 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::alloc::Layout;
 use core::ffi::CStr;
 use core::marker::PhantomData;
 
 /// The schemes in the order the C side lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
+    /// Not a signature: [`HASH_BLOCKS`] SHA-256 compressions, the operation that dominates every
+    /// scheme here, so the time per block shows how fast the device hashes on its own.
+    Sha256,
     SlhDsa128s,
     SlhDsa128f,
     SlhDsa192s,
@@ -34,7 +39,8 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 9] = [
+    pub const ALL: [Scheme; 10] = [
+        Scheme::Sha256,
         Scheme::SlhDsa128s,
         Scheme::SlhDsa128f,
         Scheme::SlhDsa192s,
@@ -49,6 +55,7 @@ impl Scheme {
     /// A short name that fits a table row on the device screen, NUL-terminated for C.
     pub fn name(self) -> &'static CStr {
         match self {
+            Scheme::Sha256 => c"SHA-256 block",
             Scheme::SlhDsa128s => c"SLH-128s",
             Scheme::SlhDsa128f => c"SLH-128f",
             Scheme::SlhDsa192s => c"SLH-192s",
@@ -71,6 +78,7 @@ impl Scheme {
         progress: &mut dyn FnMut(Step, u32),
     ) -> Result<Report, Error> {
         match self {
+            Scheme::Sha256 => measure(&Sha256Blocks, iterations, now_ns, progress),
             Scheme::SlhDsa128s => measure(
                 &SlhDsa::<slh_dsa::Sha2_128s>::new(),
                 iterations,
@@ -107,6 +115,9 @@ impl Scheme {
         }
     }
 }
+
+/// SHA-256 compressions the [`Scheme::Sha256`] row times in its sign step.
+pub const HASH_BLOCKS: u32 = 10_000;
 
 /// The step a run is about to start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,7 +219,9 @@ impl<P> SlhDsa<P> {
 impl<P: SlhDsaSizes> Bench for SlhDsa<P> {
     type SigningKey = slh_dsa::SigningKey<P>;
     type VerifyingKey = slh_dsa::VerifyingKey<P>;
-    type Signature = slh_dsa::Signature<P>;
+    /// On the heap: the signature is up to 35 KB, and slh-dsa signs into it in place, so the
+    /// stack only needs room for one hypertree layer at a time.
+    type Signature = Box<slh_dsa::Signature<P>>;
 
     fn signature_bytes(&self) -> usize {
         P::SIGNATURE_BYTES
@@ -229,8 +242,10 @@ impl<P: SlhDsaSizes> Bench for SlhDsa<P> {
     }
 
     fn sign(&self, key: Self::SigningKey) -> Self::Signature {
-        key.try_sign_with_context(&MESSAGE, SLH_DSA_CONTEXT, None)
-            .expect("the context is shorter than 256 bytes")
+        let mut signature = zeroed_signature::<P>();
+        key.try_sign_with_context_into(&MESSAGE, SLH_DSA_CONTEXT, None, &mut signature)
+            .expect("the context is shorter than 256 bytes");
+        signature
     }
 
     fn verify(&self, key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
@@ -238,6 +253,59 @@ impl<P: SlhDsaSizes> Bench for SlhDsa<P> {
             .is_ok()
     }
 }
+
+/// A signature of all zero bytes, allocated straight on the heap. `Box::new` could build it on
+/// the stack first, which is what this avoids.
+fn zeroed_signature<P: slh_dsa::ParameterSet>() -> Box<slh_dsa::Signature<P>> {
+    let layout = Layout::new::<slh_dsa::Signature<P>>();
+    // SAFETY: a signature is nested arrays of bytes with no other fields, so all zero bytes is a
+    // valid value; a null pointer is handled before `from_raw`.
+    unsafe {
+        let pointer = alloc::alloc::alloc_zeroed(layout) as *mut slh_dsa::Signature<P>;
+        if pointer.is_null() {
+            alloc::alloc::handle_alloc_error(layout);
+        }
+        Box::from_raw(pointer)
+    }
+}
+
+/// [`HASH_BLOCKS`] SHA-256 compressions, with the same implementation slh-dsa uses.
+struct Sha256Blocks;
+
+impl Bench for Sha256Blocks {
+    type SigningKey = [u32; 8];
+    type VerifyingKey = [u32; 8];
+    type Signature = [u32; 8];
+
+    fn signature_bytes(&self) -> usize {
+        0
+    }
+
+    fn public_key_bytes(&self) -> usize {
+        0
+    }
+
+    fn keygen(&self, _iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
+        (SHA256_IV, SHA256_IV)
+    }
+
+    fn sign(&self, mut state: Self::SigningKey) -> Self::Signature {
+        let block = sha2::digest::generic_array::GenericArray::from([0x5a; 64]);
+        for _ in 0..HASH_BLOCKS {
+            sha2::compress256(&mut state, core::slice::from_ref(&block));
+        }
+        state
+    }
+
+    /// Checks the hashing actually ran, so a compiler that skipped it could not report 0.
+    fn verify(&self, initial: &Self::VerifyingKey, state: &Self::Signature) -> bool {
+        state != initial
+    }
+}
+
+const SHA256_IV: [u32; 8] = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
 
 struct LeanSphincs {
     config: sphincs::Config,

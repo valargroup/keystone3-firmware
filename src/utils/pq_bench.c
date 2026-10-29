@@ -17,16 +17,20 @@
 #include "flash_address.h"
 #endif
 
-// slh-dsa builds each signature on the stack and copies it several times on the way out, so
-// the large SLH-DSA sets need up to about 200 KB of stack (SLH-192f). The SRAM heap has less than that free, so the
-// stack lives in PSRAM, allocated on the first run and kept for later ones. FreeRTOS counts the
-// stack in 16-bit words of 4 bytes, so it cannot exceed 256 KB - 4.
-#define PQ_BENCH_STACK_BYTES        (240 * 1024)
-#define PQ_BENCH_RECORD_MAGIC       0x50514234  // "PQB4"
+// Signatures are signed into heap memory, so the deepest scheme uses about 24 KB of stack on
+// the Mac (leanSphincs b12 key generation); the on-chip stack leaves twice that. The PSRAM stack
+// keeps the size the old on-stack signing needed, to compare against earlier runs. Each stack is
+// allocated on its first run and kept for later ones.
+#define PQ_BENCH_ON_CHIP_STACK_BYTES    (48 * 1024)
+#define PQ_BENCH_PSRAM_STACK_BYTES      (240 * 1024)
+// Below the watchdog and command tasks (Realtime7), above everything else.
+#define PQ_BENCH_HIGH_PRIORITY_LEVEL    osPriorityRealtime
+#define PQ_BENCH_RECORD_MAGIC           0x50514235  // "PQB5"
 
 static volatile PqBenchState_t g_pqBenchState = PQ_BENCH_IDLE;
 static int32_t g_pqBenchScheme;
 static uint32_t g_pqBenchIterations;
+static uint32_t g_pqBenchOptions;
 static char g_pqBenchError[96];
 static PqBenchRecord_t g_pqBenchRecord;
 static bool g_pqBenchRecordLoaded;
@@ -112,9 +116,9 @@ static void EnsureRecordLoaded(void)
         return;
     }
     if (g_pqBenchRecord.running) {
-        printf("pqbench,last_run_reset_during,%s,%s,%lu,%lu\r\n", pq_bench_scheme_name(g_pqBenchRecord.scheme),
+        printf("pqbench,last_run_reset_during,%s,%s,%lu,%lu,%s\r\n", pq_bench_scheme_name(g_pqBenchRecord.scheme),
                PqBenchStepName(g_pqBenchRecord.step), (unsigned long)g_pqBenchRecord.iteration + 1,
-               (unsigned long)g_pqBenchRecord.iterations);
+               (unsigned long)g_pqBenchRecord.iterations, PqBenchOptionsText(g_pqBenchRecord.options));
     }
 }
 
@@ -163,11 +167,13 @@ static void PqBenchRun(void)
         g_pqBenchRecord.magic = PQ_BENCH_RECORD_MAGIC;
     }
     g_pqBenchRecord.iterations = g_pqBenchIterations;
+    g_pqBenchRecord.options = g_pqBenchOptions;
+    printf("pqbench,options,%s\r\n", PqBenchOptionsText(g_pqBenchOptions));
     printf("pqbench,scheme,n,keygen_median_us,keygen_min_us,keygen_max_us,"
            "sign_median_us,sign_min_us,sign_max_us,verify_median_us,verify_min_us,verify_max_us,"
            "signature_bytes,public_key_bytes\r\n");
     for (uint32_t scheme = first; scheme <= last; scheme++) {
-        PqBenchResult_t result = {.scheme = scheme};
+        PqBenchResult_t result = {.scheme = scheme, .options = g_pqBenchOptions};
 
         g_pqBenchRecord.running = 1;
         g_pqBenchRecord.scheme = scheme;
@@ -180,7 +186,9 @@ static void PqBenchRun(void)
         PrintResult(&result);
     }
 #ifndef COMPILE_SIMULATOR
-    printf("pqbench,memory,stack_free_bytes=%lu,heap_min_free_bytes=%lu\r\n",
+    printf("pqbench,memory,stack_bytes=%lu,stack_free_bytes=%lu,heap_min_free_bytes=%lu\r\n",
+           (unsigned long)((g_pqBenchOptions & PQ_BENCH_STACK_ON_CHIP) ? PQ_BENCH_ON_CHIP_STACK_BYTES
+                           : PQ_BENCH_PSRAM_STACK_BYTES),
            (unsigned long)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
            (unsigned long)xPortGetMinimumEverFreeHeapSize());
 #endif
@@ -188,17 +196,28 @@ static void PqBenchRun(void)
 }
 
 #ifndef COMPILE_SIMULATOR
-static volatile bool g_pqBenchRequested;
-static osThreadId_t g_pqBenchTask;
-static StaticTask_t g_pqBenchTaskControl;
+// One task per stack placement, each created on its first run and kept for the life of the
+// firmware, so its stack is never freed and reused.
+typedef struct {
+    const char *name;
+    uint32_t stackBytes;
+    bool onChip;
+    osThreadId_t id;
+    StaticTask_t control;
+} PqBenchTask_t;
 
-// Waits for runs for the life of the firmware, so its PSRAM stack is never freed and reused.
+static PqBenchTask_t g_pqBenchTasks[2] = {
+    {.name = "PqBenchOnChip", .stackBytes = PQ_BENCH_ON_CHIP_STACK_BYTES, .onChip = true},
+    {.name = "PqBenchPsram", .stackBytes = PQ_BENCH_PSRAM_STACK_BYTES, .onChip = false},
+};
+static volatile PqBenchTask_t *g_pqBenchRequested;
+
 static void PqBenchTask(void *argument)
 {
-    (void)argument;
+    PqBenchTask_t *task = argument;
     while (1) {
-        if (g_pqBenchRequested) {
-            g_pqBenchRequested = false;
+        if (g_pqBenchRequested == task) {
+            g_pqBenchRequested = NULL;
             PqBenchRun();
             g_pqBenchState = PQ_BENCH_DONE;
         }
@@ -206,30 +225,29 @@ static void PqBenchTask(void *argument)
     }
 }
 
-static bool PqBenchCreateTask(void)
+static bool PqBenchCreateTask(PqBenchTask_t *task)
 {
-    if (g_pqBenchTask != NULL) {
+    if (task->id != NULL) {
         return true;
     }
-    void *stack = PsramMalloc(PQ_BENCH_STACK_BYTES);
+    void *stack = task->onChip ? pvPortMalloc(task->stackBytes) : PsramMalloc(task->stackBytes);
     if (stack == NULL) {
-        snprintf(g_pqBenchError, sizeof(g_pqBenchError), "No %d KB of PSRAM for the stack (%lu KB free).",
-                 PQ_BENCH_STACK_BYTES / 1024, (unsigned long)(PsramGetFreeHeapSize() / 1024));
+        snprintf(g_pqBenchError, sizeof(g_pqBenchError), "No %lu KB of %s for the stack (%lu KB free).",
+                 (unsigned long)(task->stackBytes / 1024), task->onChip ? "on-chip RAM" : "PSRAM",
+                 (unsigned long)((task->onChip ? xPortGetFreeHeapSize() : PsramGetFreeHeapSize()) / 1024));
         return false;
     }
-    // Below every other task but the idle task, so the run never holds up the rest of the
-    // firmware; signing only slows down while something else needs the CPU.
     const osThreadAttr_t attributes = {
-        .name = "PqBenchTask",
-        .cb_mem = &g_pqBenchTaskControl,
-        .cb_size = sizeof(g_pqBenchTaskControl),
+        .name = task->name,
+        .cb_mem = &task->control,
+        .cb_size = sizeof(task->control),
         .stack_mem = stack,
-        .stack_size = PQ_BENCH_STACK_BYTES,
+        .stack_size = task->stackBytes,
         .priority = (osPriority_t)(osPriorityLow - 1),
     };
-    g_pqBenchTask = osThreadNew(PqBenchTask, NULL, &attributes);
-    if (g_pqBenchTask == NULL) {
-        PsramFree(stack);
+    task->id = osThreadNew(PqBenchTask, task, &attributes);
+    if (task->id == NULL) {
+        task->onChip ? vPortFree(stack) : PsramFree(stack);
         snprintf(g_pqBenchError, sizeof(g_pqBenchError), "Could not create the benchmark task.");
         return false;
     }
@@ -237,7 +255,7 @@ static bool PqBenchCreateTask(void)
 }
 #endif
 
-bool PqBenchStart(int32_t scheme, uint32_t iterations)
+bool PqBenchStart(int32_t scheme, uint32_t iterations, uint32_t options)
 {
     EnsureRecordLoaded();
     g_pqBenchError[0] = '\0';
@@ -258,17 +276,23 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations)
     }
     g_pqBenchScheme = scheme;
     g_pqBenchIterations = iterations ? iterations : PQ_BENCH_DEFAULT_ITERATIONS;
+    g_pqBenchOptions = options;
 #ifdef COMPILE_SIMULATOR
     g_pqBenchState = PQ_BENCH_RUNNING;
     PqBenchRun();
     g_pqBenchState = PQ_BENCH_DONE;
 #else
-    if (!PqBenchCreateTask()) {
+    PqBenchTask_t *task = &g_pqBenchTasks[(options & PQ_BENCH_STACK_ON_CHIP) ? 0 : 1];
+    if (!PqBenchCreateTask(task)) {
         printf("pqbench,error,%s\r\n", g_pqBenchError);
         return false;
     }
+    // Low priority runs below every other task but the idle task; high priority runs above the
+    // UI, so the screen does not update until the run ends.
+    osThreadSetPriority(task->id, (options & PQ_BENCH_HIGH_PRIORITY) ? PQ_BENCH_HIGH_PRIORITY_LEVEL
+                        : (osPriority_t)(osPriorityLow - 1));
     g_pqBenchState = PQ_BENCH_RUNNING;
-    g_pqBenchRequested = true;
+    g_pqBenchRequested = task;
 #endif
     return true;
 }
@@ -294,8 +318,20 @@ bool PqBenchIsCurrentTask(void)
 #ifdef COMPILE_SIMULATOR
     return false;
 #else
-    return g_pqBenchTask != NULL && osThreadGetId() == g_pqBenchTask;
+    osThreadId_t current = osThreadGetId();
+    return current != NULL && (current == g_pqBenchTasks[0].id || current == g_pqBenchTasks[1].id);
 #endif
+}
+
+const char *PqBenchOptionsText(uint32_t options)
+{
+    static const char *const texts[] = {
+        "PSRAM stack, low priority",
+        "on-chip stack, low priority",
+        "PSRAM stack, high priority",
+        "on-chip stack, high priority",
+    };
+    return texts[options & 3];
 }
 
 const char *PqBenchStepName(uint32_t step)

@@ -7,8 +7,11 @@ edition = "2021"
 # zakura-core/common benchmarks slh-dsa 0.2.0-rc.5, which needs the final RustCrypto 0.11 releases;
 # zcash_primitives pins this workspace to their pre-releases. This is slh-dsa 0.0.3 (stable RustCrypto
 # crates) plus 0.2's SHA-2 seed-state caching (RustCrypto/signatures#1116), without which signing
-# costs about twice as much with software SHA-256. Signatures are byte-identical to 0.2.0-rc.5.
-slh-dsa = { git = "https://github.com/valargroup/signatures", rev = "98213188e6333ef9eb63cdec07bf2589a5ec620f", default-features = false }
+# costs about twice as much with software SHA-256, and signing into a caller-provided signature
+# so it can stay off the stack. Signatures are byte-identical to 0.2.0-rc.5.
+slh-dsa = { git = "https://github.com/valargroup/signatures", rev = "8a3d4959c1a085db1c22ac4a89fb987ce486e473", default-features = false }
 # leanSphincs at the commit zakura-core/zakura#1796 (through zakura-core/common#648) pins,
 # f181496 of TomWambsgans/sphincs.art, plus a no_std build (branch roman/mac/claude/no-std-keystone).
 sphincs = { git = "https://github.com/valargroup/sphincs.art", rev = "5efc941832c0346c561a72a7b3ca76d5aa3ee380", default-features = false }
+# The SHA-256 slh-dsa uses, for the hashing test row.
+sha2 = { workspace = true, features = ["compress"] }

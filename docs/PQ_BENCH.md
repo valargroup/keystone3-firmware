@@ -5,6 +5,7 @@ verification of hash-based signatures on the device:
 
 | Name | Scheme | Library |
 |---|---|---|
+| `SHA-256 block` | Not a signature: 10,000 SHA-256 compressions of one 64-byte block, shown as the time per block. Every scheme here spends nearly all its time hashing, so this is the device's hashing speed on its own | `sha2`, as `slh-dsa` uses it |
 | `SLH-128s`, `SLH-128f`, `SLH-192s`, `SLH-192f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
 | `lean h22 b12`, `lean h22 layer`, `lean h28 b12`, `lean h28 layer` | leanSphincs over SHA-256 as [sphincs.art](https://sphincs.art/) shows it for a hardware wallet at its lowest and highest lifetimes, 2^26 signatures (tree height 22) and 2^32 (height 28): "Pruning" with a kept subtree of 2^12 leaves (107K and 137K signatures), and "Uniform", a three-layer hypertree (82M and 5.6B signatures) | `sphincs` from TomWambsgans/sphincs.art |
 
@@ -16,6 +17,8 @@ The `slh-dsa` dependency is 0.0.3 plus the SHA-2 seed-state caching from 0.2
 (`valargroup/signatures`, branch `roman/mac/claude/slh-dsa-0.0.3-seed-cache`). This workspace
 cannot use 0.2 itself, because `zcash_primitives` pins the RustCrypto 0.11 pre-releases. Its
 signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with software SHA-256.
+The branch also adds `try_sign_with_context_into`, which signs into a signature the caller
+owns; the benchmark keeps that signature on the heap, so it never passes through the stack.
 
 The `sphincs` dependency is TomWambsgans/sphincs.art at `f181496`, the commit zakura-core/zakura#1796
 uses, plus a change that lets it build without std (`valargroup/sphincs.art`, branch
@@ -25,30 +28,37 @@ uses, plus a change that lets it build without std (`valargroup/sphincs.art`, br
 
 - **Device screen**: Settings → About → PQ Bench. Each scheme has its own Run button, which runs
   one round of that scheme (one key generation, signature and verification); its row then shows
-  the times. Press it again for another round. While it works, the row shows the
-  step running now. Results of every scheme stay on screen, and in flash, until it runs again.
+  the times, with a grey line saying how that run was set up. Press it again for another round.
+  While it works, the row shows the step running now. Results of every scheme stay on screen, and
+  in flash, until it runs again. Two toggles at the top set up the next run:
+  - **Stack: on-chip / PSRAM** puts the benchmark's stack in on-chip RAM (48 KB, the default) or
+    in external PSRAM (240 KB, as earlier builds did).
+  - **Priority: low / high**. Low runs below every other task, so the screen stays live. High runs
+    above the screen, USB and touch tasks (only the watchdog and UART command tasks are higher),
+    so the screen freezes until the run ends.
 - **UART** (debug builds, UART0 at 512000 baud): send `#pq bench:all` followed by CR LF, or
-  a scheme name or index in place of `all`. An iteration count after the name runs that many rounds and reports their median (the
-  default is one); `#pq bench:` with
+  a scheme index in place of `all`. An iteration count after it runs that many rounds and reports
+  their median (the default is one); `psram` puts the stack in PSRAM and `high` runs at high
+  priority, as in `#pq bench:2 1 psram high`; `#pq bench:` with
   no arguments lists the schemes. A `pqbench,step,...` line comes before every step. Results are CSV
   lines starting with `pqbench,`, with median, minimum and maximum microseconds per operation,
   then the signature and public key sizes in bytes. The last lines report the benchmark task's
-  unused stack and the lowest free heap seen.
+  stack size and unused stack, and the lowest free heap seen.
 - **Simulator**: `PQ_BENCH="all 3" ./build/simulator` prints the same CSV and exits without
   opening a window. Simulator times measure the host computer, not the device.
 
 **If the device resets.** Before every step the device saves which scheme, step and iteration it
 is on, plus every scheme's latest results, to a sector of SPI flash. After a reset, open PQ Bench:
-the top line says which scheme was running, its row says "CRASHED: reset during <step>,
-iteration i of n", and the other rows keep their results. The UART prints
+the top line says which scheme was running, its row says "CRASHED: reset during <step>"
+(with "iteration i of n" when it ran several), and the other rows keep their results. The UART prints
 `pqbench,last_run_reset_during,...` the first time the record is read.
 
-On the device the benchmark runs on its own task, below every other task but the idle task.
-`slh-dsa` builds each signature on the stack and copies it several times, so the large SLH-DSA
-sets need up to about 200 KB of stack (`SLH-192f`), and leanSphincs about 230 KB of heap for its
-key's trees. The SRAM heap has less than either free, so the task's 240 KB stack lives in PSRAM,
-allocated on the first run and kept, and the Rust allocations the task makes go to PSRAM too. Stack accesses may be slower than from SRAM, so
-compare device times with that in mind. Times come from the 1 ms OS tick plus the SysTick
+On the device the benchmark runs on its own task, one for each stack placement, each created on
+its first run and kept. With signatures on the heap, the deepest scheme uses about 24 KB of stack
+on a Mac (leanSphincs b12 key generation), so the 48 KB on-chip stack has room to spare;
+`cargo run --release -p app_pq_bench --example stack_need` measures it again. leanSphincs needs
+about 230 KB of heap for its key's trees, more than the on-chip heap has free, so the Rust
+allocations the benchmark makes always go to PSRAM. Times come from the 1 ms OS tick plus the SysTick
 countdown within the current tick, which resolves well under a microsecond. The CPU cycle counter
 does not run on this chip, so earlier builds showed 0us for every step shorter than 10 s; a run now
 refuses to start if the timer is not advancing.

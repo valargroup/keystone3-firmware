@@ -339,6 +339,7 @@ dependencies = [
 name = "app_pq_bench"
 version = "0.1.0"
 dependencies = [
+ "sha2 0.10.9",
  "slh-dsa",
  "sphincs",
 ]
@@ -4467,7 +4468,7 @@ dependencies = [
 [[package]]
 name = "slh-dsa"
 version = "0.0.3"
-source = "git+https://github.com/valargroup/signatures?rev=98213188e6333ef9eb63cdec07bf2589a5ec620f#98213188e6333ef9eb63cdec07bf2589a5ec620f"
+source = "git+https://github.com/valargroup/signatures?rev=8a3d4959c1a085db1c22ac4a89fb987ce486e473#8a3d4959c1a085db1c22ac4a89fb987ce486e473"
 dependencies = [
  "const-oid",
  "digest 0.10.7",

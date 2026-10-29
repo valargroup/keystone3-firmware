@@ -119,7 +119,7 @@ int main(int argc, char **argv)
             }
         }
         printf("\n");
-        return PqBenchStart(scheme, iterations) ? EXIT_SUCCESS : EXIT_FAILURE;
+        return PqBenchStart(scheme, iterations, PQ_BENCH_DEFAULT_OPTIONS) ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 #endif
 

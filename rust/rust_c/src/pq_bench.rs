@@ -40,6 +40,16 @@ pub extern "C" fn pq_bench_scheme_name(scheme: u32) -> *const c_char {
     }
 }
 
+/// For the SHA-256 row, the number of 64-byte blocks its sign step hashes; 0 for a signature
+/// scheme or an unknown index.
+#[no_mangle]
+pub extern "C" fn pq_bench_scheme_blocks(scheme: u32) -> u32 {
+    match Scheme::ALL.get(scheme as usize) {
+        Some(Scheme::Sha256) => app_pq_bench::HASH_BLOCKS,
+        _ => 0,
+    }
+}
+
 /// Times `iterations` key generations, signatures and verifications of one scheme.
 ///
 /// `now_ns` returns a monotonic time in nanoseconds. `progress(step, iteration)` is called

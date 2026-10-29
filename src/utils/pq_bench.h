@@ -15,6 +15,12 @@
 // One round per run: a Run press does one key generation, one signature and one verification.
 #define PQ_BENCH_DEFAULT_ITERATIONS 1
 
+// Run options, to find where time goes on the device. With neither set the stack is in PSRAM
+// and the task runs below every other task. Rust allocations always go to PSRAM.
+#define PQ_BENCH_STACK_ON_CHIP      (1u << 0)   // stack in on-chip SRAM
+#define PQ_BENCH_HIGH_PRIORITY      (1u << 1)   // above the UI, USB and touch tasks
+#define PQ_BENCH_DEFAULT_OPTIONS    PQ_BENCH_STACK_ON_CHIP
+
 typedef enum {
     PQ_BENCH_IDLE,
     PQ_BENCH_RUNNING,
@@ -24,6 +30,7 @@ typedef enum {
 typedef struct {
     uint32_t scheme;
     int32_t status;             // PQ_BENCH_OK or a negative PQ_BENCH_* code
+    uint32_t options;           // PQ_BENCH_STACK_ON_CHIP and PQ_BENCH_HIGH_PRIORITY bits of the run
     PqBenchReport report;
 } PqBenchResult_t;
 
@@ -37,15 +44,16 @@ typedef struct {
     uint32_t step;              // 0 keygen, 1 sign, 2 verify
     uint32_t iteration;         // counted from 0
     uint32_t iterations;
+    uint32_t options;           // of the run in progress, or last run
     uint32_t finished;          // bit i set: results[i] holds scheme i's latest run
     PqBenchResult_t results[PQ_BENCH_MAX_SCHEMES];  // indexed by scheme
 } PqBenchRecord_t;
 
 // Starts a run of one scheme, or all of them in turn with PQ_BENCH_ALL_SCHEMES. iterations == 0 uses
-// PQ_BENCH_DEFAULT_ITERATIONS. On the device the run happens on its own task and results also
+// PQ_BENCH_DEFAULT_ITERATIONS; options is a set of PQ_BENCH_STACK_ON_CHIP and PQ_BENCH_HIGH_PRIORITY. On the device the run happens on its own task and results also
 // go to the UART as CSV; the simulator runs it before returning. Returns false when a run is
 // already in progress or the task cannot be created.
-bool PqBenchStart(int32_t scheme, uint32_t iterations);
+bool PqBenchStart(int32_t scheme, uint32_t iterations, uint32_t options);
 
 PqBenchState_t PqBenchGetState(void);
 
@@ -60,6 +68,9 @@ const PqBenchRecord_t *PqBenchGetRecord(void);
 // True on the benchmark's task, whose Rust allocations go to PSRAM: leanSphincs needs about
 // 230 KB of heap, more than the SRAM heap has free.
 bool PqBenchIsCurrentTask(void);
+
+// "on-chip stack, low priority" and the like, for the screen and the UART log.
+const char *PqBenchOptionsText(uint32_t options);
 
 // "keygen", "sign" or "verify".
 const char *PqBenchStepName(uint32_t step);
