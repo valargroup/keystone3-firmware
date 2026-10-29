@@ -4,15 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# zakura-core/common benchmarks slh-dsa 0.2.0-rc.5, which needs the final RustCrypto 0.11 releases;
-# zcash_primitives pins this workspace to their pre-releases. This is slh-dsa 0.0.3 (stable RustCrypto
-# crates) plus 0.2's SHA-2 seed-state caching (RustCrypto/signatures#1116), without which signing
-# costs about twice as much with software SHA-256, and signing into a caller-provided signature
-# so it can stay off the stack. Signatures are byte-identical to 0.2.0-rc.5.
-slh-dsa = { git = "https://github.com/valargroup/signatures", rev = "8a3d4959c1a085db1c22ac4a89fb987ce486e473", default-features = false }
 # leanSphincs with its experimental 192-bit family (valargroup/sphincs.art branch
 # roman/mac/claude/no-std-keystone-192: the 192-bit family from roman/mac/codex/192-bit-configurations,
 # built without std and on RustCrypto 0.10 releases).
 sphincs = { git = "https://github.com/valargroup/sphincs.art", rev = "25c887ed12cfb17289f7ce785308bbb5a9ded3e9", default-features = false }
-# The SHA-256 and SHA-512 that slh-dsa and 192-bit leanSphincs use, for the hashing rows.
+# The SHA-256 and SHA-512 that 192-bit leanSphincs uses, for the hashing rows.
 sha2 = { workspace = true, features = ["compress"] }

@@ -7,8 +7,8 @@
 
 #ifdef FEATURE_PQ_BENCH
 
-// Hash-based signature benchmark: times key generation, signing and verification of the
-// SLH-DSA SHA2 sets and leanSphincs (the Rust side is rust/apps/pq_bench).
+// Hash-based signature benchmark: times key generation, signing and verification of 192-bit
+// leanSphincs, plus SHA-256 and SHA-512 on their own (the Rust side is rust/apps/pq_bench).
 
 #define PQ_BENCH_ALL_SCHEMES        (-1)
 #define PQ_BENCH_MAX_SCHEMES        32

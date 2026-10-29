@@ -11,11 +11,8 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::alloc::Layout;
 use core::ffi::CStr;
-use core::marker::PhantomData;
 
 /// The schemes in the order the C side lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,24 +23,16 @@ pub enum Scheme {
     /// [`HASH_BLOCKS`] SHA-512 compressions, which 192-bit leanSphincs uses for its multi-node
     /// hashes and encodings.
     Sha512,
-    /// SLH-DSA at the same 192-bit level, as a standardized baseline.
-    SlhDsa192s,
-    SlhDsa192f,
     /// The experimental 192-bit leanSphincs family over SHA2 with the WOTS forest as the few-time
     /// signature, as one tree of height `h` (lifetime 2^(h + 4) signatures) pruned to a kept
     /// subtree of height `kept`.
-    Lean192 {
-        h: u8,
-        kept: u8,
-    },
+    Lean192 { h: u8, kept: u8 },
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 5] = [
+    pub const ALL: [Scheme; 3] = [
         Scheme::Sha256,
         Scheme::Sha512,
-        Scheme::SlhDsa192s,
-        Scheme::SlhDsa192f,
         Scheme::Lean192 { h: 20, kept: 8 },
     ];
 
@@ -52,8 +41,6 @@ impl Scheme {
         match self {
             Scheme::Sha256 => c"SHA-256 block",
             Scheme::Sha512 => c"SHA-512 block",
-            Scheme::SlhDsa192s => c"SLH-192s",
-            Scheme::SlhDsa192f => c"SLH-192f",
             Scheme::Lean192 { h: 20, kept: 8 } => c"lean192 wots h20 b8",
             Scheme::Lean192 { .. } => c"lean192 (unlisted)",
         }
@@ -70,18 +57,6 @@ impl Scheme {
         match self {
             Scheme::Sha256 => measure(&Sha256Blocks, iterations, now_ns, progress),
             Scheme::Sha512 => measure(&Sha512Blocks, iterations, now_ns, progress),
-            Scheme::SlhDsa192s => measure(
-                &SlhDsa::<slh_dsa::Sha2_192s>::new(),
-                iterations,
-                now_ns,
-                progress,
-            ),
-            Scheme::SlhDsa192f => measure(
-                &SlhDsa::<slh_dsa::Sha2_192f>::new(),
-                iterations,
-                now_ns,
-                progress,
-            ),
             Scheme::Lean192 { h, kept } => {
                 measure(&Lean192::new(h, kept), iterations, now_ns, progress)
             }
@@ -128,8 +103,6 @@ pub enum Error {
 
 /// Fixed message the signatures cover.
 const MESSAGE: [u8; 32] = *b"keystone pq signature benchmark ";
-/// SLH-DSA context string, as in zakura-core/common.
-const SLH_DSA_CONTEXT: &[u8] = b"Zcash/PQ/spend/v1";
 
 trait Bench {
     type SigningKey;
@@ -150,84 +123,7 @@ fn seed(role: u8, iteration: u32) -> [u8; 32] {
     core::array::from_fn(|i| role ^ counter[i % 4] ^ (i as u8).wrapping_mul(29))
 }
 
-/// Encoded sizes of the SLH-DSA parameter sets (FIPS 205, Table 2).
-trait SlhDsaSizes: slh_dsa::ParameterSet {
-    const N: usize;
-    const SIGNATURE_BYTES: usize;
-}
-
-impl SlhDsaSizes for slh_dsa::Sha2_192s {
-    const N: usize = 24;
-    const SIGNATURE_BYTES: usize = 16_224;
-}
-
-impl SlhDsaSizes for slh_dsa::Sha2_192f {
-    const N: usize = 24;
-    const SIGNATURE_BYTES: usize = 35_664;
-}
-
-struct SlhDsa<P>(PhantomData<P>);
-
-impl<P> SlhDsa<P> {
-    fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<P: SlhDsaSizes> Bench for SlhDsa<P> {
-    type SigningKey = slh_dsa::SigningKey<P>;
-    type VerifyingKey = slh_dsa::VerifyingKey<P>;
-    /// On the heap: the signature is up to 35 KB, and slh-dsa signs into it in place, so the
-    /// stack only needs room for one hypertree layer at a time.
-    type Signature = Box<slh_dsa::Signature<P>>;
-
-    fn signature_bytes(&self) -> usize {
-        P::SIGNATURE_BYTES
-    }
-
-    fn public_key_bytes(&self) -> usize {
-        2 * P::N
-    }
-
-    fn keygen(&self, iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
-        let key = slh_dsa::SigningKey::<P>::slh_keygen_internal(
-            &seed(5, iteration)[..P::N],
-            &seed(6, iteration)[..P::N],
-            &seed(7, iteration)[..P::N],
-        );
-        let public = key.as_ref().clone();
-        (key, public)
-    }
-
-    fn sign(&self, key: Self::SigningKey) -> Self::Signature {
-        let mut signature = zeroed_signature::<P>();
-        key.try_sign_with_context_into(&MESSAGE, SLH_DSA_CONTEXT, None, &mut signature)
-            .expect("the context is shorter than 256 bytes");
-        signature
-    }
-
-    fn verify(&self, key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
-        key.try_verify_with_context(&MESSAGE, SLH_DSA_CONTEXT, signature)
-            .is_ok()
-    }
-}
-
-/// A signature of all zero bytes, allocated straight on the heap. `Box::new` could build it on
-/// the stack first, which is what this avoids.
-fn zeroed_signature<P: slh_dsa::ParameterSet>() -> Box<slh_dsa::Signature<P>> {
-    let layout = Layout::new::<slh_dsa::Signature<P>>();
-    // SAFETY: a signature is nested arrays of bytes with no other fields, so all zero bytes is a
-    // valid value; a null pointer is handled before `from_raw`.
-    unsafe {
-        let pointer = alloc::alloc::alloc_zeroed(layout) as *mut slh_dsa::Signature<P>;
-        if pointer.is_null() {
-            alloc::alloc::handle_alloc_error(layout);
-        }
-        Box::from_raw(pointer)
-    }
-}
-
-/// [`HASH_BLOCKS`] SHA-256 compressions, with the same implementation slh-dsa uses.
+/// [`HASH_BLOCKS`] SHA-256 compressions, with the implementation 192-bit leanSphincs uses.
 struct Sha256Blocks;
 
 impl Bench for Sha256Blocks {
@@ -437,28 +333,6 @@ mod tests {
             assert_eq!(steps.len(), 6, "{:?}", scheme.name());
             assert_eq!(steps[4], (Step::Sign, 1), "{:?}", scheme.name());
         }
-    }
-
-    #[test]
-    fn sizes_match_the_encodings() {
-        let (key, public) = SlhDsa::<slh_dsa::Sha2_192s>::new().keygen(0);
-        assert_eq!(public.to_bytes().len(), 48);
-        assert_eq!(
-            SlhDsa::<slh_dsa::Sha2_192s>::new()
-                .sign(key)
-                .to_bytes()
-                .len(),
-            16_224
-        );
-        let (key, public) = SlhDsa::<slh_dsa::Sha2_192f>::new().keygen(0);
-        assert_eq!(public.to_bytes().len(), 48);
-        assert_eq!(
-            SlhDsa::<slh_dsa::Sha2_192f>::new()
-                .sign(key)
-                .to_bytes()
-                .len(),
-            35_664
-        );
     }
 
     #[test]

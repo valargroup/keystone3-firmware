@@ -5,21 +5,13 @@ verification of hash-based signatures on the device:
 
 | Name | Scheme | Library |
 |---|---|---|
-| `SHA-256 block` | Not a signature: 10,000 SHA-256 compressions of one 64-byte block, shown as the time per block. Every scheme here spends nearly all its time hashing, so this is the device's hashing speed on its own | `sha2`, as `slh-dsa` and 192-bit leanSphincs use it |
+| `SHA-256 block` | Not a signature: 10,000 SHA-256 compressions of one 64-byte block, shown as the time per block. Every scheme here spends nearly all its time hashing, so this is the device's hashing speed on its own | `sha2`, as 192-bit leanSphincs uses it |
 | `SHA-512 block` | 10,000 SHA-512 compressions of one 128-byte block; 192-bit leanSphincs uses SHA-512 for its multi-node hashes and encodings | `sha2` |
-| `SLH-192s`, `SLH-192f` | SLH-DSA (FIPS 205) SHA2 parameter sets at the same 192-bit level, as standardized baselines | `slh-dsa` |
 | `lean192 wots h20 b8` | The experimental 192-bit leanSphincs family over SHA2 (SHA-256 for chain steps, SHA-512 for multi-node hashes) with the WOTS forest as the few-time signature: one tree of height 20 (2^24 signatures, sphincs.art's lowest lifetime) pruned to a kept subtree of 2^8 leaves. Its security is not proved; see sphincs.art | `sphincs::level192` from valargroup/sphincs.art |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
 signature is verified; a failure is reported as an error, not as a time. Production builds do
 not contain the benchmark.
-
-The `slh-dsa` dependency is 0.0.3 plus the SHA-2 seed-state caching from 0.2
-(`valargroup/signatures`, branch `roman/mac/claude/slh-dsa-0.0.3-seed-cache`). This workspace
-cannot use 0.2 itself, because `zcash_primitives` pins the RustCrypto 0.11 pre-releases. Its
-signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with software SHA-256.
-The branch also adds `try_sign_with_context_into`, which signs into a signature the caller
-owns; the benchmark keeps that signature on the heap, so it never passes through the stack.
 
 The `sphincs` dependency is valargroup/sphincs.art branch `roman/mac/claude/no-std-keystone-192`:
 the experimental 192-bit family from branch `roman/mac/codex/192-bit-configurations`, plus changes
@@ -57,7 +49,7 @@ the top line says which scheme was running, its row says "CRASHED: reset during 
 `pqbench,last_run_reset_during,...` the first time the record is read.
 
 On the device the benchmark runs on its own task, one for each stack placement, each created on
-its first run and kept. With signatures on the heap, the deepest scheme uses about 22 KB of stack
+its first run and kept. The deepest scheme uses about 22 KB of stack
 on a Mac (192-bit leanSphincs), so the 64 KB on-chip stack has room for deeper configurations;
 `cargo run --release -p app_pq_bench --example stack_need` measures it again. leanSphincs keeps
 its key's trees on the heap, more than the on-chip heap has free, so the Rust allocations the
