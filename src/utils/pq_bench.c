@@ -18,14 +18,14 @@
 #endif
 
 // slh-dsa builds each signature on the stack and copies it several times on the way out, so
-// SLH-DSA-SHA2-192f needs about 200 KB of stack. The SRAM heap has less than that free, so the
+// the large SLH-DSA sets need up to about 200 KB of stack (SLH-192f). The SRAM heap has less than that free, so the
 // stack lives in PSRAM, allocated on the first run and kept for later ones. FreeRTOS counts the
 // stack in 16-bit words of 4 bytes, so it cannot exceed 256 KB - 4.
 #define PQ_BENCH_STACK_BYTES        (240 * 1024)
 // Above this the cycle counter (32 bits at 204 MHz, about 21 s) may have wrapped, so elapsed
 // time comes from the 1 ms tick instead.
 #define PQ_BENCH_CYCLE_LIMIT_MS     10000
-#define PQ_BENCH_RECORD_MAGIC       0x50514231  // "PQB1"
+#define PQ_BENCH_RECORD_MAGIC       0x50514232  // "PQB2"
 
 static volatile PqBenchState_t g_pqBenchState = PQ_BENCH_IDLE;
 static int32_t g_pqBenchScheme;
@@ -105,7 +105,6 @@ static void EnsureRecordLoaded(void)
     g_pqBenchRecordLoaded = true;
     LoadRecord();
     if (g_pqBenchRecord.magic != PQ_BENCH_RECORD_MAGIC ||
-            g_pqBenchRecord.resultCount > PQ_BENCH_MAX_SCHEMES ||
             g_pqBenchRecord.scheme >= pq_bench_scheme_count() || g_pqBenchRecord.step > 2) {
         memset(&g_pqBenchRecord, 0, sizeof(g_pqBenchRecord));
         return;
@@ -157,24 +156,27 @@ static void PqBenchRun(void)
     if (g_pqBenchScheme != PQ_BENCH_ALL_SCHEMES) {
         first = last = (uint32_t)g_pqBenchScheme;
     }
-    memset(&g_pqBenchRecord, 0, sizeof(g_pqBenchRecord));
-    g_pqBenchRecord.magic = PQ_BENCH_RECORD_MAGIC;
-    g_pqBenchRecord.running = 1;
+    if (g_pqBenchRecord.magic != PQ_BENCH_RECORD_MAGIC) {
+        memset(&g_pqBenchRecord, 0, sizeof(g_pqBenchRecord));
+        g_pqBenchRecord.magic = PQ_BENCH_RECORD_MAGIC;
+    }
     g_pqBenchRecord.iterations = g_pqBenchIterations;
     printf("pqbench,scheme,n,keygen_median_us,keygen_min_us,keygen_max_us,"
            "sign_median_us,sign_min_us,sign_max_us,verify_median_us,verify_min_us,verify_max_us,"
            "signature_bytes,public_key_bytes\r\n");
     for (uint32_t scheme = first; scheme <= last; scheme++) {
-        PqBenchResult_t *result = &g_pqBenchRecord.results[g_pqBenchRecord.resultCount];
+        PqBenchResult_t result = {.scheme = scheme};
 
+        g_pqBenchRecord.running = 1;
         g_pqBenchRecord.scheme = scheme;
-        result->scheme = scheme;
-        result->status = pq_bench_run(scheme, g_pqBenchIterations, PqBenchNowNs, PqBenchProgress, &result->report);
-        g_pqBenchRecord.resultCount++;
-        PrintResult(result);
+        g_pqBenchRecord.finished &= ~(1UL << scheme);
+        result.status = pq_bench_run(scheme, g_pqBenchIterations, PqBenchNowNs, PqBenchProgress, &result.report);
+        g_pqBenchRecord.results[scheme] = result;
+        g_pqBenchRecord.finished |= 1UL << scheme;
+        g_pqBenchRecord.running = 0;
+        SaveRecord();
+        PrintResult(&result);
     }
-    g_pqBenchRecord.running = 0;
-    SaveRecord();
 #ifndef COMPILE_SIMULATOR
     printf("pqbench,memory,stack_free_bytes=%lu,heap_min_free_bytes=%lu\r\n",
            (unsigned long)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),

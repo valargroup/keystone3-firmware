@@ -15,21 +15,58 @@ use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::marker::PhantomData;
 
+use pq_crypto::{fors, wots, MessageDigest, PublicSeed, SecretSeed};
+
 /// The schemes in the order the C side lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
+    Wots,
+    /// FORS shapes, named by the SLH-DSA parameter set that uses them.
+    Fors256f,
+    Fors256s,
+    Fors192f,
+    Fors192s,
+    /// 16 trees of height 16 with 32-byte hashes; no SLH-DSA set uses it.
+    Fors16x16,
+    Fors128s,
+    SlhDsa128s,
+    SlhDsa128f,
     SlhDsa192s,
     SlhDsa192f,
+    SlhDsa256s,
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 2] = [Scheme::SlhDsa192s, Scheme::SlhDsa192f];
+    pub const ALL: [Scheme; 12] = [
+        Scheme::Wots,
+        Scheme::Fors256f,
+        Scheme::Fors256s,
+        Scheme::Fors192f,
+        Scheme::Fors192s,
+        Scheme::Fors16x16,
+        Scheme::Fors128s,
+        Scheme::SlhDsa128s,
+        Scheme::SlhDsa128f,
+        Scheme::SlhDsa192s,
+        Scheme::SlhDsa192f,
+        Scheme::SlhDsa256s,
+    ];
 
-    /// A short name that fits a line on the device screen, NUL-terminated for C.
+    /// A short name that fits a table row on the device screen, NUL-terminated for C.
     pub fn name(self) -> &'static CStr {
         match self {
+            Scheme::Wots => c"WOTS+",
+            Scheme::Fors256f => c"FORS-256f",
+            Scheme::Fors256s => c"FORS-256s",
+            Scheme::Fors192f => c"FORS-192f",
+            Scheme::Fors192s => c"FORS-192s",
+            Scheme::Fors16x16 => c"FORS-16x16",
+            Scheme::Fors128s => c"FORS-128s",
+            Scheme::SlhDsa128s => c"SLH-128s",
+            Scheme::SlhDsa128f => c"SLH-128f",
             Scheme::SlhDsa192s => c"SLH-192s",
             Scheme::SlhDsa192f => c"SLH-192f",
+            Scheme::SlhDsa256s => c"SLH-256s",
         }
     }
 
@@ -42,11 +79,27 @@ impl Scheme {
         progress: &mut dyn FnMut(Step, u32),
     ) -> Result<Report, Error> {
         match self {
+            Scheme::Wots => measure::<Wots>(iterations, now_ns, progress),
+            Scheme::Fors256f => measure::<Fors<35, 9, 32, 40>>(iterations, now_ns, progress),
+            Scheme::Fors256s => measure::<Fors<22, 14, 32, 39>>(iterations, now_ns, progress),
+            Scheme::Fors192f => measure::<Fors<33, 8, 24, 33>>(iterations, now_ns, progress),
+            Scheme::Fors192s => measure::<Fors<17, 14, 24, 30>>(iterations, now_ns, progress),
+            Scheme::Fors16x16 => measure::<Fors<16, 16, 32, 32>>(iterations, now_ns, progress),
+            Scheme::Fors128s => measure::<Fors<14, 12, 16, 21>>(iterations, now_ns, progress),
+            Scheme::SlhDsa128s => {
+                measure::<SlhDsa<slh_dsa::Sha2_128s>>(iterations, now_ns, progress)
+            }
+            Scheme::SlhDsa128f => {
+                measure::<SlhDsa<slh_dsa::Sha2_128f>>(iterations, now_ns, progress)
+            }
             Scheme::SlhDsa192s => {
                 measure::<SlhDsa<slh_dsa::Sha2_192s>>(iterations, now_ns, progress)
             }
             Scheme::SlhDsa192f => {
                 measure::<SlhDsa<slh_dsa::Sha2_192f>>(iterations, now_ns, progress)
+            }
+            Scheme::SlhDsa256s => {
+                measure::<SlhDsa<slh_dsa::Sha2_256s>>(iterations, now_ns, progress)
             }
         }
     }
@@ -86,8 +139,9 @@ pub enum Error {
     VerifyFailed,
 }
 
-/// Fixed message the signatures cover.
-const MESSAGE: [u8; 32] = *b"keystone pq signature benchmark ";
+/// Fixed message the signatures cover. FORS signs its first ceil(K * A / 8) bytes (at most
+/// 40), the others the first 32.
+const MESSAGE: [u8; 40] = *b"keystone pq signature benchmark message.";
 /// SLH-DSA context string, as in zakura-core/common.
 const SLH_DSA_CONTEXT: &[u8] = b"Zcash/PQ/spend/v1";
 
@@ -110,10 +164,89 @@ fn seed(role: u8, iteration: u32) -> [u8; 32] {
     core::array::from_fn(|i| role ^ counter[i % 4] ^ (i as u8).wrapping_mul(29))
 }
 
+struct Wots;
+
+impl Bench for Wots {
+    type SigningKey = wots::SigningKey;
+    type VerifyingKey = wots::VerifyingKey;
+    type Signature = wots::Signature;
+    const SIGNATURE_BYTES: usize = wots::SIGNATURE_BYTES;
+    const PUBLIC_KEY_BYTES: usize = wots::VERIFYING_KEY_BYTES;
+
+    fn keygen(iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
+        let key = wots::SigningKey::from_seeds(
+            SecretSeed::from_bytes(seed(1, iteration)),
+            PublicSeed::from_bytes(seed(2, iteration)),
+        )
+        .expect("the secret and public seeds differ");
+        let public = key.verifying_key();
+        (key, public)
+    }
+
+    fn sign(key: Self::SigningKey) -> Self::Signature {
+        key.sign_digest(&wots_digest())
+    }
+
+    fn verify(key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
+        key.verify_digest(&wots_digest(), signature).is_ok()
+    }
+}
+
+fn wots_digest() -> MessageDigest {
+    MessageDigest::from_bytes(core::array::from_fn(|i| MESSAGE[i]))
+}
+
+/// FORS with `K` trees of height `A` and `N`-byte hashes, signing an `L`-byte digest
+/// (`L` must be ceil(K * A / 8); another value fails to compile).
+struct Fors<const K: usize, const A: usize, const N: usize, const L: usize>;
+
+impl<const K: usize, const A: usize, const N: usize, const L: usize> Fors<K, A, N, L> {
+    fn digest() -> fors::IndexDigest<K, A> {
+        fors::IndexDigest::from_bytes::<L>(core::array::from_fn(|i| MESSAGE[i]))
+    }
+}
+
+impl<const K: usize, const A: usize, const N: usize, const L: usize> Bench for Fors<K, A, N, L> {
+    type SigningKey = fors::SigningKey<K, A, N>;
+    type VerifyingKey = fors::VerifyingKey<K, A, N>;
+    type Signature = fors::Signature<K, A, N>;
+    const SIGNATURE_BYTES: usize = fors::Signature::<K, A, N>::BYTES;
+    const PUBLIC_KEY_BYTES: usize = fors::VerifyingKey::<K, A, N>::BYTES;
+
+    fn keygen(iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
+        let (secret, public) = (seed(3, iteration), seed(4, iteration));
+        let key = fors::SigningKey::from_seeds(
+            SecretSeed::from_bytes(core::array::from_fn(|i| secret[i])),
+            PublicSeed::from_bytes(core::array::from_fn(|i| public[i])),
+        )
+        .expect("the secret and public seeds differ");
+        let public = key.verifying_key();
+        (key, public)
+    }
+
+    fn sign(key: Self::SigningKey) -> Self::Signature {
+        key.sign_digest(&Self::digest())
+    }
+
+    fn verify(key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
+        key.verify_digest(&Self::digest(), signature).is_ok()
+    }
+}
+
 /// Encoded sizes of the SLH-DSA parameter sets (FIPS 205, Table 2).
 trait SlhDsaSizes: slh_dsa::ParameterSet {
     const N: usize;
     const SIGNATURE_BYTES: usize;
+}
+
+impl SlhDsaSizes for slh_dsa::Sha2_128s {
+    const N: usize = 16;
+    const SIGNATURE_BYTES: usize = 7_856;
+}
+
+impl SlhDsaSizes for slh_dsa::Sha2_128f {
+    const N: usize = 16;
+    const SIGNATURE_BYTES: usize = 17_088;
 }
 
 impl SlhDsaSizes for slh_dsa::Sha2_192s {
@@ -124,6 +257,11 @@ impl SlhDsaSizes for slh_dsa::Sha2_192s {
 impl SlhDsaSizes for slh_dsa::Sha2_192f {
     const N: usize = 24;
     const SIGNATURE_BYTES: usize = 35_664;
+}
+
+impl SlhDsaSizes for slh_dsa::Sha2_256s {
+    const N: usize = 32;
+    const SIGNATURE_BYTES: usize = 29_792;
 }
 
 struct SlhDsa<P>(PhantomData<P>);
@@ -146,12 +284,12 @@ impl<P: SlhDsaSizes> Bench for SlhDsa<P> {
     }
 
     fn sign(key: Self::SigningKey) -> Self::Signature {
-        key.try_sign_with_context(&MESSAGE, SLH_DSA_CONTEXT, None)
+        key.try_sign_with_context(&MESSAGE[..32], SLH_DSA_CONTEXT, None)
             .expect("the context is shorter than 256 bytes")
     }
 
     fn verify(key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
-        key.try_verify_with_context(&MESSAGE, SLH_DSA_CONTEXT, signature)
+        key.try_verify_with_context(&MESSAGE[..32], SLH_DSA_CONTEXT, signature)
             .is_ok()
     }
 }
@@ -245,14 +383,47 @@ mod tests {
 
     #[test]
     fn sizes_match_the_encodings() {
-        type S = SlhDsa<slh_dsa::Sha2_192s>;
-        type F = SlhDsa<slh_dsa::Sha2_192f>;
-        let (key, public) = S::keygen(0);
+        let (_, public) = SlhDsa::<slh_dsa::Sha2_128s>::keygen(0);
+        let signature =
+            SlhDsa::<slh_dsa::Sha2_128s>::sign(SlhDsa::<slh_dsa::Sha2_128s>::keygen(0).0);
+        assert_eq!(public.to_bytes().len(), 32);
+        assert_eq!(signature.to_bytes().len(), 7_856);
+
+        let (_, public) = SlhDsa::<slh_dsa::Sha2_256s>::keygen(0);
+        let signature =
+            SlhDsa::<slh_dsa::Sha2_256s>::sign(SlhDsa::<slh_dsa::Sha2_256s>::keygen(0).0);
+        assert_eq!(public.to_bytes().len(), 64);
+        assert_eq!(signature.to_bytes().len(), 29_792);
+
+        let signature =
+            SlhDsa::<slh_dsa::Sha2_128f>::sign(SlhDsa::<slh_dsa::Sha2_128f>::keygen(0).0);
+        assert_eq!(signature.to_bytes().len(), 17_088);
+
+        let (key, public) = SlhDsa::<slh_dsa::Sha2_192s>::keygen(0);
         assert_eq!(public.to_bytes().len(), 48);
-        assert_eq!(S::sign(key).to_bytes().len(), 16_224);
-        let (key, public) = F::keygen(0);
+        assert_eq!(
+            SlhDsa::<slh_dsa::Sha2_192s>::sign(key).to_bytes().len(),
+            16_224
+        );
+        let (key, public) = SlhDsa::<slh_dsa::Sha2_192f>::keygen(0);
         assert_eq!(public.to_bytes().len(), 48);
-        assert_eq!(F::sign(key).to_bytes().len(), 35_664);
+        assert_eq!(
+            SlhDsa::<slh_dsa::Sha2_192f>::sign(key).to_bytes().len(),
+            35_664
+        );
+    }
+
+    #[test]
+    fn fors_shapes_have_the_expected_sizes() {
+        assert_eq!(<Fors<35, 9, 32, 40> as Bench>::SIGNATURE_BYTES, 11_200);
+        assert_eq!(<Fors<22, 14, 32, 39> as Bench>::SIGNATURE_BYTES, 10_560);
+        assert_eq!(<Fors<33, 8, 24, 33> as Bench>::SIGNATURE_BYTES, 7_128);
+        assert_eq!(<Fors<17, 14, 24, 30> as Bench>::SIGNATURE_BYTES, 6_120);
+        assert_eq!(<Fors<16, 16, 32, 32> as Bench>::SIGNATURE_BYTES, 8_704);
+        assert_eq!(<Fors<14, 12, 16, 21> as Bench>::SIGNATURE_BYTES, 2_912);
+        assert_eq!(<Fors<35, 9, 32, 40> as Bench>::PUBLIC_KEY_BYTES, 64);
+        assert_eq!(<Fors<33, 8, 24, 33> as Bench>::PUBLIC_KEY_BYTES, 48);
+        assert_eq!(<Fors<14, 12, 16, 21> as Bench>::PUBLIC_KEY_BYTES, 32);
     }
 
     #[test]

@@ -339,6 +339,7 @@ dependencies = [
 name = "app_pq_bench"
 version = "0.1.0"
 dependencies = [
+ "pq-crypto",
  "slh-dsa",
 ]
 
@@ -825,6 +826,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fd016a0ddc7cb13661bf5576073ce07330a693f8608a1320b4e20561cc12cdc"
 dependencies = [
  "hybrid-array 0.2.3",
+ "zeroize",
 ]
 
 [[package]]
@@ -1622,6 +1624,7 @@ dependencies = [
  "block-buffer 0.11.0-rc.3",
  "crypto-common 0.2.0-rc.1",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -3362,6 +3365,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pq-crypto"
+version = "0.1.0-rc2"
+source = "git+https://github.com/p0mvn/pq-crypto?rev=eafdebd3721ba464818b2d67f1aa385cba5c3b3a#eafdebd3721ba464818b2d67f1aa385cba5c3b3a"
+dependencies = [
+ "rand_core 0.10.1",
+ "sha2 0.11.0-pre.4",
+ "zeroize",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3640,6 +3653,12 @@ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom 0.2.16",
 ]
+
+[[package]]
+name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rand_distr"

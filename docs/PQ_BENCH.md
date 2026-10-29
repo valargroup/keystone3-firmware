@@ -1,8 +1,14 @@
 # Hash-based signature benchmark
 
 Debug and simulator builds include a benchmark that times key generation, signing and
-verification of SLH-DSA (FIPS 205) with the SHA2 parameter sets `SLH-192s` and `SLH-192f`, using
-the `slh-dsa` crate.
+verification of hash-based signatures on the device:
+
+| Name | Scheme | Library |
+|---|---|---|
+| `WOTS+` | RFC 8391 WOTS+, n=32, w=16, SHA-256 | `pq-crypto` |
+| `FORS-256f`, `FORS-256s`, `FORS-192f`, `FORS-192s`, `FORS-128s` | FIPS 205 FORS with the trees, height and hash length of that SLH-DSA-SHA2 set (35×9, 22×14, 33×8, 17×14, 14×12) | `pq-crypto` (prototype) |
+| `FORS-16x16` | FORS with 16 trees of height 16 and 32-byte hashes, used by no SLH-DSA set | `pq-crypto` (prototype) |
+| `SLH-128s`, `SLH-128f`, `SLH-192s`, `SLH-192f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
 signature is verified; a failure is reported as an error, not as a time. Production builds do
@@ -15,26 +21,27 @@ signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with sof
 
 ## Running it
 
-- **Device screen**: Settings → About → PQ Bench → Run. It runs both sets three times and shows
-  the median times, and the step running now while it works.
+- **Device screen**: Settings → About → PQ Bench. Each scheme has its own Run button, which runs
+  that scheme three times; its row then shows the median times. While it works, the row shows the
+  step running now. Results of every scheme stay on screen, and in flash, until it runs again.
 - **UART** (debug builds, UART0 at 512000 baud): send `#pq bench:all 3` followed by CR LF, or
-  `SLH-192s` / `SLH-192f` in place of `all`. The iteration count is optional; `#pq bench:` with
-  no arguments lists the sets. A `pqbench,step,...` line comes before every step. Results are CSV
+  a scheme name or index in place of `all`. The iteration count is optional; `#pq bench:` with
+  no arguments lists the schemes. A `pqbench,step,...` line comes before every step. Results are CSV
   lines starting with `pqbench,`, with median, minimum and maximum microseconds per operation,
   then the signature and public key sizes in bytes. The last lines report the benchmark task's
   unused stack and the lowest free heap seen.
 - **Simulator**: `PQ_BENCH="all 3" ./build/simulator` prints the same CSV and exits without
   opening a window. Simulator times measure the host computer, not the device.
 
-**If the device resets.** Before every step the device saves which set, step and iteration it is
-on, plus the results finished so far, to a sector of SPI flash. After a reset, open PQ Bench: it
-shows "CRASHED: the device reset during <set> <step>, iteration i of n" above the results that
-did finish, and the UART prints `pqbench,last_run_reset_during,...` the first time the record is
-read. The next run replaces the record.
+**If the device resets.** Before every step the device saves which scheme, step and iteration it
+is on, plus every scheme's latest results, to a sector of SPI flash. After a reset, open PQ Bench:
+the top line says which scheme was running, its row says "CRASHED: reset during <step>,
+iteration i of n", and the other rows keep their results. The UART prints
+`pqbench,last_run_reset_during,...` the first time the record is read.
 
 On the device the benchmark runs on its own task, below every other task but the idle task.
-`slh-dsa` builds each signature on the stack and copies it several times, so `SLH-192f` needs
-about 200 KB of stack. The SRAM heap has less than that free, so the task's 240 KB stack lives in
+`slh-dsa` builds each signature on the stack and copies it several times, so the large SLH-DSA
+sets need up to about 200 KB of stack (`SLH-192f`). The SRAM heap has less than that free, so the task's 240 KB stack lives in
 PSRAM, allocated on the first run and kept. Stack accesses may be slower than from SRAM, so
 compare device times with that in mind. Times come from the CPU cycle counter (204 MHz), or from
 the 1 ms tick for steps longer than 10 s.

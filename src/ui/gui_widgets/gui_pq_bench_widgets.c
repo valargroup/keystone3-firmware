@@ -4,15 +4,19 @@
 #include "gui_pq_bench_widgets.h"
 #include "pq_bench.h"
 
-// The screen shows the median time per operation; the UART log has min/max and sizes.
+// One row per scheme, each with its own Run button, so schemes run one at a time. Rows show
+// median times from the flash record; the UART log has min/max and sizes.
 
 #ifdef FEATURE_PQ_BENCH
 
 #define PQ_BENCH_POLL_MS        500
+#define PQ_BENCH_HEADER_HEIGHT  96
+#define PQ_BENCH_ROW_HEIGHT     112
 
 static PageWidget_t *g_pageWidget;
-static lv_obj_t *g_resultLabel;
-static lv_obj_t *g_runButton;
+static lv_obj_t *g_statusLabel;
+static lv_obj_t *g_rowLabels[PQ_BENCH_MAX_SCHEMES];
+static lv_obj_t *g_runButtons[PQ_BENCH_MAX_SCHEMES];
 static lv_timer_t *g_pollTimer;
 
 static void FormatDuration(char *out, size_t outLen, uint64_t ns)
@@ -27,70 +31,77 @@ static void FormatDuration(char *out, size_t outLen, uint64_t ns)
     }
 }
 
-// Shows the last run from the flash record: its results, and, when it never finished, the step
+// The line under scheme `scheme`'s name: its latest times, the step running now, or the step
 // during which the device reset.
-static void ShowRecord(void)
+static void FormatRow(char *out, size_t outLen, const PqBenchRecord_t *record, uint32_t scheme, bool running)
 {
-    const PqBenchRecord_t *record = PqBenchGetRecord();
-    char text[512] = "";
-    size_t used = 0;
-
-    if (record == NULL) {
-        lv_label_set_text(g_resultLabel, "Times SLH-DSA-SHA2-192s and 192f on this device.\n"
-                          "Results are medians; the UART log has min/max.");
+    if (record != NULL && record->running && record->scheme == scheme) {
+        snprintf(out, outLen, "%s %s, iteration %lu of %lu%s", running ? "Running" : "CRASHED: reset during",
+                 PqBenchStepName(record->step), (unsigned long)record->iteration + 1,
+                 (unsigned long)record->iterations, running ? "..." : "");
         return;
     }
-    if (record->running && PqBenchGetState() != PQ_BENCH_RUNNING) {
-        used += snprintf(text + used, sizeof(text) - used,
-                         "CRASHED: the device reset during %s %s, iteration %lu of %lu.\n\n",
-                         pq_bench_scheme_name(record->scheme), PqBenchStepName(record->step),
-                         (unsigned long)record->iteration + 1, (unsigned long)record->iterations);
+    if (record == NULL || !(record->finished & (1UL << scheme))) {
+        snprintf(out, outLen, "Not run yet");
+        return;
     }
-    used += snprintf(text + used, sizeof(text) - used, "keygen / sign / verify\n");
-    for (uint32_t i = 0; i < record->resultCount && used < sizeof(text); i++) {
-        const PqBenchResult_t *result = &record->results[i];
-        const char *name = pq_bench_scheme_name(result->scheme);
-        if (result->status != PQ_BENCH_OK) {
-            used += snprintf(text + used, sizeof(text) - used, "%s  error %d\n", name, (int)result->status);
-            continue;
+    const PqBenchResult_t *result = &record->results[scheme];
+    if (result->status != PQ_BENCH_OK) {
+        snprintf(out, outLen, "Error %d", (int)result->status);
+        return;
+    }
+    char keygen[16], sign[16], verify[16];
+    FormatDuration(keygen, sizeof(keygen), result->report.keygen.median_ns);
+    FormatDuration(sign, sizeof(sign), result->report.sign.median_ns);
+    FormatDuration(verify, sizeof(verify), result->report.verify.median_ns);
+    snprintf(out, outLen, "keygen %s, sign %s, verify %s (n=%lu)", keygen, sign, verify,
+             (unsigned long)result->report.iterations);
+}
+
+static void UpdateRows(void)
+{
+    const PqBenchRecord_t *record = PqBenchGetRecord();
+    bool running = PqBenchGetState() == PQ_BENCH_RUNNING;
+    char text[96];
+
+    if (running) {
+        lv_label_set_text(g_statusLabel, "Running; the other buttons wait until it finishes.");
+    } else if (record != NULL && record->running) {
+        lv_label_set_text_fmt(g_statusLabel, "CRASHED: the device reset while running %s.",
+                              pq_bench_scheme_name(record->scheme));
+    } else {
+        lv_label_set_text(g_statusLabel, "Run each scheme on its own. Times are medians of 3;\n"
+                          "the UART log has min/max.");
+    }
+    for (uint32_t i = 0; i < pq_bench_scheme_count() && i < PQ_BENCH_MAX_SCHEMES; i++) {
+        FormatRow(text, sizeof(text), record, i, running);
+        lv_label_set_text(g_rowLabels[i], text);
+        if (running) {
+            lv_obj_add_state(g_runButtons[i], LV_STATE_DISABLED);
+        } else {
+            lv_obj_clear_state(g_runButtons[i], LV_STATE_DISABLED);
         }
-        char keygen[16], sign[16], verify[16];
-        FormatDuration(keygen, sizeof(keygen), result->report.keygen.median_ns);
-        FormatDuration(sign, sizeof(sign), result->report.sign.median_ns);
-        FormatDuration(verify, sizeof(verify), result->report.verify.median_ns);
-        used += snprintf(text + used, sizeof(text) - used, "%s (n=%lu)\n  %s / %s / %s\n", name,
-                         (unsigned long)result->report.iterations, keygen, sign, verify);
     }
-    lv_label_set_text(g_resultLabel, text);
 }
 
 static void PollTimerHandler(lv_timer_t *timer)
 {
-    if (PqBenchGetState() == PQ_BENCH_RUNNING) {
-        const PqBenchRecord_t *record = PqBenchGetRecord();
-        if (record != NULL && record->running) {
-            lv_label_set_text_fmt(g_resultLabel, "Running %s %s, iteration %lu of %lu...\n"
-                                  "SLH-192s signing takes minutes.",
-                                  pq_bench_scheme_name(record->scheme), PqBenchStepName(record->step),
-                                  (unsigned long)record->iteration + 1, (unsigned long)record->iterations);
-        }
-        return;
+    UpdateRows();
+    if (PqBenchGetState() != PQ_BENCH_RUNNING) {
+        lv_timer_del(timer);
+        g_pollTimer = NULL;
     }
-    lv_timer_del(timer);
-    g_pollTimer = NULL;
-    ShowRecord();
-    lv_obj_clear_state(g_runButton, LV_STATE_DISABLED);
 }
 
 static void RunHandler(lv_event_t *e)
 {
-    lv_label_set_text(g_resultLabel, "Starting...");
-    lv_obj_add_state(g_runButton, LV_STATE_DISABLED);
-    if (!PqBenchStart(PQ_BENCH_ALL_SCHEMES, 0)) {
-        lv_label_set_text_fmt(g_resultLabel, "Could not start: %s", PqBenchGetError());
-        lv_obj_clear_state(g_runButton, LV_STATE_DISABLED);
+    int32_t scheme = (int32_t)(intptr_t)lv_event_get_user_data(e);
+
+    if (!PqBenchStart(scheme, 0)) {
+        lv_label_set_text_fmt(g_statusLabel, "Could not start: %s", PqBenchGetError());
         return;
     }
+    UpdateRows();
     if (g_pollTimer == NULL) {
         g_pollTimer = lv_timer_create(PollTimerHandler, PQ_BENCH_POLL_MS, NULL);
     }
@@ -100,21 +111,29 @@ void GuiPqBenchWidgetsInit(void)
 {
     g_pageWidget = CreatePageWidget();
     lv_obj_t *cont = g_pageWidget->contentZone;
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
 
-    g_resultLabel = GuiCreateIllustrateLabel(cont, "");
-    lv_obj_set_width(g_resultLabel, 432);
-    lv_obj_align(g_resultLabel, LV_ALIGN_TOP_LEFT, 24, 12);
+    g_statusLabel = GuiCreateIllustrateLabel(cont, "");
+    lv_obj_set_width(g_statusLabel, 432);
+    lv_obj_align(g_statusLabel, LV_ALIGN_TOP_LEFT, 24, 12);
 
-    g_runButton = GuiCreateBtn(cont, "Run");
-    lv_obj_align(g_runButton, LV_ALIGN_BOTTOM_RIGHT, -36, -24);
-    lv_obj_add_event_cb(g_runButton, RunHandler, LV_EVENT_CLICKED, NULL);
+    for (uint32_t i = 0; i < pq_bench_scheme_count() && i < PQ_BENCH_MAX_SCHEMES; i++) {
+        lv_coord_t y = PQ_BENCH_HEADER_HEIGHT + i * PQ_BENCH_ROW_HEIGHT;
+        lv_obj_t *name = GuiCreateTextLabel(cont, pq_bench_scheme_name(i));
+        lv_obj_align(name, LV_ALIGN_TOP_LEFT, 24, y);
 
+        g_rowLabels[i] = GuiCreateIllustrateLabel(cont, "");
+        lv_obj_set_width(g_rowLabels[i], 312);
+        lv_obj_align(g_rowLabels[i], LV_ALIGN_TOP_LEFT, 24, y + 40);
+
+        g_runButtons[i] = GuiCreateBtn(cont, "Run");
+        lv_obj_align(g_runButtons[i], LV_ALIGN_TOP_RIGHT, -24, y + 8);
+        lv_obj_add_event_cb(g_runButtons[i], RunHandler, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+
+    UpdateRows();
     if (PqBenchGetState() == PQ_BENCH_RUNNING) {
-        lv_label_set_text(g_resultLabel, "Running...");
-        lv_obj_add_state(g_runButton, LV_STATE_DISABLED);
         g_pollTimer = lv_timer_create(PollTimerHandler, PQ_BENCH_POLL_MS, NULL);
-    } else {
-        ShowRecord();
     }
 }
 
