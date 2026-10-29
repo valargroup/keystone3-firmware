@@ -22,9 +22,6 @@
 // stack lives in PSRAM, allocated on the first run and kept for later ones. FreeRTOS counts the
 // stack in 16-bit words of 4 bytes, so it cannot exceed 256 KB - 4.
 #define PQ_BENCH_STACK_BYTES        (240 * 1024)
-// Above this the cycle counter (32 bits at 204 MHz, about 21 s) may have wrapped, so elapsed
-// time comes from the 1 ms tick instead.
-#define PQ_BENCH_CYCLE_LIMIT_MS     10000
 #define PQ_BENCH_RECORD_MAGIC       0x50514234  // "PQB4"
 
 static volatile PqBenchState_t g_pqBenchState = PQ_BENCH_IDLE;
@@ -53,33 +50,29 @@ static void SaveRecord(void)
 
 #else
 
+// Time from the OS tick plus the SysTick countdown inside the current tick. The cycle counter
+// does not run on the MH1903, but SysTick always does: it drives the 1 ms OS tick, and its
+// countdown splits each tick into LOAD + 1 counts, which gives sub-microsecond resolution.
 static uint64_t PqBenchNowNs(void)
 {
-    static bool started = false;
-    static uint32_t lastCycles, lastTick;
-    static uint64_t nowNs;
-    uint32_t cycles, tick, elapsedTicks;
+    static uint64_t last;
+    uint32_t tick, load, remaining;
+    uint64_t now;
 
-    if (!started) {
-        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-        DWT->CYCCNT = 0;
-        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-        started = true;
-        lastCycles = DWT->CYCCNT;
-        lastTick = osKernelGetTickCount();
-        return nowNs;
+    // Read again if the tick moved on between the two reads, so the countdown belongs to the tick.
+    do {
+        tick = osKernelGetTickCount();
+        load = SysTick->LOAD;
+        remaining = SysTick->VAL;
+    } while (tick != osKernelGetTickCount());
+    now = (uint64_t)tick * 1000000ULL + (uint64_t)(load - remaining) * 1000000ULL / (load + 1);
+    // The countdown restarts a moment before the tick interrupt counts the new tick; never step
+    // back across that gap, or a step's time would go negative.
+    if (now < last) {
+        now = last;
     }
-    cycles = DWT->CYCCNT;
-    tick = osKernelGetTickCount();
-    elapsedTicks = tick - lastTick;
-    if (elapsedTicks < PQ_BENCH_CYCLE_LIMIT_MS) {
-        nowNs += (uint64_t)(cycles - lastCycles) * 1000000000ULL / configCPU_CLOCK_HZ;
-    } else {
-        nowNs += (uint64_t)elapsedTicks * 1000000ULL;
-    }
-    lastCycles = cycles;
-    lastTick = tick;
-    return nowNs;
+    last = now;
+    return now;
 }
 
 static void LoadRecord(void)
@@ -94,6 +87,15 @@ static void SaveRecord(void)
 }
 
 #endif
+
+// Refuse to run with a clock that stands still, which would report every step as 0.
+static bool PqBenchClockRuns(void)
+{
+    uint64_t first = PqBenchNowNs();
+    for (volatile uint32_t i = 0; i < 10000; i++) {
+    }
+    return PqBenchNowNs() > first;
+}
 
 _Static_assert(sizeof(PqBenchRecord_t) <= 0x1000, "the record must fit one flash sector");
 
@@ -247,6 +249,11 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations)
     if (scheme != PQ_BENCH_ALL_SCHEMES && (scheme < 0 || (uint32_t)scheme >= pq_bench_scheme_count())) {
         snprintf(g_pqBenchError, sizeof(g_pqBenchError), "Unknown scheme %d.", (int)scheme);
         printf("pqbench,error,unknown scheme %d\r\n", (int)scheme);
+        return false;
+    }
+    if (!PqBenchClockRuns()) {
+        snprintf(g_pqBenchError, sizeof(g_pqBenchError), "The timer is not running, so times would read 0.");
+        printf("pqbench,error,%s\r\n", g_pqBenchError);
         return false;
     }
     g_pqBenchScheme = scheme;

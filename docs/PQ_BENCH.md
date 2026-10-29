@@ -48,8 +48,10 @@ On the device the benchmark runs on its own task, below every other task but the
 sets need up to about 200 KB of stack (`SLH-192f`), and leanSphincs about 230 KB of heap for its
 key's trees. The SRAM heap has less than either free, so the task's 240 KB stack lives in PSRAM,
 allocated on the first run and kept, and the Rust allocations the task makes go to PSRAM too. Stack accesses may be slower than from SRAM, so
-compare device times with that in mind. Times come from the CPU cycle counter (204 MHz), or from
-the 1 ms tick for steps longer than 10 s.
+compare device times with that in mind. Times come from the 1 ms OS tick plus the SysTick
+countdown within the current tick, which resolves well under a microsecond. The CPU cycle counter
+does not run on this chip, so earlier builds showed 0us for every step shorter than 10 s; a run now
+refuses to start if the timer is not advancing.
 
 ## Measuring on a ForgeBox
 
