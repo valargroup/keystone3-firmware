@@ -25,7 +25,7 @@
 // Above this the cycle counter (32 bits at 204 MHz, about 21 s) may have wrapped, so elapsed
 // time comes from the 1 ms tick instead.
 #define PQ_BENCH_CYCLE_LIMIT_MS     10000
-#define PQ_BENCH_RECORD_MAGIC       0x50514232  // "PQB2"
+#define PQ_BENCH_RECORD_MAGIC       0x50514233  // "PQB3"
 
 static volatile PqBenchState_t g_pqBenchState = PQ_BENCH_IDLE;
 static int32_t g_pqBenchScheme;
@@ -280,6 +280,15 @@ const PqBenchRecord_t *PqBenchGetRecord(void)
 {
     EnsureRecordLoaded();
     return g_pqBenchRecord.magic == PQ_BENCH_RECORD_MAGIC ? &g_pqBenchRecord : NULL;
+}
+
+bool PqBenchIsCurrentTask(void)
+{
+#ifdef COMPILE_SIMULATOR
+    return false;
+#else
+    return g_pqBenchTask != NULL && osThreadGetId() == g_pqBenchTask;
+#endif
 }
 
 const char *PqBenchStepName(uint32_t step)

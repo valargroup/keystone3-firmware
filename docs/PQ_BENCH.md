@@ -5,10 +5,8 @@ verification of hash-based signatures on the device:
 
 | Name | Scheme | Library |
 |---|---|---|
-| `WOTS+` | RFC 8391 WOTS+, n=32, w=16, SHA-256 | `pq-crypto` |
-| `FORS-256f`, `FORS-256s`, `FORS-192f`, `FORS-192s`, `FORS-128s` | FIPS 205 FORS with the trees, height and hash length of that SLH-DSA-SHA2 set (35×9, 22×14, 33×8, 17×14, 14×12) | `pq-crypto` (prototype) |
-| `FORS-16x16` | FORS with 16 trees of height 16 and 32-byte hashes, used by no SLH-DSA set | `pq-crypto` (prototype) |
 | `SLH-128s`, `SLH-128f`, `SLH-192s`, `SLH-192f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
+| `leanSphincs` | leanSphincs with SHA-256 and one tree of height 22 pruned to a kept subtree of height 10, as zakura-core/common signs post-quantum accounts (4,212-byte signatures, 32-byte public keys) | `sphincs` from TomWambsgans/sphincs.art |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
 signature is verified; a failure is reported as an error, not as a time. Production builds do
@@ -18,6 +16,10 @@ The `slh-dsa` dependency is 0.0.3 plus the SHA-2 seed-state caching from 0.2
 (`valargroup/signatures`, branch `roman/mac/claude/slh-dsa-0.0.3-seed-cache`). This workspace
 cannot use 0.2 itself, because `zcash_primitives` pins the RustCrypto 0.11 pre-releases. Its
 signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with software SHA-256.
+
+The `sphincs` dependency is TomWambsgans/sphincs.art at `f181496`, the commit zakura-core/zakura#1796
+uses, plus a change that lets it build without std (`valargroup/sphincs.art`, branch
+`roman/mac/claude/no-std-keystone`). Its keys and signatures are byte-identical to `f181496`.
 
 ## Running it
 
@@ -41,8 +43,9 @@ iteration i of n", and the other rows keep their results. The UART prints
 
 On the device the benchmark runs on its own task, below every other task but the idle task.
 `slh-dsa` builds each signature on the stack and copies it several times, so the large SLH-DSA
-sets need up to about 200 KB of stack (`SLH-192f`). The SRAM heap has less than that free, so the task's 240 KB stack lives in
-PSRAM, allocated on the first run and kept. Stack accesses may be slower than from SRAM, so
+sets need up to about 200 KB of stack (`SLH-192f`), and leanSphincs about 230 KB of heap for its
+key's trees. The SRAM heap has less than either free, so the task's 240 KB stack lives in PSRAM,
+allocated on the first run and kept, and the Rust allocations the task makes go to PSRAM too. Stack accesses may be slower than from SRAM, so
 compare device times with that in mind. Times come from the CPU cycle counter (204 MHz), or from
 the 1 ms tick for steps longer than 10 s.
 

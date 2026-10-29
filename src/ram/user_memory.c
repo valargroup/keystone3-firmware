@@ -4,6 +4,8 @@
 #include "psram_heap_4.h"
 #include "assert.h"
 #include "user_memory.h"
+#include "drv_psram.h"
+#include "pq_bench.h"
 
 #define SRAM_HEAP_TRACK                 0
 #define EXT_HEAP_TRACK                  0
@@ -143,6 +145,12 @@ void *RustMalloc(int32_t size)
 #ifdef CYPHERPUNK_VERSION
     return ExtMalloc(size);
 #else
+#ifdef FEATURE_PQ_BENCH
+    // The benchmark's schemes need more heap than SRAM has free.
+    if (PqBenchIsCurrentTask()) {
+        return ExtMalloc(size);
+    }
+#endif
     return SramMalloc(size);
 #endif
 }
@@ -152,6 +160,12 @@ void RustFree(void *p)
 #ifdef CYPHERPUNK_VERSION
     ExtFree(p);
 #else
+#ifdef FEATURE_PQ_BENCH
+    if ((uintptr_t)p >= MHSCPU_PSRAM_BASE) {
+        ExtFree(p);
+        return;
+    }
+#endif
     SramFree(p);
 #endif
 }

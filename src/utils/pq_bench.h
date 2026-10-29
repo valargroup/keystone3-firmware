@@ -7,11 +7,11 @@
 
 #ifdef FEATURE_PQ_BENCH
 
-// Hash-based signature benchmark: times key generation, signing and verification of
-// WOTS+, FORS and SLH-DSA (the Rust side is rust/apps/pq_bench).
+// Hash-based signature benchmark: times key generation, signing and verification of the
+// SLH-DSA SHA2 sets and leanSphincs (the Rust side is rust/apps/pq_bench).
 
 #define PQ_BENCH_ALL_SCHEMES        (-1)
-#define PQ_BENCH_MAX_SCHEMES        12
+#define PQ_BENCH_MAX_SCHEMES        6
 #define PQ_BENCH_DEFAULT_ITERATIONS 3
 
 typedef enum {
@@ -55,6 +55,10 @@ const char *PqBenchGetError(void);
 // running now; when no run is in progress and record->running is set, the device reset during
 // that step. Returns NULL when nothing has run yet.
 const PqBenchRecord_t *PqBenchGetRecord(void);
+
+// True on the benchmark's task, whose Rust allocations go to PSRAM: leanSphincs needs about
+// 230 KB of heap, more than the SRAM heap has free.
+bool PqBenchIsCurrentTask(void);
 
 // "keygen", "sign" or "verify".
 const char *PqBenchStepName(uint32_t step);

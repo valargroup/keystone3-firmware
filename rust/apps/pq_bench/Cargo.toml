@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# FORS is still a prototype (p0mvn/pq-crypto#8). This commit is that branch plus no_std support,
-# built on the RustCrypto pre-releases this workspace already locks (branch
-# roman/mac/claude/pq-crypto-keystone-pin).
-pq-crypto = { git = "https://github.com/p0mvn/pq-crypto", rev = "eafdebd3721ba464818b2d67f1aa385cba5c3b3a" }
 # zakura-core/common benchmarks slh-dsa 0.2.0-rc.5, which needs the final RustCrypto 0.11 releases;
 # zcash_primitives pins this workspace to their pre-releases. This is slh-dsa 0.0.3 (stable RustCrypto
 # crates) plus 0.2's SHA-2 seed-state caching (RustCrypto/signatures#1116), without which signing
 # costs about twice as much with software SHA-256. Signatures are byte-identical to 0.2.0-rc.5.
 slh-dsa = { git = "https://github.com/valargroup/signatures", rev = "98213188e6333ef9eb63cdec07bf2589a5ec620f", default-features = false }
+# leanSphincs at the commit zakura-core/zakura#1796 (through zakura-core/common#648) pins,
+# f181496 of TomWambsgans/sphincs.art, plus a no_std build (branch roman/mac/claude/no-std-keystone).
+sphincs = { git = "https://github.com/valargroup/sphincs.art", rev = "5efc941832c0346c561a72a7b3ca76d5aa3ee380", default-features = false }
