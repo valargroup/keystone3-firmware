@@ -36,9 +36,13 @@ static void FormatDuration(char *out, size_t outLen, uint64_t ns)
 static void FormatRow(char *out, size_t outLen, const PqBenchRecord_t *record, uint32_t scheme, bool running)
 {
     if (record != NULL && record->running && record->scheme == scheme) {
-        snprintf(out, outLen, "%s %s, iteration %lu of %lu%s", running ? "Running" : "CRASHED: reset during",
-                 PqBenchStepName(record->step), (unsigned long)record->iteration + 1,
-                 (unsigned long)record->iterations, running ? "..." : "");
+        const char *what = running ? "Running" : "CRASHED: reset during";
+        if (record->iterations > 1) {
+            snprintf(out, outLen, "%s %s, iteration %lu of %lu%s", what, PqBenchStepName(record->step),
+                     (unsigned long)record->iteration + 1, (unsigned long)record->iterations, running ? "..." : "");
+        } else {
+            snprintf(out, outLen, "%s %s%s", what, PqBenchStepName(record->step), running ? "..." : "");
+        }
         return;
     }
     if (record == NULL || !(record->finished & (1UL << scheme))) {
@@ -54,8 +58,12 @@ static void FormatRow(char *out, size_t outLen, const PqBenchRecord_t *record, u
     FormatDuration(keygen, sizeof(keygen), result->report.keygen.median_ns);
     FormatDuration(sign, sizeof(sign), result->report.sign.median_ns);
     FormatDuration(verify, sizeof(verify), result->report.verify.median_ns);
-    snprintf(out, outLen, "keygen %s, sign %s, verify %s (n=%lu)", keygen, sign, verify,
-             (unsigned long)result->report.iterations);
+    if (result->report.iterations > 1) {
+        snprintf(out, outLen, "keygen %s, sign %s, verify %s (median of %lu)", keygen, sign, verify,
+                 (unsigned long)result->report.iterations);
+    } else {
+        snprintf(out, outLen, "keygen %s, sign %s, verify %s", keygen, sign, verify);
+    }
 }
 
 static void UpdateRows(void)
@@ -70,8 +78,8 @@ static void UpdateRows(void)
         lv_label_set_text_fmt(g_statusLabel, "CRASHED: the device reset while running %s.",
                               pq_bench_scheme_name(record->scheme));
     } else {
-        lv_label_set_text(g_statusLabel, "Run each scheme on its own. Times are medians of 3;\n"
-                          "the UART log has min/max.");
+        lv_label_set_text(g_statusLabel, "Run each scheme on its own; each Run does one\n"
+                          "key generation, signature and verification.");
     }
     for (uint32_t i = 0; i < pq_bench_scheme_count() && i < PQ_BENCH_MAX_SCHEMES; i++) {
         FormatRow(text, sizeof(text), record, i, running);

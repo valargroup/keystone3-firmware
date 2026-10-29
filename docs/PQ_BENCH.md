@@ -24,10 +24,12 @@ uses, plus a change that lets it build without std (`valargroup/sphincs.art`, br
 ## Running it
 
 - **Device screen**: Settings → About → PQ Bench. Each scheme has its own Run button, which runs
-  that scheme three times; its row then shows the median times. While it works, the row shows the
+  one round of that scheme (one key generation, signature and verification); its row then shows
+  the times. Press it again for another round. While it works, the row shows the
   step running now. Results of every scheme stay on screen, and in flash, until it runs again.
-- **UART** (debug builds, UART0 at 512000 baud): send `#pq bench:all 3` followed by CR LF, or
-  a scheme name or index in place of `all`. The iteration count is optional; `#pq bench:` with
+- **UART** (debug builds, UART0 at 512000 baud): send `#pq bench:all` followed by CR LF, or
+  a scheme name or index in place of `all`. An iteration count after the name runs that many rounds and reports their median (the
+  default is one); `#pq bench:` with
   no arguments lists the schemes. A `pqbench,step,...` line comes before every step. Results are CSV
   lines starting with `pqbench,`, with median, minimum and maximum microseconds per operation,
   then the signature and public key sizes in bytes. The last lines report the benchmark task's
@@ -68,4 +70,5 @@ with a key you register on it once.
    Keystone does not support this firmware as a drop-in ForgeBox image, so this first flash is
    the risky step.
 5. Keep the device on USB power with the screen on, then run the benchmark from the screen or
-   over UART. Repeat it three times and report the median of the three runs.
+   over UART. Each Run is one round; for steadier numbers press it a few times and note each
+   result.

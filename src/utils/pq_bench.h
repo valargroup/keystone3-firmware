@@ -12,7 +12,8 @@
 
 #define PQ_BENCH_ALL_SCHEMES        (-1)
 #define PQ_BENCH_MAX_SCHEMES        32
-#define PQ_BENCH_DEFAULT_ITERATIONS 3
+// One round per run: a Run press does one key generation, one signature and one verification.
+#define PQ_BENCH_DEFAULT_ITERATIONS 1
 
 typedef enum {
     PQ_BENCH_IDLE,
