@@ -5,9 +5,10 @@ verification of hash-based signatures on the device:
 
 | Name | Scheme | Library |
 |---|---|---|
-| `SHA-256 block` | Not a signature: 10,000 SHA-256 compressions of one 64-byte block, shown as the time per block. Every scheme here spends nearly all its time hashing, so this is the device's hashing speed on its own | `sha2`, as `slh-dsa` uses it |
+| `SHA-256 block` | Not a signature: 10,000 SHA-256 compressions of one 64-byte block, shown as the time per block. Every scheme here spends nearly all its time hashing, so this is the device's hashing speed on its own | `sha2`, as `slh-dsa` and 192-bit leanSphincs use it |
+| `SHA-512 block` | 10,000 SHA-512 compressions of one 128-byte block; 192-bit leanSphincs uses SHA-512 for its multi-node hashes and encodings | `sha2` |
 | `SLH-128s`, `SLH-128f`, `SLH-192s`, `SLH-192f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
-| `lean h22 b12`, `lean h22 layer`, `lean h28 b12`, `lean h28 layer` | leanSphincs over SHA-256 as [sphincs.art](https://sphincs.art/) shows it for a hardware wallet at its lowest and highest lifetimes, 2^26 signatures (tree height 22) and 2^32 (height 28): "Pruning" with a kept subtree of 2^12 leaves (107K and 137K signatures), and "Uniform", a three-layer hypertree (82M and 5.6B signatures) | `sphincs` from TomWambsgans/sphincs.art |
+| `lean192 h22 b12`, `lean192 h22 layer`, `lean192 h28 b12`, `lean192 h28 layer` | The experimental 192-bit leanSphincs family over SHA2 (SHA-256 for chain steps, SHA-512 for multi-node hashes) with FORS, sphincs.art's defaults for that family, at its lowest and highest lifetimes, 2^26 signatures (tree height 22) and 2^32 (height 28): "Pruning" with a kept subtree of 2^12 leaves and "Uniform", a three-layer hypertree. Its security is not proved; see sphincs.art | `sphincs::level192` from valargroup/sphincs.art |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
 signature is verified; a failure is reported as an error, not as a time. Production builds do
@@ -20,9 +21,11 @@ signatures are byte-identical to 0.2.0-rc.5, and signing costs the same with sof
 The branch also adds `try_sign_with_context_into`, which signs into a signature the caller
 owns; the benchmark keeps that signature on the heap, so it never passes through the stack.
 
-The `sphincs` dependency is TomWambsgans/sphincs.art at `f181496`, the commit zakura-core/zakura#1796
-uses, plus a change that lets it build without std (`valargroup/sphincs.art`, branch
-`roman/mac/claude/no-std-keystone`). Its keys and signatures are byte-identical to `f181496`.
+The `sphincs` dependency is valargroup/sphincs.art branch `roman/mac/claude/no-std-keystone-192`:
+the experimental 192-bit family from branch `roman/mac/codex/192-bit-configurations`, plus changes
+that let it build without std and use the RustCrypto 0.10 releases of `sha2`, `sha3` and `hmac`
+instead of 0.11, which this workspace cannot link. Its signatures match the family's
+known-answer vectors.
 
 ## Running it
 
@@ -31,7 +34,7 @@ uses, plus a change that lets it build without std (`valargroup/sphincs.art`, br
   the times, with a grey line saying how that run was set up. Press it again for another round.
   While it works, the row shows the step running now. Results of every scheme stay on screen, and
   in flash, until it runs again. Two toggles at the top set up the next run:
-  - **Stack: on-chip / PSRAM** puts the benchmark's stack in on-chip RAM (48 KB, the default) or
+  - **Stack: on-chip / PSRAM** puts the benchmark's stack in on-chip RAM (64 KB, the default) or
     in external PSRAM (240 KB, as earlier builds did).
   - **Priority: low / high**. Low runs below every other task, so the screen stays live. High runs
     above the screen, USB and touch tasks (only the watchdog and UART command tasks are higher),
@@ -54,11 +57,11 @@ the top line says which scheme was running, its row says "CRASHED: reset during 
 `pqbench,last_run_reset_during,...` the first time the record is read.
 
 On the device the benchmark runs on its own task, one for each stack placement, each created on
-its first run and kept. With signatures on the heap, the deepest scheme uses about 24 KB of stack
-on a Mac (leanSphincs b12 key generation), so the 48 KB on-chip stack has room to spare;
-`cargo run --release -p app_pq_bench --example stack_need` measures it again. leanSphincs needs
-about 230 KB of heap for its key's trees, more than the on-chip heap has free, so the Rust
-allocations the benchmark makes always go to PSRAM. Times come from the 1 ms OS tick plus the SysTick
+its first run and kept. With signatures on the heap, the deepest scheme uses about 34 KB of stack
+on a Mac (192-bit leanSphincs), so the 64 KB on-chip stack has about twice that;
+`cargo run --release -p app_pq_bench --example stack_need` measures it again. leanSphincs keeps
+its key's trees on the heap, more than the on-chip heap has free, so the Rust allocations the
+benchmark makes always go to PSRAM. Times come from the 1 ms OS tick plus the SysTick
 countdown within the current tick, which resolves well under a microsecond. The CPU cycle counter
 does not run on this chip, so earlier builds showed 0us for every step shorter than 10 s; a run now
 refuses to start if the timer is not advancing.

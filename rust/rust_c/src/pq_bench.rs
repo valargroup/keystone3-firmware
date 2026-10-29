@@ -40,12 +40,23 @@ pub extern "C" fn pq_bench_scheme_name(scheme: u32) -> *const c_char {
     }
 }
 
-/// For the SHA-256 row, the number of 64-byte blocks its sign step hashes; 0 for a signature
-/// scheme or an unknown index.
+/// For a hashing row, the number of blocks its sign step hashes; 0 for a signature scheme or an
+/// unknown index.
 #[no_mangle]
 pub extern "C" fn pq_bench_scheme_blocks(scheme: u32) -> u32 {
     match Scheme::ALL.get(scheme as usize) {
-        Some(Scheme::Sha256) => app_pq_bench::HASH_BLOCKS,
+        Some(Scheme::Sha256 | Scheme::Sha512) => app_pq_bench::HASH_BLOCKS,
+        _ => 0,
+    }
+}
+
+/// For a hashing row, the size of one block in bytes (64 for SHA-256, 128 for SHA-512); 0
+/// otherwise.
+#[no_mangle]
+pub extern "C" fn pq_bench_scheme_block_bytes(scheme: u32) -> u32 {
+    match Scheme::ALL.get(scheme as usize) {
+        Some(Scheme::Sha256) => 64,
+        Some(Scheme::Sha512) => 128,
         _ => 0,
     }
 }

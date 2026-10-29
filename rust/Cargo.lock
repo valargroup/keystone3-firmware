@@ -787,7 +787,7 @@ dependencies = [
 [[package]]
 name = "blake2s"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/sphincs.art?rev=5efc941832c0346c561a72a7b3ca76d5aa3ee380#5efc941832c0346c561a72a7b3ca76d5aa3ee380"
+source = "git+https://github.com/valargroup/sphincs.art?rev=25c887ed12cfb17289f7ce785308bbb5a9ded3e9#25c887ed12cfb17289f7ce785308bbb5a9ded3e9"
 
 [[package]]
 name = "blake2s_simd"
@@ -2501,7 +2501,7 @@ dependencies = [
 [[package]]
 name = "keccak"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/sphincs.art?rev=5efc941832c0346c561a72a7b3ca76d5aa3ee380#5efc941832c0346c561a72a7b3ca76d5aa3ee380"
+source = "git+https://github.com/valargroup/sphincs.art?rev=25c887ed12cfb17289f7ce785308bbb5a9ded3e9#25c887ed12cfb17289f7ce785308bbb5a9ded3e9"
 
 [[package]]
 name = "keccak"
@@ -4368,7 +4368,7 @@ dependencies = [
 [[package]]
 name = "sha256"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/sphincs.art?rev=5efc941832c0346c561a72a7b3ca76d5aa3ee380#5efc941832c0346c561a72a7b3ca76d5aa3ee380"
+source = "git+https://github.com/valargroup/sphincs.art?rev=25c887ed12cfb17289f7ce785308bbb5a9ded3e9#25c887ed12cfb17289f7ce785308bbb5a9ded3e9"
 
 [[package]]
 name = "sha3"
@@ -4492,11 +4492,14 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "sphincs"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/sphincs.art?rev=5efc941832c0346c561a72a7b3ca76d5aa3ee380#5efc941832c0346c561a72a7b3ca76d5aa3ee380"
+source = "git+https://github.com/valargroup/sphincs.art?rev=25c887ed12cfb17289f7ce785308bbb5a9ded3e9#25c887ed12cfb17289f7ce785308bbb5a9ded3e9"
 dependencies = [
  "blake2s",
+ "hmac 0.12.1",
  "keccak 0.1.0",
+ "sha2 0.10.9",
  "sha256",
+ "sha3 0.10.8",
 ]
 
 [[package]]

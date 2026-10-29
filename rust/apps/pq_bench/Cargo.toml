@@ -10,8 +10,9 @@ edition = "2021"
 # costs about twice as much with software SHA-256, and signing into a caller-provided signature
 # so it can stay off the stack. Signatures are byte-identical to 0.2.0-rc.5.
 slh-dsa = { git = "https://github.com/valargroup/signatures", rev = "8a3d4959c1a085db1c22ac4a89fb987ce486e473", default-features = false }
-# leanSphincs at the commit zakura-core/zakura#1796 (through zakura-core/common#648) pins,
-# f181496 of TomWambsgans/sphincs.art, plus a no_std build (branch roman/mac/claude/no-std-keystone).
-sphincs = { git = "https://github.com/valargroup/sphincs.art", rev = "5efc941832c0346c561a72a7b3ca76d5aa3ee380", default-features = false }
-# The SHA-256 slh-dsa uses, for the hashing test row.
+# leanSphincs with its experimental 192-bit family (valargroup/sphincs.art branch
+# roman/mac/claude/no-std-keystone-192: the 192-bit family from roman/mac/codex/192-bit-configurations,
+# built without std and on RustCrypto 0.10 releases).
+sphincs = { git = "https://github.com/valargroup/sphincs.art", rev = "25c887ed12cfb17289f7ce785308bbb5a9ded3e9", default-features = false }
+# The SHA-256 and SHA-512 that slh-dsa and 192-bit leanSphincs use, for the hashing rows.
 sha2 = { workspace = true, features = ["compress"] }

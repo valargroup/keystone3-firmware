@@ -62,8 +62,9 @@ static void FormatRow(char *out, size_t outLen, const PqBenchRecord_t *record, u
     if (blocks > 0) {
         // Hundredths of a microsecond per 64-byte block.
         uint64_t perBlock = result->report.sign.median_ns / blocks / 10;
-        snprintf(out, outLen, "%lu.%02luus per 64-byte block (%lu blocks)", (unsigned long)(perBlock / 100),
-                 (unsigned long)(perBlock % 100), (unsigned long)blocks);
+        snprintf(out, outLen, "%lu.%02luus per %lu-byte block (%lu blocks)", (unsigned long)(perBlock / 100),
+                 (unsigned long)(perBlock % 100), (unsigned long)pq_bench_scheme_block_bytes(scheme),
+                 (unsigned long)blocks);
         return;
     }
     char keygen[16], sign[16], verify[16];

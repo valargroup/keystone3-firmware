@@ -23,49 +23,55 @@ pub enum Scheme {
     /// Not a signature: [`HASH_BLOCKS`] SHA-256 compressions, the operation that dominates every
     /// scheme here, so the time per block shows how fast the device hashes on its own.
     Sha256,
+    /// [`HASH_BLOCKS`] SHA-512 compressions, which 192-bit leanSphincs uses for its multi-node
+    /// hashes and encodings.
+    Sha512,
     SlhDsa128s,
     SlhDsa128f,
     SlhDsa192s,
     SlhDsa192f,
     SlhDsa256s,
-    /// leanSphincs over SHA-256 with one tree of height `h`, pruned to a kept subtree of height
-    /// `kept`, or with `kept == 0` a three-layer hypertree. The configurations are those
-    /// sphincs.art shows for a hardware wallet at its lowest and highest lifetime, 2^26 (`h = 22`)
-    /// and 2^32 (`h = 28`): "Uniform" (layered) and "Pruning" with the Ledger's subtree of 2^12.
-    LeanSphincs {
+    /// The experimental 192-bit leanSphincs family over SHA2 with FORS as the few-time signature
+    /// (sphincs.art's defaults), with one tree of height `h` pruned to a kept subtree of height
+    /// `kept`, or with `kept == 0` a three-layer hypertree. The heights are sphincs.art's lowest and
+    /// highest lifetimes, 2^26 (`h = 22`) and 2^32 (`h = 28`): "Uniform" (layered) and "Pruning"
+    /// with the Ledger's subtree of 2^12.
+    Lean192 {
         h: u8,
         kept: u8,
     },
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 10] = [
+    pub const ALL: [Scheme; 11] = [
         Scheme::Sha256,
+        Scheme::Sha512,
         Scheme::SlhDsa128s,
         Scheme::SlhDsa128f,
         Scheme::SlhDsa192s,
         Scheme::SlhDsa192f,
         Scheme::SlhDsa256s,
-        Scheme::LeanSphincs { h: 22, kept: 12 },
-        Scheme::LeanSphincs { h: 22, kept: 0 },
-        Scheme::LeanSphincs { h: 28, kept: 12 },
-        Scheme::LeanSphincs { h: 28, kept: 0 },
+        Scheme::Lean192 { h: 22, kept: 12 },
+        Scheme::Lean192 { h: 22, kept: 0 },
+        Scheme::Lean192 { h: 28, kept: 12 },
+        Scheme::Lean192 { h: 28, kept: 0 },
     ];
 
     /// A short name that fits a table row on the device screen, NUL-terminated for C.
     pub fn name(self) -> &'static CStr {
         match self {
             Scheme::Sha256 => c"SHA-256 block",
+            Scheme::Sha512 => c"SHA-512 block",
             Scheme::SlhDsa128s => c"SLH-128s",
             Scheme::SlhDsa128f => c"SLH-128f",
             Scheme::SlhDsa192s => c"SLH-192s",
             Scheme::SlhDsa192f => c"SLH-192f",
             Scheme::SlhDsa256s => c"SLH-256s",
-            Scheme::LeanSphincs { h: 22, kept: 12 } => c"lean h22 b12",
-            Scheme::LeanSphincs { h: 22, kept: 0 } => c"lean h22 layer",
-            Scheme::LeanSphincs { h: 28, kept: 12 } => c"lean h28 b12",
-            Scheme::LeanSphincs { h: 28, kept: 0 } => c"lean h28 layer",
-            Scheme::LeanSphincs { .. } => c"lean (unlisted)",
+            Scheme::Lean192 { h: 22, kept: 12 } => c"lean192 h22 b12",
+            Scheme::Lean192 { h: 22, kept: 0 } => c"lean192 h22 layer",
+            Scheme::Lean192 { h: 28, kept: 12 } => c"lean192 h28 b12",
+            Scheme::Lean192 { h: 28, kept: 0 } => c"lean192 h28 layer",
+            Scheme::Lean192 { .. } => c"lean192 (unlisted)",
         }
     }
 
@@ -79,6 +85,7 @@ impl Scheme {
     ) -> Result<Report, Error> {
         match self {
             Scheme::Sha256 => measure(&Sha256Blocks, iterations, now_ns, progress),
+            Scheme::Sha512 => measure(&Sha512Blocks, iterations, now_ns, progress),
             Scheme::SlhDsa128s => measure(
                 &SlhDsa::<slh_dsa::Sha2_128s>::new(),
                 iterations,
@@ -109,14 +116,14 @@ impl Scheme {
                 now_ns,
                 progress,
             ),
-            Scheme::LeanSphincs { h, kept } => {
-                measure(&LeanSphincs::new(h, kept), iterations, now_ns, progress)
+            Scheme::Lean192 { h, kept } => {
+                measure(&Lean192::new(h, kept), iterations, now_ns, progress)
             }
         }
     }
 }
 
-/// SHA-256 compressions the [`Scheme::Sha256`] row times in its sign step.
+/// Compressions the hashing rows time in their sign step.
 pub const HASH_BLOCKS: u32 = 10_000;
 
 /// The step a run is about to start.
@@ -307,50 +314,93 @@ const SHA256_IV: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-struct LeanSphincs {
-    config: sphincs::Config,
-    /// 4,212 bytes at `h = 22` for a pruned key, 6,268 for a layered one, 16 more per unit of `h`.
-    signature_bytes: usize,
+/// [`HASH_BLOCKS`] SHA-512 compressions of 128-byte blocks, with the implementation 192-bit
+/// leanSphincs uses.
+struct Sha512Blocks;
+
+impl Bench for Sha512Blocks {
+    type SigningKey = [u64; 8];
+    type VerifyingKey = [u64; 8];
+    type Signature = [u64; 8];
+
+    fn signature_bytes(&self) -> usize {
+        0
+    }
+
+    fn public_key_bytes(&self) -> usize {
+        0
+    }
+
+    fn keygen(&self, _iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
+        (SHA512_IV, SHA512_IV)
+    }
+
+    fn sign(&self, mut state: Self::SigningKey) -> Self::Signature {
+        let block = sha2::digest::generic_array::GenericArray::from([0x5a; 128]);
+        for _ in 0..HASH_BLOCKS {
+            sha2::compress512(&mut state, core::slice::from_ref(&block));
+        }
+        state
+    }
+
+    /// Checks the hashing actually ran, so a compiler that skipped it could not report 0.
+    fn verify(&self, initial: &Self::VerifyingKey, state: &Self::Signature) -> bool {
+        state != initial
+    }
 }
 
-impl LeanSphincs {
+const SHA512_IV: [u64; 8] = [
+    0x6a09e667f3bcc908,
+    0xbb67ae8584caa73b,
+    0x3c6ef372fe94f82b,
+    0xa54ff53a5f1d36f1,
+    0x510e527fade682d1,
+    0x9b05688c2b3e6c1f,
+    0x1f83d9abfb41bd6b,
+    0x5be0cd19137e2179,
+];
+
+struct Lean192 {
+    config: sphincs::level192::Config,
+}
+
+impl Lean192 {
     /// `kept == 0` is the layered (hypertree) shape.
     fn new(h: u8, kept: u8) -> Self {
-        let (h, kept) = (h as usize, kept as usize);
-        let (shape, base) = match kept {
-            0 => (sphincs::Shape::Layered, 6_268),
-            b => (sphincs::Shape::Pruned { b }, 4_212),
+        use sphincs::level192::{Config, HashFn, Shape, Variant};
+        let shape = match kept {
+            0 => Shape::Layered,
+            b => Shape::Pruned { b: b as usize },
         };
         Self {
-            config: sphincs::Config::new(sphincs::HashFn::Sha256, h, shape),
-            signature_bytes: base + 16 * (h - 22),
+            config: Config::new(HashFn::Sha2, h as usize, shape, Variant::Fors),
         }
     }
 }
 
-impl Bench for LeanSphincs {
-    type SigningKey = sphincs::SecretKey;
-    type VerifyingKey = sphincs::PublicKey;
-    type Signature = sphincs::Signature;
+impl Bench for Lean192 {
+    type SigningKey = sphincs::level192::SecretKey;
+    type VerifyingKey = sphincs::level192::PublicKey;
+    type Signature = sphincs::level192::Signature;
 
     fn signature_bytes(&self) -> usize {
-        self.signature_bytes
+        self.config.sig_size()
     }
 
     fn public_key_bytes(&self) -> usize {
-        sphincs::PUB_KEY_SIZE
+        sphincs::level192::PUB_KEY_SIZE
     }
 
     fn keygen(&self, iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
-        sphincs::key_gen(&self.config, &seed(8, iteration))
+        sphincs::level192::key_gen(&self.config, &seed(8, iteration))
     }
 
     fn sign(&self, key: Self::SigningKey) -> Self::Signature {
-        sphincs::sign(&key, &MESSAGE)
+        sphincs::level192::sign(&key, &MESSAGE).expect("a fresh key has signatures left")
     }
 
     fn verify(&self, key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
-        sphincs::verify(&self.config, key, &MESSAGE, signature).is_ok()
+        sphincs::level192::verify(&self.config, key, &MESSAGE, signature).is_ok()
     }
 }
 
@@ -481,14 +531,14 @@ mod tests {
     }
 
     #[test]
-    fn lean_sphincs_sizes_match_the_encodings() {
+    fn lean192_sizes_match_the_encodings() {
         for scheme in Scheme::ALL {
-            let Scheme::LeanSphincs { h, kept } = scheme else {
+            let Scheme::Lean192 { h, kept } = scheme else {
                 continue;
             };
-            let bench = LeanSphincs::new(h, kept);
+            let bench = Lean192::new(h, kept);
             let (key, public) = bench.keygen(0);
-            assert_eq!(public.to_bytes().len(), 32, "{:?}", scheme.name());
+            assert_eq!(public.to_bytes().len(), 48, "{:?}", scheme.name());
             let signature = bench.sign(key).to_bytes();
             assert_eq!(
                 signature.len(),
@@ -497,13 +547,12 @@ mod tests {
                 scheme.name()
             );
         }
-        assert_eq!(LeanSphincs::new(22, 10).signature_bytes(), 4_212);
     }
 
     #[test]
     fn every_scheme_has_its_own_name() {
         for (i, a) in Scheme::ALL.iter().enumerate() {
-            assert_ne!(a.name(), c"lean (unlisted)");
+            assert_ne!(a.name(), c"lean192 (unlisted)");
             for b in &Scheme::ALL[i + 1..] {
                 assert_ne!(a.name(), b.name());
             }
