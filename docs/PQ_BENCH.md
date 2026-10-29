@@ -7,8 +7,8 @@ verification of hash-based signatures on the device:
 |---|---|---|
 | `SHA-256 block` | Not a signature: 10,000 SHA-256 compressions of one 64-byte block, shown as the time per block. Every scheme here spends nearly all its time hashing, so this is the device's hashing speed on its own | `sha2`, as `slh-dsa` and 192-bit leanSphincs use it |
 | `SHA-512 block` | 10,000 SHA-512 compressions of one 128-byte block; 192-bit leanSphincs uses SHA-512 for its multi-node hashes and encodings | `sha2` |
-| `SLH-128s`, `SLH-128f`, `SLH-192s`, `SLH-192f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
-| `lean192 h22 b12`, `lean192 h22 layer`, `lean192 h28 b12`, `lean192 h28 layer` | The experimental 192-bit leanSphincs family over SHA2 (SHA-256 for chain steps, SHA-512 for multi-node hashes) with FORS, sphincs.art's defaults for that family, at its lowest and highest lifetimes, 2^26 signatures (tree height 22) and 2^32 (height 28): "Pruning" with a kept subtree of 2^12 leaves and "Uniform", a three-layer hypertree. Its security is not proved; see sphincs.art | `sphincs::level192` from valargroup/sphincs.art |
+| `SLH-192s`, `SLH-192f` | SLH-DSA (FIPS 205) SHA2 parameter sets at the same 192-bit level, as standardized baselines | `slh-dsa` |
+| `lean192 wots h20 b8` | The experimental 192-bit leanSphincs family over SHA2 (SHA-256 for chain steps, SHA-512 for multi-node hashes) with the WOTS forest as the few-time signature: one tree of height 20 (2^24 signatures, sphincs.art's lowest lifetime) pruned to a kept subtree of 2^8 leaves. Its security is not proved; see sphincs.art | `sphincs::level192` from valargroup/sphincs.art |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
 signature is verified; a failure is reported as an error, not as a time. Production builds do
@@ -57,8 +57,8 @@ the top line says which scheme was running, its row says "CRASHED: reset during 
 `pqbench,last_run_reset_during,...` the first time the record is read.
 
 On the device the benchmark runs on its own task, one for each stack placement, each created on
-its first run and kept. With signatures on the heap, the deepest scheme uses about 34 KB of stack
-on a Mac (192-bit leanSphincs), so the 64 KB on-chip stack has about twice that;
+its first run and kept. With signatures on the heap, the deepest scheme uses about 22 KB of stack
+on a Mac (192-bit leanSphincs), so the 64 KB on-chip stack has room for deeper configurations;
 `cargo run --release -p app_pq_bench --example stack_need` measures it again. leanSphincs keeps
 its key's trees on the heap, more than the on-chip heap has free, so the Rust allocations the
 benchmark makes always go to PSRAM. Times come from the 1 ms OS tick plus the SysTick

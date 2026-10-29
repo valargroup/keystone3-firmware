@@ -17,8 +17,8 @@
 #include "flash_address.h"
 #endif
 
-// Signatures are signed into heap memory, so the deepest scheme uses about 34 KB of stack on
-// the Mac (192-bit leanSphincs); the on-chip stack leaves about twice that. The PSRAM stack
+// Signatures are signed into heap memory, so the deepest scheme uses about 22 KB of stack on
+// the Mac (192-bit leanSphincs); the on-chip stack leaves room for deeper configurations. The PSRAM stack
 // keeps the size the old on-stack signing needed, to compare against earlier runs. Each stack is
 // allocated on its first run and kept for later ones.
 #define PQ_BENCH_ON_CHIP_STACK_BYTES    (64 * 1024)

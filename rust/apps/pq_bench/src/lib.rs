@@ -26,16 +26,12 @@ pub enum Scheme {
     /// [`HASH_BLOCKS`] SHA-512 compressions, which 192-bit leanSphincs uses for its multi-node
     /// hashes and encodings.
     Sha512,
-    SlhDsa128s,
-    SlhDsa128f,
+    /// SLH-DSA at the same 192-bit level, as a standardized baseline.
     SlhDsa192s,
     SlhDsa192f,
-    SlhDsa256s,
-    /// The experimental 192-bit leanSphincs family over SHA2 with FORS as the few-time signature
-    /// (sphincs.art's defaults), with one tree of height `h` pruned to a kept subtree of height
-    /// `kept`, or with `kept == 0` a three-layer hypertree. The heights are sphincs.art's lowest and
-    /// highest lifetimes, 2^26 (`h = 22`) and 2^32 (`h = 28`): "Uniform" (layered) and "Pruning"
-    /// with the Ledger's subtree of 2^12.
+    /// The experimental 192-bit leanSphincs family over SHA2 with the WOTS forest as the few-time
+    /// signature, as one tree of height `h` (lifetime 2^(h + 4) signatures) pruned to a kept
+    /// subtree of height `kept`.
     Lean192 {
         h: u8,
         kept: u8,
@@ -43,18 +39,12 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 11] = [
+    pub const ALL: [Scheme; 5] = [
         Scheme::Sha256,
         Scheme::Sha512,
-        Scheme::SlhDsa128s,
-        Scheme::SlhDsa128f,
         Scheme::SlhDsa192s,
         Scheme::SlhDsa192f,
-        Scheme::SlhDsa256s,
-        Scheme::Lean192 { h: 22, kept: 12 },
-        Scheme::Lean192 { h: 22, kept: 0 },
-        Scheme::Lean192 { h: 28, kept: 12 },
-        Scheme::Lean192 { h: 28, kept: 0 },
+        Scheme::Lean192 { h: 20, kept: 8 },
     ];
 
     /// A short name that fits a table row on the device screen, NUL-terminated for C.
@@ -62,15 +52,9 @@ impl Scheme {
         match self {
             Scheme::Sha256 => c"SHA-256 block",
             Scheme::Sha512 => c"SHA-512 block",
-            Scheme::SlhDsa128s => c"SLH-128s",
-            Scheme::SlhDsa128f => c"SLH-128f",
             Scheme::SlhDsa192s => c"SLH-192s",
             Scheme::SlhDsa192f => c"SLH-192f",
-            Scheme::SlhDsa256s => c"SLH-256s",
-            Scheme::Lean192 { h: 22, kept: 12 } => c"lean192 h22 b12",
-            Scheme::Lean192 { h: 22, kept: 0 } => c"lean192 h22 layer",
-            Scheme::Lean192 { h: 28, kept: 12 } => c"lean192 h28 b12",
-            Scheme::Lean192 { h: 28, kept: 0 } => c"lean192 h28 layer",
+            Scheme::Lean192 { h: 20, kept: 8 } => c"lean192 wots h20 b8",
             Scheme::Lean192 { .. } => c"lean192 (unlisted)",
         }
     }
@@ -86,18 +70,6 @@ impl Scheme {
         match self {
             Scheme::Sha256 => measure(&Sha256Blocks, iterations, now_ns, progress),
             Scheme::Sha512 => measure(&Sha512Blocks, iterations, now_ns, progress),
-            Scheme::SlhDsa128s => measure(
-                &SlhDsa::<slh_dsa::Sha2_128s>::new(),
-                iterations,
-                now_ns,
-                progress,
-            ),
-            Scheme::SlhDsa128f => measure(
-                &SlhDsa::<slh_dsa::Sha2_128f>::new(),
-                iterations,
-                now_ns,
-                progress,
-            ),
             Scheme::SlhDsa192s => measure(
                 &SlhDsa::<slh_dsa::Sha2_192s>::new(),
                 iterations,
@@ -106,12 +78,6 @@ impl Scheme {
             ),
             Scheme::SlhDsa192f => measure(
                 &SlhDsa::<slh_dsa::Sha2_192f>::new(),
-                iterations,
-                now_ns,
-                progress,
-            ),
-            Scheme::SlhDsa256s => measure(
-                &SlhDsa::<slh_dsa::Sha2_256s>::new(),
                 iterations,
                 now_ns,
                 progress,
@@ -190,16 +156,6 @@ trait SlhDsaSizes: slh_dsa::ParameterSet {
     const SIGNATURE_BYTES: usize;
 }
 
-impl SlhDsaSizes for slh_dsa::Sha2_128s {
-    const N: usize = 16;
-    const SIGNATURE_BYTES: usize = 7_856;
-}
-
-impl SlhDsaSizes for slh_dsa::Sha2_128f {
-    const N: usize = 16;
-    const SIGNATURE_BYTES: usize = 17_088;
-}
-
 impl SlhDsaSizes for slh_dsa::Sha2_192s {
     const N: usize = 24;
     const SIGNATURE_BYTES: usize = 16_224;
@@ -208,11 +164,6 @@ impl SlhDsaSizes for slh_dsa::Sha2_192s {
 impl SlhDsaSizes for slh_dsa::Sha2_192f {
     const N: usize = 24;
     const SIGNATURE_BYTES: usize = 35_664;
-}
-
-impl SlhDsaSizes for slh_dsa::Sha2_256s {
-    const N: usize = 32;
-    const SIGNATURE_BYTES: usize = 29_792;
 }
 
 struct SlhDsa<P>(PhantomData<P>);
@@ -365,15 +316,11 @@ struct Lean192 {
 }
 
 impl Lean192 {
-    /// `kept == 0` is the layered (hypertree) shape.
     fn new(h: u8, kept: u8) -> Self {
         use sphincs::level192::{Config, HashFn, Shape, Variant};
-        let shape = match kept {
-            0 => Shape::Layered,
-            b => Shape::Pruned { b: b as usize },
-        };
+        let shape = Shape::Pruned { b: kept as usize };
         Self {
-            config: Config::new(HashFn::Sha2, h as usize, shape, Variant::Fors),
+            config: Config::new(HashFn::Sha2, h as usize, shape, Variant::Forest),
         }
     }
 }
@@ -494,22 +441,6 @@ mod tests {
 
     #[test]
     fn sizes_match_the_encodings() {
-        let (_, public) = SlhDsa::<slh_dsa::Sha2_128s>::new().keygen(0);
-        let signature = SlhDsa::<slh_dsa::Sha2_128s>::new()
-            .sign(SlhDsa::<slh_dsa::Sha2_128s>::new().keygen(0).0);
-        assert_eq!(public.to_bytes().len(), 32);
-        assert_eq!(signature.to_bytes().len(), 7_856);
-
-        let (_, public) = SlhDsa::<slh_dsa::Sha2_256s>::new().keygen(0);
-        let signature = SlhDsa::<slh_dsa::Sha2_256s>::new()
-            .sign(SlhDsa::<slh_dsa::Sha2_256s>::new().keygen(0).0);
-        assert_eq!(public.to_bytes().len(), 64);
-        assert_eq!(signature.to_bytes().len(), 29_792);
-
-        let signature = SlhDsa::<slh_dsa::Sha2_128f>::new()
-            .sign(SlhDsa::<slh_dsa::Sha2_128f>::new().keygen(0).0);
-        assert_eq!(signature.to_bytes().len(), 17_088);
-
         let (key, public) = SlhDsa::<slh_dsa::Sha2_192s>::new().keygen(0);
         assert_eq!(public.to_bytes().len(), 48);
         assert_eq!(
