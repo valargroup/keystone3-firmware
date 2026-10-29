@@ -23,19 +23,47 @@ pub enum Scheme {
     SlhDsa192s,
     SlhDsa192f,
     SlhDsa256s,
-    /// leanSphincs as zakura-core/common signs post-quantum accounts with it: SHA-256, one tree
-    /// of height 22 pruned to a kept subtree of height 10.
-    LeanSphincs,
+    /// leanSphincs over SHA-256 with one tree of height `h`, pruned to a kept subtree of height
+    /// `kept`, or with `kept == 0` a three-layer hypertree. zakura-core/common signs post-quantum
+    /// accounts with `h = 22, kept = 10`. The full key and `kept = 20` are left out: their trees
+    /// (32 MB and up) do not fit in the device's 8 MB of PSRAM.
+    LeanSphincs {
+        h: u8,
+        kept: u8,
+    },
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 6] = [
+    pub const ALL: [Scheme; 29] = [
         Scheme::SlhDsa128s,
         Scheme::SlhDsa128f,
         Scheme::SlhDsa192s,
         Scheme::SlhDsa192f,
         Scheme::SlhDsa256s,
-        Scheme::LeanSphincs,
+        Scheme::LeanSphincs { h: 22, kept: 8 },
+        Scheme::LeanSphincs { h: 22, kept: 10 },
+        Scheme::LeanSphincs { h: 22, kept: 12 },
+        Scheme::LeanSphincs { h: 22, kept: 13 },
+        Scheme::LeanSphincs { h: 22, kept: 14 },
+        Scheme::LeanSphincs { h: 22, kept: 0 },
+        Scheme::LeanSphincs { h: 24, kept: 8 },
+        Scheme::LeanSphincs { h: 24, kept: 10 },
+        Scheme::LeanSphincs { h: 24, kept: 12 },
+        Scheme::LeanSphincs { h: 24, kept: 13 },
+        Scheme::LeanSphincs { h: 24, kept: 14 },
+        Scheme::LeanSphincs { h: 24, kept: 0 },
+        Scheme::LeanSphincs { h: 26, kept: 8 },
+        Scheme::LeanSphincs { h: 26, kept: 10 },
+        Scheme::LeanSphincs { h: 26, kept: 12 },
+        Scheme::LeanSphincs { h: 26, kept: 13 },
+        Scheme::LeanSphincs { h: 26, kept: 14 },
+        Scheme::LeanSphincs { h: 26, kept: 0 },
+        Scheme::LeanSphincs { h: 28, kept: 8 },
+        Scheme::LeanSphincs { h: 28, kept: 10 },
+        Scheme::LeanSphincs { h: 28, kept: 12 },
+        Scheme::LeanSphincs { h: 28, kept: 13 },
+        Scheme::LeanSphincs { h: 28, kept: 14 },
+        Scheme::LeanSphincs { h: 28, kept: 0 },
     ];
 
     /// A short name that fits a table row on the device screen, NUL-terminated for C.
@@ -46,7 +74,31 @@ impl Scheme {
             Scheme::SlhDsa192s => c"SLH-192s",
             Scheme::SlhDsa192f => c"SLH-192f",
             Scheme::SlhDsa256s => c"SLH-256s",
-            Scheme::LeanSphincs => c"leanSphincs",
+            Scheme::LeanSphincs { h: 22, kept: 8 } => c"lean h22 b8",
+            Scheme::LeanSphincs { h: 22, kept: 10 } => c"lean h22 b10",
+            Scheme::LeanSphincs { h: 22, kept: 12 } => c"lean h22 b12",
+            Scheme::LeanSphincs { h: 22, kept: 13 } => c"lean h22 b13",
+            Scheme::LeanSphincs { h: 22, kept: 14 } => c"lean h22 b14",
+            Scheme::LeanSphincs { h: 22, kept: 0 } => c"lean h22 layer",
+            Scheme::LeanSphincs { h: 24, kept: 8 } => c"lean h24 b8",
+            Scheme::LeanSphincs { h: 24, kept: 10 } => c"lean h24 b10",
+            Scheme::LeanSphincs { h: 24, kept: 12 } => c"lean h24 b12",
+            Scheme::LeanSphincs { h: 24, kept: 13 } => c"lean h24 b13",
+            Scheme::LeanSphincs { h: 24, kept: 14 } => c"lean h24 b14",
+            Scheme::LeanSphincs { h: 24, kept: 0 } => c"lean h24 layer",
+            Scheme::LeanSphincs { h: 26, kept: 8 } => c"lean h26 b8",
+            Scheme::LeanSphincs { h: 26, kept: 10 } => c"lean h26 b10",
+            Scheme::LeanSphincs { h: 26, kept: 12 } => c"lean h26 b12",
+            Scheme::LeanSphincs { h: 26, kept: 13 } => c"lean h26 b13",
+            Scheme::LeanSphincs { h: 26, kept: 14 } => c"lean h26 b14",
+            Scheme::LeanSphincs { h: 26, kept: 0 } => c"lean h26 layer",
+            Scheme::LeanSphincs { h: 28, kept: 8 } => c"lean h28 b8",
+            Scheme::LeanSphincs { h: 28, kept: 10 } => c"lean h28 b10",
+            Scheme::LeanSphincs { h: 28, kept: 12 } => c"lean h28 b12",
+            Scheme::LeanSphincs { h: 28, kept: 13 } => c"lean h28 b13",
+            Scheme::LeanSphincs { h: 28, kept: 14 } => c"lean h28 b14",
+            Scheme::LeanSphincs { h: 28, kept: 0 } => c"lean h28 layer",
+            Scheme::LeanSphincs { .. } => c"lean (unlisted)",
         }
     }
 
@@ -59,22 +111,39 @@ impl Scheme {
         progress: &mut dyn FnMut(Step, u32),
     ) -> Result<Report, Error> {
         match self {
-            Scheme::SlhDsa128s => {
-                measure::<SlhDsa<slh_dsa::Sha2_128s>>(iterations, now_ns, progress)
+            Scheme::SlhDsa128s => measure(
+                &SlhDsa::<slh_dsa::Sha2_128s>::new(),
+                iterations,
+                now_ns,
+                progress,
+            ),
+            Scheme::SlhDsa128f => measure(
+                &SlhDsa::<slh_dsa::Sha2_128f>::new(),
+                iterations,
+                now_ns,
+                progress,
+            ),
+            Scheme::SlhDsa192s => measure(
+                &SlhDsa::<slh_dsa::Sha2_192s>::new(),
+                iterations,
+                now_ns,
+                progress,
+            ),
+            Scheme::SlhDsa192f => measure(
+                &SlhDsa::<slh_dsa::Sha2_192f>::new(),
+                iterations,
+                now_ns,
+                progress,
+            ),
+            Scheme::SlhDsa256s => measure(
+                &SlhDsa::<slh_dsa::Sha2_256s>::new(),
+                iterations,
+                now_ns,
+                progress,
+            ),
+            Scheme::LeanSphincs { h, kept } => {
+                measure(&LeanSphincs::new(h, kept), iterations, now_ns, progress)
             }
-            Scheme::SlhDsa128f => {
-                measure::<SlhDsa<slh_dsa::Sha2_128f>>(iterations, now_ns, progress)
-            }
-            Scheme::SlhDsa192s => {
-                measure::<SlhDsa<slh_dsa::Sha2_192s>>(iterations, now_ns, progress)
-            }
-            Scheme::SlhDsa192f => {
-                measure::<SlhDsa<slh_dsa::Sha2_192f>>(iterations, now_ns, progress)
-            }
-            Scheme::SlhDsa256s => {
-                measure::<SlhDsa<slh_dsa::Sha2_256s>>(iterations, now_ns, progress)
-            }
-            Scheme::LeanSphincs => measure::<LeanSphincs>(iterations, now_ns, progress),
         }
     }
 }
@@ -122,13 +191,13 @@ trait Bench {
     type SigningKey;
     type VerifyingKey;
     type Signature;
-    const SIGNATURE_BYTES: usize;
-    const PUBLIC_KEY_BYTES: usize;
 
+    fn signature_bytes(&self) -> usize;
+    fn public_key_bytes(&self) -> usize;
     /// Derives a signing key from fixed seeds and computes its public key.
-    fn keygen(iteration: u32) -> (Self::SigningKey, Self::VerifyingKey);
-    fn sign(key: Self::SigningKey) -> Self::Signature;
-    fn verify(key: &Self::VerifyingKey, signature: &Self::Signature) -> bool;
+    fn keygen(&self, iteration: u32) -> (Self::SigningKey, Self::VerifyingKey);
+    fn sign(&self, key: Self::SigningKey) -> Self::Signature;
+    fn verify(&self, key: &Self::VerifyingKey, signature: &Self::Signature) -> bool;
 }
 
 /// 32 seed bytes that differ per iteration and per seed role.
@@ -170,14 +239,26 @@ impl SlhDsaSizes for slh_dsa::Sha2_256s {
 
 struct SlhDsa<P>(PhantomData<P>);
 
+impl<P> SlhDsa<P> {
+    fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
 impl<P: SlhDsaSizes> Bench for SlhDsa<P> {
     type SigningKey = slh_dsa::SigningKey<P>;
     type VerifyingKey = slh_dsa::VerifyingKey<P>;
     type Signature = slh_dsa::Signature<P>;
-    const SIGNATURE_BYTES: usize = P::SIGNATURE_BYTES;
-    const PUBLIC_KEY_BYTES: usize = 2 * P::N;
 
-    fn keygen(iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
+    fn signature_bytes(&self) -> usize {
+        P::SIGNATURE_BYTES
+    }
+
+    fn public_key_bytes(&self) -> usize {
+        2 * P::N
+    }
+
+    fn keygen(&self, iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
         let key = slh_dsa::SigningKey::<P>::slh_keygen_internal(
             &seed(5, iteration)[..P::N],
             &seed(6, iteration)[..P::N],
@@ -187,27 +268,35 @@ impl<P: SlhDsaSizes> Bench for SlhDsa<P> {
         (key, public)
     }
 
-    fn sign(key: Self::SigningKey) -> Self::Signature {
+    fn sign(&self, key: Self::SigningKey) -> Self::Signature {
         key.try_sign_with_context(&MESSAGE, SLH_DSA_CONTEXT, None)
             .expect("the context is shorter than 256 bytes")
     }
 
-    fn verify(key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
+    fn verify(&self, key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
         key.try_verify_with_context(&MESSAGE, SLH_DSA_CONTEXT, signature)
             .is_ok()
     }
 }
 
-struct LeanSphincs;
+struct LeanSphincs {
+    config: sphincs::Config,
+    /// 4,212 bytes at `h = 22` for a pruned key, 6,268 for a layered one, 16 more per unit of `h`.
+    signature_bytes: usize,
+}
 
 impl LeanSphincs {
-    /// The configuration zakura-core/common uses for post-quantum accounts.
-    fn config() -> sphincs::Config {
-        sphincs::Config::new(
-            sphincs::HashFn::Sha256,
-            22,
-            sphincs::Shape::Pruned { b: 10 },
-        )
+    /// `kept == 0` is the layered (hypertree) shape.
+    fn new(h: u8, kept: u8) -> Self {
+        let (h, kept) = (h as usize, kept as usize);
+        let (shape, base) = match kept {
+            0 => (sphincs::Shape::Layered, 6_268),
+            b => (sphincs::Shape::Pruned { b }, 4_212),
+        };
+        Self {
+            config: sphincs::Config::new(sphincs::HashFn::Sha256, h, shape),
+            signature_bytes: base + 16 * (h - 22),
+        }
     }
 }
 
@@ -215,23 +304,30 @@ impl Bench for LeanSphincs {
     type SigningKey = sphincs::SecretKey;
     type VerifyingKey = sphincs::PublicKey;
     type Signature = sphincs::Signature;
-    const SIGNATURE_BYTES: usize = 4_212;
-    const PUBLIC_KEY_BYTES: usize = sphincs::PUB_KEY_SIZE;
 
-    fn keygen(iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
-        sphincs::key_gen(&Self::config(), &seed(8, iteration))
+    fn signature_bytes(&self) -> usize {
+        self.signature_bytes
     }
 
-    fn sign(key: Self::SigningKey) -> Self::Signature {
+    fn public_key_bytes(&self) -> usize {
+        sphincs::PUB_KEY_SIZE
+    }
+
+    fn keygen(&self, iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
+        sphincs::key_gen(&self.config, &seed(8, iteration))
+    }
+
+    fn sign(&self, key: Self::SigningKey) -> Self::Signature {
         sphincs::sign(&key, &MESSAGE)
     }
 
-    fn verify(key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
-        sphincs::verify(&Self::config(), key, &MESSAGE, signature).is_ok()
+    fn verify(&self, key: &Self::VerifyingKey, signature: &Self::Signature) -> bool {
+        sphincs::verify(&self.config, key, &MESSAGE, signature).is_ok()
     }
 }
 
 fn measure<B: Bench>(
+    bench: &B,
     iterations: u32,
     now_ns: &mut dyn FnMut() -> u64,
     progress: &mut dyn FnMut(Step, u32),
@@ -248,17 +344,17 @@ fn measure<B: Bench>(
     for iteration in 0..iterations {
         progress(Step::Keygen, iteration);
         let start = now_ns();
-        let (key, public) = B::keygen(iteration);
+        let (key, public) = bench.keygen(iteration);
         keygen.push(now_ns() - start);
 
         progress(Step::Sign, iteration);
         let start = now_ns();
-        let signature = B::sign(key);
+        let signature = bench.sign(key);
         sign.push(now_ns() - start);
 
         progress(Step::Verify, iteration);
         let start = now_ns();
-        let valid = B::verify(&public, &signature);
+        let valid = bench.verify(&public, &signature);
         verify.push(now_ns() - start);
         if !valid {
             return Err(Error::VerifyFailed);
@@ -269,8 +365,8 @@ fn measure<B: Bench>(
         keygen: stats(&mut keygen),
         sign: stats(&mut sign),
         verify: stats(&mut verify),
-        signature_bytes: B::SIGNATURE_BYTES,
-        public_key_bytes: B::PUBLIC_KEY_BYTES,
+        signature_bytes: bench.signature_bytes(),
+        public_key_bytes: bench.public_key_bytes(),
     })
 }
 
@@ -320,41 +416,70 @@ mod tests {
 
     #[test]
     fn sizes_match_the_encodings() {
-        let (_, public) = SlhDsa::<slh_dsa::Sha2_128s>::keygen(0);
-        let signature =
-            SlhDsa::<slh_dsa::Sha2_128s>::sign(SlhDsa::<slh_dsa::Sha2_128s>::keygen(0).0);
+        let (_, public) = SlhDsa::<slh_dsa::Sha2_128s>::new().keygen(0);
+        let signature = SlhDsa::<slh_dsa::Sha2_128s>::new()
+            .sign(SlhDsa::<slh_dsa::Sha2_128s>::new().keygen(0).0);
         assert_eq!(public.to_bytes().len(), 32);
         assert_eq!(signature.to_bytes().len(), 7_856);
 
-        let (_, public) = SlhDsa::<slh_dsa::Sha2_256s>::keygen(0);
-        let signature =
-            SlhDsa::<slh_dsa::Sha2_256s>::sign(SlhDsa::<slh_dsa::Sha2_256s>::keygen(0).0);
+        let (_, public) = SlhDsa::<slh_dsa::Sha2_256s>::new().keygen(0);
+        let signature = SlhDsa::<slh_dsa::Sha2_256s>::new()
+            .sign(SlhDsa::<slh_dsa::Sha2_256s>::new().keygen(0).0);
         assert_eq!(public.to_bytes().len(), 64);
         assert_eq!(signature.to_bytes().len(), 29_792);
 
-        let signature =
-            SlhDsa::<slh_dsa::Sha2_128f>::sign(SlhDsa::<slh_dsa::Sha2_128f>::keygen(0).0);
+        let signature = SlhDsa::<slh_dsa::Sha2_128f>::new()
+            .sign(SlhDsa::<slh_dsa::Sha2_128f>::new().keygen(0).0);
         assert_eq!(signature.to_bytes().len(), 17_088);
 
-        let (key, public) = SlhDsa::<slh_dsa::Sha2_192s>::keygen(0);
+        let (key, public) = SlhDsa::<slh_dsa::Sha2_192s>::new().keygen(0);
         assert_eq!(public.to_bytes().len(), 48);
         assert_eq!(
-            SlhDsa::<slh_dsa::Sha2_192s>::sign(key).to_bytes().len(),
+            SlhDsa::<slh_dsa::Sha2_192s>::new()
+                .sign(key)
+                .to_bytes()
+                .len(),
             16_224
         );
-        let (key, public) = SlhDsa::<slh_dsa::Sha2_192f>::keygen(0);
+        let (key, public) = SlhDsa::<slh_dsa::Sha2_192f>::new().keygen(0);
         assert_eq!(public.to_bytes().len(), 48);
         assert_eq!(
-            SlhDsa::<slh_dsa::Sha2_192f>::sign(key).to_bytes().len(),
+            SlhDsa::<slh_dsa::Sha2_192f>::new()
+                .sign(key)
+                .to_bytes()
+                .len(),
             35_664
         );
     }
 
     #[test]
-    fn lean_sphincs_has_the_expected_sizes() {
-        let (key, public) = LeanSphincs::keygen(0);
-        assert_eq!(public.to_bytes().len(), 32);
-        assert_eq!(LeanSphincs::sign(key).to_bytes().len(), 4_212);
+    fn lean_sphincs_sizes_match_the_encodings() {
+        for scheme in Scheme::ALL {
+            let Scheme::LeanSphincs { h, kept } = scheme else {
+                continue;
+            };
+            let bench = LeanSphincs::new(h, kept);
+            let (key, public) = bench.keygen(0);
+            assert_eq!(public.to_bytes().len(), 32, "{:?}", scheme.name());
+            let signature = bench.sign(key).to_bytes();
+            assert_eq!(
+                signature.len(),
+                bench.signature_bytes(),
+                "{:?}",
+                scheme.name()
+            );
+        }
+        assert_eq!(LeanSphincs::new(22, 10).signature_bytes(), 4_212);
+    }
+
+    #[test]
+    fn every_scheme_has_its_own_name() {
+        for (i, a) in Scheme::ALL.iter().enumerate() {
+            assert_ne!(a.name(), c"lean (unlisted)");
+            for b in &Scheme::ALL[i + 1..] {
+                assert_ne!(a.name(), b.name());
+            }
+        }
     }
 
     #[test]

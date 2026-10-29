@@ -11,7 +11,7 @@
 // SLH-DSA SHA2 sets and leanSphincs (the Rust side is rust/apps/pq_bench).
 
 #define PQ_BENCH_ALL_SCHEMES        (-1)
-#define PQ_BENCH_MAX_SCHEMES        6
+#define PQ_BENCH_MAX_SCHEMES        32
 #define PQ_BENCH_DEFAULT_ITERATIONS 3
 
 typedef enum {

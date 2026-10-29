@@ -83,6 +83,14 @@ int hexstr_to_uint8_array(const char *hexstr, uint8_t *buf, size_t buf_len) {
     return count;
 }
 
+#ifdef FEATURE_PQ_BENCH
+static void OpenPqBenchView(lv_timer_t *timer)
+{
+    (void)timer;
+    GuiFrameOpenView(&g_pqBenchView);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     (void)argc; /*Unused*/
@@ -126,6 +134,14 @@ int main(int argc, char **argv)
     LanguageInit();
 
     GuiFrameOpenView(&g_initView);
+#ifdef FEATURE_PQ_BENCH
+    // PQ_BENCH_UI=1 opens the PQ Bench screen without setting up a wallet first. It waits for
+    // startup to open the setup screen, so PQ Bench ends up on top.
+    if (getenv("PQ_BENCH_UI") != NULL) {
+        lv_timer_t *timer = lv_timer_create(OpenPqBenchView, 2000, NULL);
+        lv_timer_set_repeat_count(timer, 1);
+    }
+#endif
     //  lv_example_calendar_1();
     //  lv_example_btnmatrix_2();
     //  lv_example_checkbox_1();

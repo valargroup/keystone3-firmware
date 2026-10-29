@@ -6,7 +6,7 @@ verification of hash-based signatures on the device:
 | Name | Scheme | Library |
 |---|---|---|
 | `SLH-128s`, `SLH-128f`, `SLH-192s`, `SLH-192f`, `SLH-256s` | SLH-DSA (FIPS 205) SHA2 parameter sets | `slh-dsa` |
-| `leanSphincs` | leanSphincs with SHA-256 and one tree of height 22 pruned to a kept subtree of height 10, as zakura-core/common signs post-quantum accounts (4,212-byte signatures, 32-byte public keys) | `sphincs` from TomWambsgans/sphincs.art |
+| `lean h<h> b<b>`, `lean h<h> layer` | leanSphincs over SHA-256 at tree heights 22, 24, 26 and 28: one tree pruned to a kept subtree of height 8, 10, 12, 13 or 14, or a three-layer hypertree. zakura-core/common signs post-quantum accounts with `lean h22 b10` (4,212-byte signatures, 32-byte public keys). The full key and the kept subtree of height 20 are left out: their trees (32 MB and up) do not fit in the device's 8 MB of PSRAM, and key generation would take hours | `sphincs` from TomWambsgans/sphincs.art |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
 signature is verified; a failure is reported as an error, not as a time. Production builds do

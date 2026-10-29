@@ -25,7 +25,7 @@
 // Above this the cycle counter (32 bits at 204 MHz, about 21 s) may have wrapped, so elapsed
 // time comes from the 1 ms tick instead.
 #define PQ_BENCH_CYCLE_LIMIT_MS     10000
-#define PQ_BENCH_RECORD_MAGIC       0x50514233  // "PQB3"
+#define PQ_BENCH_RECORD_MAGIC       0x50514234  // "PQB4"
 
 static volatile PqBenchState_t g_pqBenchState = PQ_BENCH_IDLE;
 static int32_t g_pqBenchScheme;
