@@ -313,11 +313,14 @@ const PqBenchRecord_t *PqBenchGetRecord(void)
     return g_pqBenchRecord.magic == PQ_BENCH_RECORD_MAGIC ? &g_pqBenchRecord : NULL;
 }
 
-bool PqBenchIsCurrentTask(void)
+bool PqBenchHeapInPsram(void)
 {
 #ifdef COMPILE_SIMULATOR
     return false;
 #else
+    if (g_pqBenchOptions & PQ_BENCH_HEAP_ON_CHIP) {
+        return false;
+    }
     osThreadId_t current = osThreadGetId();
     return current != NULL && (current == g_pqBenchTasks[0].id || current == g_pqBenchTasks[1].id);
 #endif
@@ -325,13 +328,12 @@ bool PqBenchIsCurrentTask(void)
 
 const char *PqBenchOptionsText(uint32_t options)
 {
-    static const char *const texts[] = {
-        "PSRAM stack, low priority",
-        "on-chip stack, low priority",
-        "PSRAM stack, high priority",
-        "on-chip stack, high priority",
-    };
-    return texts[options & 3];
+    static char text[64];
+    snprintf(text, sizeof(text), "%s stack, %s heap, %s priority",
+             (options & PQ_BENCH_STACK_ON_CHIP) ? "on-chip" : "PSRAM",
+             (options & PQ_BENCH_HEAP_ON_CHIP) ? "on-chip" : "PSRAM",
+             (options & PQ_BENCH_HIGH_PRIORITY) ? "high" : "low");
+    return text;
 }
 
 const char *PqBenchStepName(uint32_t step)

@@ -25,16 +25,18 @@ workspace cannot link. Its signatures match the family's known-answer vectors.
   one round of that scheme (one key generation, signature and verification); its row then shows
   the times, with a grey line saying how that run was set up. Press it again for another round.
   While it works, the row shows the step running now. Results of every scheme stay on screen, and
-  in flash, until it runs again. Two toggles at the top set up the next run:
+  in flash, until it runs again. Three toggles at the top set up the next run:
   - **Stack: on-chip / PSRAM** puts the benchmark's stack in on-chip RAM (64 KB, the default) or
     in external PSRAM (240 KB, as earlier builds did).
+  - **Heap: PSRAM / on-chip** puts the memory the schemes allocate in PSRAM (the default, as
+    earlier builds did) or in on-chip RAM.
   - **Priority: low / high**. Low runs below every other task, so the screen stays live. High runs
     above the screen, USB and touch tasks (only the watchdog and UART command tasks are higher),
     so the screen freezes until the run ends.
 - **UART** (debug builds, UART0 at 512000 baud): send `#pq bench:all` followed by CR LF, or
   a scheme index in place of `all`. An iteration count after it runs that many rounds and reports
-  their median (the default is one); `psram` puts the stack in PSRAM and `high` runs at high
-  priority, as in `#pq bench:2 1 psram high`; `#pq bench:` with
+  their median (the default is one); `psram` puts the stack in PSRAM, `chipheap` puts the
+  heap on-chip and `high` runs at high priority, as in `#pq bench:2 1 chipheap high`; `#pq bench:` with
   no arguments lists the schemes. A `pqbench,step,...` line comes before every step. Results are CSV
   lines starting with `pqbench,`, with median, minimum and maximum microseconds per operation,
   then the signature and public key sizes in bytes. The last lines report the benchmark task's
@@ -51,9 +53,9 @@ the top line says which scheme was running, its row says "CRASHED: reset during 
 On the device the benchmark runs on its own task, one for each stack placement, each created on
 its first run and kept. The deepest scheme uses about 22 KB of stack
 on a Mac (192-bit leanSphincs), so the 64 KB on-chip stack has room for deeper configurations;
-`cargo run --release -p app_pq_bench --example stack_need` measures it again. leanSphincs keeps
-its key's trees on the heap, more than the on-chip heap has free, so the Rust allocations the
-benchmark makes always go to PSRAM. Times come from the 1 ms OS tick plus the SysTick
+`cargo run --release -p app_pq_bench --example stack_need` measures it again. The schemes hold at most
+about 24 KB of heap at once on a Mac (`--example heap_need`), so their allocations fit on-chip
+too; they go to PSRAM unless a run turns the heap toggle on. Times come from the 1 ms OS tick plus the SysTick
 countdown within the current tick, which resolves well under a microsecond. The CPU cycle counter
 does not run on this chip, so earlier builds showed 0us for every step shorter than 10 s; a run now
 refuses to start if the timer is not advancing.

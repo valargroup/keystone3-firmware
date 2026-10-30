@@ -901,7 +901,7 @@ static void BackgroundTestFunc(int argc, char *argv[])
 }
 
 #ifdef FEATURE_PQ_BENCH
-// pq bench:<all|scheme index|scheme name> [iterations] [psram] [high]
+// pq bench:<all|scheme index|scheme name> [iterations] [psram] [chipheap] [high]
 // psram puts the stack in PSRAM instead of on-chip RAM; high runs above the UI.
 static void PqBenchFunc(int argc, char *argv[])
 {
@@ -910,7 +910,7 @@ static void PqBenchFunc(int argc, char *argv[])
     uint32_t options = PQ_BENCH_DEFAULT_OPTIONS;
 
     if (argc < 1) {
-        printf("usage: #pq bench:<all|index|name> [iterations] [psram] [high]\r\n");
+        printf("usage: #pq bench:<all|index|name> [iterations] [psram] [chipheap] [high]\r\n");
         for (uint32_t i = 0; i < pq_bench_scheme_count(); i++) {
             printf("  %u: %s\r\n", (unsigned int)i, pq_bench_scheme_name(i));
         }
@@ -930,6 +930,8 @@ static void PqBenchFunc(int argc, char *argv[])
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "psram") == 0) {
             options &= ~PQ_BENCH_STACK_ON_CHIP;
+        } else if (strcmp(argv[i], "chipheap") == 0) {
+            options |= PQ_BENCH_HEAP_ON_CHIP;
         } else if (strcmp(argv[i], "high") == 0) {
             options |= PQ_BENCH_HIGH_PRIORITY;
         } else {

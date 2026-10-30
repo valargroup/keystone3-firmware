@@ -146,8 +146,8 @@ void *RustMalloc(int32_t size)
     return ExtMalloc(size);
 #else
 #ifdef FEATURE_PQ_BENCH
-    // The benchmark's schemes need more heap than SRAM has free.
-    if (PqBenchIsCurrentTask()) {
+    // The benchmark keeps its schemes' allocations in PSRAM unless a run asks for on-chip SRAM.
+    if (PqBenchHeapInPsram()) {
         return ExtMalloc(size);
     }
 #endif

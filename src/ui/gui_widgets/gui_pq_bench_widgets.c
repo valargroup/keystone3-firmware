@@ -11,13 +11,14 @@
 #ifdef FEATURE_PQ_BENCH
 
 #define PQ_BENCH_POLL_MS        500
-#define PQ_BENCH_HEADER_HEIGHT  184
+#define PQ_BENCH_HEADER_HEIGHT  262
 #define PQ_BENCH_ROW_HEIGHT     156
 
 static PageWidget_t *g_pageWidget;
 static lv_obj_t *g_statusLabel;
 static lv_obj_t *g_rowLabels[PQ_BENCH_MAX_SCHEMES];
 static lv_obj_t *g_stackButton;
+static lv_obj_t *g_heapButton;
 static lv_obj_t *g_priorityButton;
 static uint32_t g_options = PQ_BENCH_DEFAULT_OPTIONS;
 static lv_obj_t *g_runButtons[PQ_BENCH_MAX_SCHEMES];
@@ -83,6 +84,8 @@ static void UpdateToggles(void)
 {
     lv_label_set_text(lv_obj_get_child(g_stackButton, 0),
                       (g_options & PQ_BENCH_STACK_ON_CHIP) ? "Stack: on-chip" : "Stack: PSRAM");
+    lv_label_set_text(lv_obj_get_child(g_heapButton, 0),
+                      (g_options & PQ_BENCH_HEAP_ON_CHIP) ? "Heap: on-chip" : "Heap: PSRAM");
     lv_label_set_text(lv_obj_get_child(g_priorityButton, 0),
                       (g_options & PQ_BENCH_HIGH_PRIORITY) ? "Priority: high" : "Priority: low");
 }
@@ -160,12 +163,17 @@ void GuiPqBenchWidgetsInit(void)
     lv_obj_set_width(g_stackButton, 204);
     lv_obj_align(g_stackButton, LV_ALIGN_TOP_LEFT, 24, 96);
     lv_obj_add_event_cb(g_stackButton, ToggleHandler, LV_EVENT_CLICKED, (void *)(uintptr_t)PQ_BENCH_STACK_ON_CHIP);
+    g_heapButton = GuiCreateBtn(cont, "");
+    lv_obj_set_width(g_heapButton, 204);
+    lv_obj_align(g_heapButton, LV_ALIGN_TOP_RIGHT, -24, 96);
+    lv_obj_add_event_cb(g_heapButton, ToggleHandler, LV_EVENT_CLICKED, (void *)(uintptr_t)PQ_BENCH_HEAP_ON_CHIP);
     g_priorityButton = GuiCreateBtn(cont, "");
     lv_obj_set_width(g_priorityButton, 204);
-    lv_obj_align(g_priorityButton, LV_ALIGN_TOP_RIGHT, -24, 96);
+    lv_obj_align(g_priorityButton, LV_ALIGN_TOP_LEFT, 24, 174);
     lv_obj_add_event_cb(g_priorityButton, ToggleHandler, LV_EVENT_CLICKED, (void *)(uintptr_t)PQ_BENCH_HIGH_PRIORITY);
     // Focusing the first button when the screen opens would scroll the status line out of view.
     lv_obj_clear_flag(g_stackButton, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_clear_flag(g_heapButton, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_clear_flag(g_priorityButton, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     UpdateToggles();
 
