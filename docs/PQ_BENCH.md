@@ -51,7 +51,10 @@ the top line says which scheme was running, its row says "CRASHED: reset during 
 `pqbench,last_run_reset_during,...` the first time the record is read.
 
 On the device the benchmark runs on its own task, one for each stack placement, each created on
-its first run and kept. The deepest scheme uses about 22 KB of stack
+its first run and kept. Between runs those tasks sleep until a run starts, and the screen does not
+lock during a run: a locked device sleeps with PSRAM switched off, and earlier builds, whose
+tasks woke every 100 ms, reset about a minute after the last touch once a PSRAM-stack run had
+happened. The deepest scheme uses about 22 KB of stack
 on a Mac (192-bit leanSphincs), so the 64 KB on-chip stack has room for deeper configurations;
 `cargo run --release -p app_pq_bench --example stack_need` measures it again. The schemes hold at most
 about 24 KB of heap at once on a Mac (`--example heap_need`), so their allocations fit on-chip

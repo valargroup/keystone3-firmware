@@ -14,6 +14,7 @@
 #include "mhscpu.h"
 #include "psram_heap_4.h"
 #include "drv_gd25qxx.h"
+#include "screen_manager.h"
 #include "flash_address.h"
 #endif
 
@@ -198,6 +199,11 @@ static void PqBenchRun(void)
 #ifndef COMPILE_SIMULATOR
 // One task per stack placement, each created on its first run and kept for the life of the
 // firmware, so its stack is never freed and reused.
+//
+// When the screen locks, the device sleeps with PSRAM switched off, and other tasks can still be
+// scheduled while it does. So between runs a task waits for a start signal instead of waking
+// to poll (a task with its stack in PSRAM would fault and reset the device), and during a run
+// the screen does not lock.
 typedef struct {
     const char *name;
     uint32_t stackBytes;
@@ -210,18 +216,17 @@ static PqBenchTask_t g_pqBenchTasks[2] = {
     {.name = "PqBenchOnChip", .stackBytes = PQ_BENCH_ON_CHIP_STACK_BYTES, .onChip = true},
     {.name = "PqBenchPsram", .stackBytes = PQ_BENCH_PSRAM_STACK_BYTES, .onChip = false},
 };
-static volatile PqBenchTask_t *g_pqBenchRequested;
+#define PQ_BENCH_START_FLAG 1U
 
 static void PqBenchTask(void *argument)
 {
-    PqBenchTask_t *task = argument;
+    (void)argument;
     while (1) {
-        if (g_pqBenchRequested == task) {
-            g_pqBenchRequested = NULL;
-            PqBenchRun();
-            g_pqBenchState = PQ_BENCH_DONE;
-        }
-        osDelay(100);
+        osThreadFlagsWait(PQ_BENCH_START_FLAG, osFlagsWaitAny, osWaitForever);
+        SetPageLockScreen(false);
+        PqBenchRun();
+        SetPageLockScreen(true);
+        g_pqBenchState = PQ_BENCH_DONE;
     }
 }
 
@@ -292,7 +297,7 @@ bool PqBenchStart(int32_t scheme, uint32_t iterations, uint32_t options)
     osThreadSetPriority(task->id, (options & PQ_BENCH_HIGH_PRIORITY) ? PQ_BENCH_HIGH_PRIORITY_LEVEL
                         : (osPriority_t)(osPriorityLow - 1));
     g_pqBenchState = PQ_BENCH_RUNNING;
-    g_pqBenchRequested = task;
+    osThreadFlagsSet(task->id, PQ_BENCH_START_FLAG);
 #endif
     return true;
 }
