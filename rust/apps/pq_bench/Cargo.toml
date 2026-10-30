@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 # leanSphincs with its experimental 192-bit family (valargroup/sphincs.art branch
-# roman/mac/claude/no-std-keystone-192: the 192-bit family from roman/mac/codex/192-bit-configurations,
+# roman/mac/claude/no-std-keystone-192-cache: the 192-bit family and its bounded tree cache from
+# roman/mac/codex/192-bit-configurations at 091607b,
 # built without std and on RustCrypto 0.10 releases).
-sphincs = { git = "https://github.com/valargroup/sphincs.art", rev = "25c887ed12cfb17289f7ce785308bbb5a9ded3e9", default-features = false }
+sphincs = { git = "https://github.com/valargroup/sphincs.art", rev = "e40093ceed6be95aea37cd1646a929fabba9f3f5", default-features = false }
 # The SHA-256 and SHA-512 that 192-bit leanSphincs uses, for the hashing rows.
 sha2 = { workspace = true, features = ["compress"] }

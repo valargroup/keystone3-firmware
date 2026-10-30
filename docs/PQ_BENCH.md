@@ -7,17 +7,17 @@ verification of hash-based signatures on the device:
 |---|---|---|
 | `SHA-256 block` | Not a signature: 10,000 SHA-256 compressions of one 64-byte block, shown as the time per block. Every scheme here spends nearly all its time hashing, so this is the device's hashing speed on its own | `sha2`, as 192-bit leanSphincs uses it |
 | `SHA-512 block` | 10,000 SHA-512 compressions of one 128-byte block; 192-bit leanSphincs uses SHA-512 for its multi-node hashes and encodings | `sha2` |
-| `lean192 wots h20 b8` | The experimental 192-bit leanSphincs family over SHA2 (SHA-256 for chain steps, SHA-512 for multi-node hashes) with the WOTS forest as the few-time signature: one tree of height 20 (2^24 signatures, sphincs.art's lowest lifetime) pruned to a kept subtree of 2^8 leaves. Its security is not proved; see sphincs.art | `sphincs::level192` from valargroup/sphincs.art |
+| `lean192 wots h20 b8`, `... cache-2`, `... cache-4` | The experimental 192-bit leanSphincs family over SHA2 (SHA-256 for chain steps, SHA-512 for multi-node hashes) with the WOTS forest as the few-time signature: one tree of height 20 (2^24 signatures, sphincs.art's lowest lifetime) pruned to a kept subtree of 2^8 leaves. The plain row keeps the whole kept subtree in memory; `cache-2` and `cache-4` drop its bottom 2 or 4 levels and regenerate them on each signature, using less memory for more signing work. Its security is not proved; see sphincs.art | `sphincs::level192` from valargroup/sphincs.art |
 
 Every run derives keys from fixed seeds and signs a fixed message, so runs repeat exactly. Each
 signature is verified; a failure is reported as an error, not as a time. Production builds do
 not contain the benchmark.
 
-The `sphincs` dependency is valargroup/sphincs.art branch `roman/mac/claude/no-std-keystone-192`:
-the experimental 192-bit family from branch `roman/mac/codex/192-bit-configurations`, plus changes
-that let it build without std and use the RustCrypto 0.10 releases of `sha2`, `sha3` and `hmac`
-instead of 0.11, which this workspace cannot link. Its signatures match the family's
-known-answer vectors.
+The `sphincs` dependency is valargroup/sphincs.art branch `roman/mac/claude/no-std-keystone-192-cache`:
+the experimental 192-bit family and its bounded tree cache from branch
+`roman/mac/codex/192-bit-configurations` (commit 091607b), plus changes that let it build without
+std and use the RustCrypto 0.10 releases of `sha2`, `sha3` and `hmac` instead of 0.11, which this
+workspace cannot link. Its signatures match the family's known-answer vectors.
 
 ## Running it
 

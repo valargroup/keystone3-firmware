@@ -25,15 +25,31 @@ pub enum Scheme {
     Sha512,
     /// The experimental 192-bit leanSphincs family over SHA2 with the WOTS forest as the few-time
     /// signature, as one tree of height `h` (lifetime 2^(h + 4) signatures) pruned to a kept
-    /// subtree of height `kept`.
-    Lean192 { h: u8, kept: u8 },
+    /// subtree of height `kept`. With `recompute == 0` the key keeps every node of the kept
+    /// subtree; otherwise it drops the bottom `recompute` levels and each signature regenerates
+    /// them, trading signing time for memory.
+    Lean192 { h: u8, kept: u8, recompute: u8 },
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 3] = [
+    pub const ALL: [Scheme; 5] = [
         Scheme::Sha256,
         Scheme::Sha512,
-        Scheme::Lean192 { h: 20, kept: 8 },
+        Scheme::Lean192 {
+            h: 20,
+            kept: 8,
+            recompute: 0,
+        },
+        Scheme::Lean192 {
+            h: 20,
+            kept: 8,
+            recompute: 2,
+        },
+        Scheme::Lean192 {
+            h: 20,
+            kept: 8,
+            recompute: 4,
+        },
     ];
 
     /// A short name that fits a table row on the device screen, NUL-terminated for C.
@@ -41,7 +57,21 @@ impl Scheme {
         match self {
             Scheme::Sha256 => c"SHA-256 block",
             Scheme::Sha512 => c"SHA-512 block",
-            Scheme::Lean192 { h: 20, kept: 8 } => c"lean192 wots h20 b8",
+            Scheme::Lean192 {
+                h: 20,
+                kept: 8,
+                recompute: 0,
+            } => c"lean192 wots h20 b8",
+            Scheme::Lean192 {
+                h: 20,
+                kept: 8,
+                recompute: 2,
+            } => c"lean192 wots h20 b8 cache-2",
+            Scheme::Lean192 {
+                h: 20,
+                kept: 8,
+                recompute: 4,
+            } => c"lean192 wots h20 b8 cache-4",
             Scheme::Lean192 { .. } => c"lean192 (unlisted)",
         }
     }
@@ -57,9 +87,12 @@ impl Scheme {
         match self {
             Scheme::Sha256 => measure(&Sha256Blocks, iterations, now_ns, progress),
             Scheme::Sha512 => measure(&Sha512Blocks, iterations, now_ns, progress),
-            Scheme::Lean192 { h, kept } => {
-                measure(&Lean192::new(h, kept), iterations, now_ns, progress)
-            }
+            Scheme::Lean192 { h, kept, recompute } => measure(
+                &Lean192::new(h, kept, recompute),
+                iterations,
+                now_ns,
+                progress,
+            ),
         }
     }
 }
@@ -209,14 +242,21 @@ const SHA512_IV: [u64; 8] = [
 
 struct Lean192 {
     config: sphincs::level192::Config,
+    cache: sphincs::level192::TreeCache,
 }
 
 impl Lean192 {
-    fn new(h: u8, kept: u8) -> Self {
-        use sphincs::level192::{Config, HashFn, Shape, Variant};
+    fn new(h: u8, kept: u8, recompute: u8) -> Self {
+        use sphincs::level192::{Config, HashFn, Shape, TreeCache, Variant};
         let shape = Shape::Pruned { b: kept as usize };
         Self {
             config: Config::new(HashFn::Sha2, h as usize, shape, Variant::Forest),
+            cache: match recompute {
+                0 => TreeCache::Full,
+                levels => TreeCache::Recompute {
+                    levels: levels as usize,
+                },
+            },
         }
     }
 }
@@ -235,7 +275,7 @@ impl Bench for Lean192 {
     }
 
     fn keygen(&self, iteration: u32) -> (Self::SigningKey, Self::VerifyingKey) {
-        sphincs::level192::key_gen(&self.config, &seed(8, iteration))
+        sphincs::level192::key_gen_with_cache(&self.config, &seed(8, iteration), self.cache)
     }
 
     fn sign(&self, key: Self::SigningKey) -> Self::Signature {
@@ -338,10 +378,10 @@ mod tests {
     #[test]
     fn lean192_sizes_match_the_encodings() {
         for scheme in Scheme::ALL {
-            let Scheme::Lean192 { h, kept } = scheme else {
+            let Scheme::Lean192 { h, kept, recompute } = scheme else {
                 continue;
             };
-            let bench = Lean192::new(h, kept);
+            let bench = Lean192::new(h, kept, recompute);
             let (key, public) = bench.keygen(0);
             assert_eq!(public.to_bytes().len(), 48, "{:?}", scheme.name());
             let signature = bench.sign(key).to_bytes();
