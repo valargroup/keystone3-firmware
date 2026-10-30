@@ -210,6 +210,7 @@ extern GUI_VIEW g_purposeView;
 extern GUI_VIEW g_aboutView;
 extern GUI_VIEW g_aboutKeystoneView;
 extern GUI_VIEW g_aboutInfoView;
+extern GUI_VIEW g_pqBenchView;
 extern GUI_VIEW g_aboutTermsView;
 extern GUI_VIEW g_wipeDeviceView;
 extern GUI_VIEW g_walletTutorialView;

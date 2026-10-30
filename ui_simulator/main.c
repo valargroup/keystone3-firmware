@@ -9,6 +9,7 @@
  *********************/
 #define _DEFAULT_SOURCE /* needed for usleep() */
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #define SDL_MAIN_HANDLED /*To fix SDL's "undefined reference to WinMain" \
                             issue*/
@@ -22,6 +23,7 @@
 #include "gui_api.h"
 #include "gui_framework.h"
 #include "gui_views.h"
+#include "pq_bench.h"
 extern bool g_reboot;
 
 /*********************
@@ -81,12 +83,45 @@ int hexstr_to_uint8_array(const char *hexstr, uint8_t *buf, size_t buf_len) {
     return count;
 }
 
+#ifdef FEATURE_PQ_BENCH
+static void OpenPqBenchView(lv_timer_t *timer)
+{
+    (void)timer;
+    GuiFrameOpenView(&g_pqBenchView);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     (void)argc; /*Unused*/
     (void)argv; /*Unused*/
 
     printf("start");
+
+#ifdef FEATURE_PQ_BENCH
+    // PQ_BENCH="all 5" (or a scheme name or index, and optional iterations) prints the
+    // benchmark as CSV and exits without opening a window.
+    const char *pqBench = getenv("PQ_BENCH");
+    if (pqBench != NULL) {
+        char target[32] = "all";
+        unsigned int iterations = 0;
+        int32_t scheme = PQ_BENCH_ALL_SCHEMES;
+        sscanf(pqBench, "%31s %u", target, &iterations);
+        if (strcmp(target, "all") != 0) {
+            scheme = -2;
+            for (uint32_t i = 0; i < pq_bench_scheme_count(); i++) {
+                if (strcmp(target, pq_bench_scheme_name(i)) == 0) {
+                    scheme = (int32_t)i;
+                }
+            }
+            if (scheme == -2) {
+                sscanf(target, "%d", (int *)&scheme);
+            }
+        }
+        printf("\n");
+        return PqBenchStart(scheme, iterations, PQ_BENCH_DEFAULT_OPTIONS) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+#endif
 
     /*Initialize LVGL*/
     lv_init();
@@ -99,6 +134,14 @@ int main(int argc, char **argv)
     LanguageInit();
 
     GuiFrameOpenView(&g_initView);
+#ifdef FEATURE_PQ_BENCH
+    // PQ_BENCH_UI=1 opens the PQ Bench screen without setting up a wallet first. It waits for
+    // startup to open the setup screen, so PQ Bench ends up on top.
+    if (getenv("PQ_BENCH_UI") != NULL) {
+        lv_timer_t *timer = lv_timer_create(OpenPqBenchView, 2000, NULL);
+        lv_timer_set_repeat_count(timer, 1);
+    }
+#endif
     //  lv_example_calendar_1();
     //  lv_example_btnmatrix_2();
     //  lv_example_checkbox_1();

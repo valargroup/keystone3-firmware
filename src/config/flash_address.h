@@ -14,6 +14,11 @@
 #define SPI_FLASH_ADDR_ERR_INFO                 0x00880000
 #define SPI_FLASH_SIZE_ERR_INFO                 0x1000
 
+// Debug builds' PQ benchmark record (src/utils/pq_bench.c). The error info above is cleared
+// with a 64 KB block erase, so this starts at the next block.
+#define SPI_FLASH_ADDR_PQ_BENCH                 0x00890000
+#define SPI_FLASH_SIZE_PQ_BENCH                 0x1000
+
 #define SPI_FLASH_ADDR_NFT_BIN                  0x00EB2000
 #define SPI_FLASH_SIZE_NFT_BIN                  (480 * 800 * 2) // 0xBB800
 

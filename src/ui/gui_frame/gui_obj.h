@@ -37,6 +37,7 @@ typedef int32_t(*GuiEventProcessFunc)(void *self, uint16_t usEvent, void *param,
     add(SCREEN_ABOUT_KEYSTONE)  \
     add(SCREEN_ABOUT_TERMS)     \
     add(SCREEN_ABOUT_INFO)      \
+    add(SCREEN_PQ_BENCH)        \
     add(SCREEN_WIPE_DEVICE)     \
     add(SCREEN_WALLET_TUTORIAL) \
     add(SCREEN_SELF_DESTRUCT)   \

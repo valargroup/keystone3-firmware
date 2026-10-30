@@ -336,6 +336,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "app_pq_bench"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "sphincs",
+]
+
+[[package]]
 name = "app_solana"
 version = "0.1.0"
 dependencies = [
@@ -629,7 +637,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "143f5327f23168716be068f8e1014ba2ea16a6c91e8777bc8927da7b51e1df1f"
 dependencies = [
  "bs58",
- "hmac",
+ "hmac 0.13.0-pre.4",
  "rand_core 0.6.4",
  "ripemd 0.2.0-pre.4",
  "secp256k1",
@@ -774,6 +782,11 @@ dependencies = [
  "arrayvec",
  "constant_time_eq 0.3.1",
 ]
+
+[[package]]
+name = "blake2s"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/sphincs.art?rev=e40093ceed6be95aea37cd1646a929fabba9f3f5#e40093ceed6be95aea37cd1646a929fabba9f3f5"
 
 [[package]]
 name = "blake2s_simd"
@@ -1436,7 +1449,7 @@ dependencies = [
  "digest 0.10.7",
  "groestl",
  "jh",
- "keccak",
+ "keccak 0.1.5",
  "sha3 0.10.8",
  "skein",
 ]
@@ -2234,6 +2247,15 @@ checksum = "3011d1213f159867b13cfd6ac92d2cd5f1345762c63be3554e84092d85a50bbd"
 
 [[package]]
 name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "hmac"
 version = "0.13.0-pre.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4b1fb14e4df79f9406b434b60acef9f45c26c50062cccf1346c6103b8c47d58"
@@ -2456,6 +2478,11 @@ dependencies = [
  "rand_core 0.6.4",
  "subtle",
 ]
+
+[[package]]
+name = "keccak"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/sphincs.art?rev=e40093ceed6be95aea37cd1646a929fabba9f3f5#e40093ceed6be95aea37cd1646a929fabba9f3f5"
 
 [[package]]
 name = "keccak"
@@ -3855,6 +3882,7 @@ dependencies = [
  "app_iota",
  "app_monero",
  "app_near",
+ "app_pq_bench",
  "app_solana",
  "app_stellar",
  "app_sui",
@@ -4309,6 +4337,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha256"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/sphincs.art?rev=e40093ceed6be95aea37cd1646a929fabba9f3f5#e40093ceed6be95aea37cd1646a929fabba9f3f5"
+
+[[package]]
 name = "sha3"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4316,7 +4349,7 @@ checksum = "f81199417d4e5de3f04b1e871023acea7389672c4135918f05aa9cbf2f2fa809"
 dependencies = [
  "block-buffer 0.9.0",
  "digest 0.9.0",
- "keccak",
+ "keccak 0.1.5",
  "opaque-debug",
 ]
 
@@ -4327,7 +4360,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
 dependencies = [
  "digest 0.10.7",
- "keccak",
+ "keccak 0.1.5",
 ]
 
 [[package]]
@@ -4408,6 +4441,19 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "sphincs"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/sphincs.art?rev=e40093ceed6be95aea37cd1646a929fabba9f3f5#e40093ceed6be95aea37cd1646a929fabba9f3f5"
+dependencies = [
+ "blake2s",
+ "hmac 0.12.1",
+ "keccak 0.1.0",
+ "sha2 0.10.9",
+ "sha256",
+ "sha3 0.10.8",
+]
 
 [[package]]
 name = "spin"

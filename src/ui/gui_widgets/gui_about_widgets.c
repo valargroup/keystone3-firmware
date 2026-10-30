@@ -13,6 +13,7 @@
 #include "err_code.h"
 #include "gui_page.h"
 #include "user_fatfs.h"
+#include "pq_bench.h"
 
 static lv_obj_t *g_cont;
 static PageWidget_t *g_pageWidget;
@@ -133,4 +134,18 @@ void GuiAboutEntranceWidget(lv_obj_t *parent)
     button = GuiCreateButton(parent, 456, 84 + (memberCnt - 2) * 34, table, memberCnt,
                              OpenViewHandler, &g_firmwareUpdateView);
     lv_obj_align(button, LV_ALIGN_DEFAULT, 12, 508);
+
+#ifdef FEATURE_PQ_BENCH
+    //hash-based signature benchmark (debug and simulator builds)
+    int16_t pqBenchY = 508 + 84 + (memberCnt - 2) * 34;
+    line = GuiCreateDividerLine(parent);
+    lv_obj_align(line, LV_ALIGN_DEFAULT, 0, pqBenchY);
+
+    label = GuiCreateTextLabel(parent, "PQ Bench");
+    imgArrow = GuiCreateImg(parent, &imgArrowRight);
+    table[0].obj = label;
+    table[1].obj = imgArrow;
+    button = GuiCreateButton(parent, 456, 84, table, 2, OpenViewHandler, &g_pqBenchView);
+    lv_obj_align(button, LV_ALIGN_DEFAULT, 12, pqBenchY + 9);
+#endif
 }

@@ -21,6 +21,7 @@ members = [
     "apps/avalanche",
     "apps/iota",
     "apps/babylon",
+    "apps/pq_bench",
 
     # C interface entry
     "rust_c",
@@ -54,6 +55,7 @@ app_zcash = { path = "apps/zcash", default-features = false}
 app_monero = { path = "apps/monero" }
 app_iota = { path = "apps/iota" }
 app_babylon = { path = "apps/babylon" }
+app_pq_bench = { path = "apps/pq_bench" }
 keystore = { path = "keystore", default-features = false }
 tools = { path = "tools" }
 sim_qr_reader = { path = "sim_qr_reader" }

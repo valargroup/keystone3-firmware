@@ -21,6 +21,9 @@ mod wallet;
 #[allow(unused)]
 mod test_cmd;
 
+#[cfg(feature = "pq-bench")]
+mod pq_bench;
+
 //chains
 #[cfg(feature = "aptos")]
 #[allow(unused)]
